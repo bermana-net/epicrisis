@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ card.summary.doc_type }} · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page card">
+
+  {% set current = "documents" %}
+  {% include "_header.html" %}
+
+  {% set document = card.document %}
+  <section class="rule" style="padding-top: 16px;">
+    <a class="caps back" href="/documents">&larr; Documents</a>
+    <h1 class="card-title">{{ (document and document.title_as_printed) or card.summary.doc_type }}</h1>
+    <div class="card-file caps">{{ card.path }} <span class="file-id" style="background: {{ card.reading.background }}; color: {{ card.reading.color }}" title="File ID {{ card.file_id }}. {{ card.reading.title }}.">{{ card.file_id }}</span> &middot; pages {{ card.summary.page_label }}</div>
+
+    <dl class="card-meta">
+      <div><dt class="caps">Document date</dt><dd>
+        <span class="mono">{{ card.date.label or "–" }}</span>{% if card.date.by_hand %} <span class="caps muted">set by hand</span>{% endif %}
+        {% for flag in card.date.flags %}<span class="caps date-flag">{{ flag.label }}</span>{% endfor %}
+        <form class="date-form" method="post" action="/documents/{{ card.source_id }}/{{ card.sha256 }}/{{ card.summary.pages[0] }}/date">
+          <input type="date" name="value" value="{{ card.date.value.isoformat() if card.date.by_hand else '' }}" aria-label="Set the document date">
+          <button class="btn" type="submit">Set</button>{% if card.date.by_hand %} <button class="btn" type="submit" name="value" value="">Clear</button>{% endif %}
+        </form>
+      </dd></div>
+      <div><dt class="caps">Type</dt><dd>{{ card.summary.doc_type }}</dd></div>
+      <div><dt class="caps">Date of study as printed</dt><dd>{{ (document and document.date_of_study_as_printed) or card.summary.date or "–" }}</dd></div>
+      <div><dt class="caps">Date of report as printed</dt><dd>{{ (document and document.date_of_report_as_printed) or "–" }}</dd></div>
+      <div><dt class="caps">Institution as printed</dt><dd>{{ (document and document.provider_as_printed) or card.summary.provider or "–" }}</dd></div>
+      <div><dt class="caps">Department as printed</dt><dd>{{ (document and document.department_as_printed) or "–" }}</dd></div>
+      <div><dt class="caps">Language</dt><dd>{{ card.language or card.summary.language or "–" }}</dd></div>
+      <div><dt class="caps">Original pages</dt><dd class="page-links">{% for number in card.summary.pages %}<a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ number }}" target="_blank" rel="noopener">p{{ number }}</a>{% endfor %}</dd></div>
+    </dl>
+    {% if card.findings %}
+    <div class="card-findings">
+      <span class="caps">To check</span>
+      <ul>{% for finding in card.findings %}<li>{{ finding.label }}{% if finding.count > 1 %} ({{ finding.count }}){% endif %}{% for copy in finding.copies %} &middot; <a href="/documents/{{ card.source_id }}/{{ copy.file_sha256 }}/{{ copy.pages[0] }}">{{ copy.file_sha256[:8] }} p. {{ copy.pages|join(", ") }}</a>{% endfor %}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+  </section>
+
+  {% macro observations_block(document, card, title) %}
+  {% if document.observations %}
+  <section class="rule card-section">
+    <h2>{{ title }}</h2>
+    {% for table in card.observation_tables %}
+    {% set grid %}grid-template-columns: minmax(180px, 2fr) minmax(90px, 1fr) minmax(70px, 0.7fr) minmax(110px, 1fr){% for heading in table.other_headings %} minmax(110px, 1fr){% endfor %} 80px 50px; min-width: {{ 760 + table.other_headings|length * 130 }}px{% endset %}
+    {% if table.heading %}<h3 class="obs-table-title">{{ table.heading }}</h3>{% endif %}
+    <div class="obs-table">
+      <div class="obs-row head caps" style="{{ grid }}">
+        <span>Name</span>
+        <span>{{ table.result_heading or "Result" }}<small>result</small></span>
+        <span>Unit</span>
+        <span>{{ table.reference_heading or "Reference" }}<small>reference range</small></span>
+        {% for heading in table.other_headings %}<span>{{ heading or "Other value" }}<small>other value</small></span>{% endfor %}
+        <span>Flag as printed</span>
+        <span>Page</span>
+      </div>
+      {% for row in table.rows %}
+      {% set item = row.main %}
+      <div class="obs-row{% if item.correction %} corrected{% endif %}" style="{{ grid }}" title="{{ item.provenance.snippet }}">
+        <span>{% if item.indicator_id %}<a href="/tests/{{ item.indicator_id }}" title="Every value of this test, over the years">{{ item.name_as_printed }}</a>{% else %}{{ item.name_as_printed }}{% endif %}{% if item.correction %} <span class="caps signal">{% if item.correction.removed %}not a value{% else %}corrected{% endif %}</span>{% endif %}</span>
+        <span class="value">{% if item.comparator and not item.value_as_printed.startswith(item.comparator) %}{{ item.comparator }} {% endif %}{{ item.value_as_printed }}{% if item.method_as_printed %}<span class="method">{{ item.method_as_printed }}</span>{% endif %}</span>
+        <span>{{ item.unit_as_printed or "–" }}</span>
+        <span>{{ item.reference_as_printed or "–" }}</span>
+        {% for heading in table.other_headings %}<span class="other-value">{% for other in row.by_column[heading] %}<span>{{ other.value_as_printed }} {{ other.unit_as_printed or "" }}{% if other.reference_as_printed %} <span class="column">({{ other.reference_as_printed }})</span>{% endif %}{% if other.flag_as_printed %} {{ other.flag_as_printed }}{% endif %}</span>{% else %}–{% endfor %}</span>{% endfor %}
+        <span>{{ item.flag_as_printed or "" }}</span>
+        <span class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ item.provenance.page }}" target="_blank" rel="noopener">p{{ item.provenance.page }}</a></span>
+      </div>
+      <details class="fix-row">
+        <summary class="caps">Correct this line</summary>
+        <form class="fix-form" method="post" action="/documents/{{ card.source_id }}/{{ card.sha256 }}/{{ card.summary.pages[0] }}/value">
+          <input type="hidden" name="key" value="{{ item.key }}">
+          <label class="caps">Name<input name="name" value="{{ item.name_as_printed }}"></label>
+          <label class="caps">Value<input name="value" value="{{ item.value_as_printed }}"></label>
+          <label class="caps">Unit<input name="unit" value="{{ item.unit_as_printed or "" }}"></label>
+          <label class="caps">Reference<input name="reference" value="{{ item.reference_as_printed or "" }}"></label>
+          <label class="caps">Flag<input name="flag" value="{{ item.flag_as_printed or "" }}"></label>
+          {# What was measured, where the form's layout leaves it ambiguous: a table with rows of
+             two specimens, a panel headed for one thing and holding another. A word set here is
+             the person's own and wins over anything a rule or a model worked out. #}
+          <label class="caps">Measured in<select name="material">
+            <option value=""{% if not item.material %} selected{% endif %}>&mdash; as the form says &mdash;</option>
+            {% for name in materials_to_choose %}
+            <option value="{{ name }}"{% if item.material == name %} selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select></label>
+          <div class="fix-actions">
+            <button class="btn small" type="submit">Save</button>
+            <button class="btn small" type="submit" name="action" value="remove" title="This line is not a value: a table header, a row label, a piece of a table">Not a value</button>
+            {% if item.correction %}<button class="btn small" type="submit" name="action" value="reset">Back to what the model read</button>{% endif %}
+          </div>
+          {% if item.correction and item.correction.changes %}
+          <p class="caps muted">As the model read it: {% for field, text in item.correction.printed.items() %}{{ text or "—" }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>
+          {% endif %}
+        </form>
+      </details>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+  {% endmacro %}
+
+  {% macro sections_block(document, card) %}
+  {% if document.sections %}
+  <section class="rule card-section">
+    <h2>Text by section</h2>
+    {% for section in document.sections %}
+    <div class="card-text">
+      {% if section.heading_as_printed %}<h3>{{ section.heading_as_printed }}</h3>{% endif %}
+      <p>{{ section.text }}</p>
+      <div class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ section.page }}" target="_blank" rel="noopener">p{{ section.page }}</a></div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+  {% endmacro %}
+
+  {% if not document %}
+  <div class="empty">Not transcribed yet. This document has only been classified.</div>
+  {% else %}
+  <div class="notice caps unchecked"><span>Model transcription, not yet checked by a person.</span><span>Open a page above, compare, and correct a line where it is wrong.</span></div>
+
+  {# Lab results lead with their table; reports and letters lead with their text. #}
+  {% if document.doc_type == "lab_panel" %}
+  {{ observations_block(document, card, "Results as printed") }}
+  {{ sections_block(document, card) }}
+  {% else %}
+  {{ sections_block(document, card) }}
+  {{ observations_block(document, card, "Measurements as printed") }}
+  {% endif %}
+
+  {% if document.diagnoses_as_printed or document.medications_as_printed %}
+  <section class="rule card-section">
+    {% if document.diagnoses_as_printed %}
+    <h2>Diagnoses as printed</h2>
+    <ul class="card-list">{% for item in document.diagnoses_as_printed %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if document.medications_as_printed %}
+    <h2 style="margin-top: 20px;">Medications as printed</h2>
+    <ul class="card-list">{% for item in document.medications_as_printed %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if document.unreadable %}
+  <section class="rule card-section">
+    <h2>Could not be read</h2>
+    <ul class="card-list">{% for item in document.unreadable %}<li>Page {{ item.page }}: {{ item.what }} ({{ item.why }})</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <section class="rule card-section">
+    <details class="full-text-toggle">
+      <summary>Full text</summary>
+      <pre class="full-text">{{ document.full_text }}</pre>
+    </details>
+  </section>
+
+  <p class="provenance caps muted">Transcribed by {{ document.provenance.model }} &middot; prompt {{ document.provenance.prompt_version }} &middot; {{ document.provenance.extracted_at }}{% if document.provenance.escalations %} &middot; after {{ document.provenance.escalations|map(attribute="model")|join(", ") }} did not pass the checks{% endif %}{% if document.provenance.close_up_pass and document.provenance.close_up_pass.status == "kept" %} &middot; read again from close-ups{% endif %}</p>
+  {% endif %}
+
+</div>
+</body>
+</html>

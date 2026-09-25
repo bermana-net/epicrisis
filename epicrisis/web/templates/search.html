@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page search-page">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "search" %}
+  {% include "_header.html" %}
+
+  {# When there is nothing to search, the empty state is the page: a search box over an archive
+     that has not been read would only answer nothing, and the heading would be printed twice. #}
+  {% if missing %}
+  {{ nothing("Search") }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 16px;">
+    <h1>Search</h1>
+    {% include "_searchline.html" %}
+    <p class="caps muted">Over the text of every document, its title, the institution and the printed names of values. Case, accents and Ukrainian or Russian letter pairs are matched as one.</p>
+  </section>
+
+  {% if not query %}
+  <p class="empty">Type a word. For instance: an institution, a diagnosis, the name of a test, a year.</p>
+  {% else %}
+
+  {% if names %}
+  <section class="card-section">
+    <h2>Printed names that match</h2>
+    <div class="name-hits">
+      {% for item in names %}
+      <a class="name-hit" href="/indicators?find={{ item.name }}"><b>{{ item.name }}</b><span class="caps muted">{{ item.times }} times &middot; {{ item.first_date[:4] if item.first_date else "" }}–{{ item.last_date[:4] if item.last_date else "" }}</span></a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="card-section">
+    <h2>{{ total }} document{{ "s" if total != 1 }}</h2>
+    <div class="feed">
+      {% for item in documents %}
+      <a class="feed-row wide" href="{{ item.card_url }}">
+        <span class="mono when">{{ item.date or "–" }}</span>
+        <span class="what">
+          <b>{{ item.title or item.doc_type }}</b>
+          <span class="caps muted">{{ item.doc_type }}{% if item.provider %} &middot; {{ item.provider }}{% endif %} &middot; {{ item.file_id }}</span>
+          {% if item.snippet %}<span class="snippet">{{ item.snippet }}</span>{% endif %}
+        </span>
+      </a>
+      {% else %}
+      <p class="empty">Nothing matched. Try a shorter word, or another language.</p>
+      {% endfor %}
+    </div>
+    {% if documents | length < total %}
+    <div class="feed-foot">
+      <span class="caps muted">Showing the first {{ documents | length }}</span>
+      <a class="caps" href="/search?q={{ query | urlencode }}{% if doc_type %}&doc_type={{ doc_type }}{% endif %}&limit={{ limit + 120 }}">show more &rarr;</a>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endif %}
+
+</div>
+</body>
+</html>

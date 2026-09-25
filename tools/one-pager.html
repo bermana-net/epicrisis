@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The source of docs/epicrisis-for-underwriting.pdf. It is not published: it lives here so the
+     PDF can be made again. Rebuild it with:
+       uv run --with playwright --with pypdf --with pypdfium2 python tools/make-one-pager.py -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epicrisis for underwriting and claims</title>
+<meta name="description" content="Epicrisis Companion for medical underwriting and claims teams: scanned medical records in five languages as a structured archive, on your own servers, every value one click from its page.">
+<style>
+  /* The same paper, ink and red as the program and the project page, laid out for one sheet of
+     A4: this page is the PDF, and the PDF is printed from this page, so the two cannot drift. */
+  :root {
+    --paper: #f3f2ee; --ink: #0e0e0e; --signal: #d9502a; --deep: #7a2113;
+    --muted: #55544f; --line: #dcdad3; --faint: #e9e7e1;
+    --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e6e4de; color: var(--ink); font: 14px/1.5 var(--sans); }
+  .sheet { width: 210mm; min-height: 297mm; margin: 24px auto; padding: 12mm 13mm 8mm;
+    background: var(--paper); box-shadow: 0 14px 32px rgba(122,33,19,.20); }
+  a { color: #8a2f1c; }
+
+  .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;
+    border-bottom: 3px solid var(--ink); padding-bottom: 8px; }
+  .brand { font: 700 15px/1.2 var(--sans); letter-spacing: .02em; }
+  .brand small { display: block; font: 9px/1.5 var(--mono); letter-spacing: .22em; color: var(--muted); }
+  .who { font: 9px/1.5 var(--mono); letter-spacing: .14em; text-transform: uppercase; text-align: right; color: var(--signal); }
+
+  h1 { font-size: 24px; line-height: 1.1; letter-spacing: -.02em; margin: 11px 0 7px; max-width: 150mm; }
+  h1 span { color: var(--muted); }
+  .lede { margin: 0; max-width: 175mm; font-size: 12.5px; }
+  .lede b { font-weight: 700; }
+
+  figure { margin: 10px 0 0; }
+  figure img { display: block; width: 100%; height: 42mm; object-fit: cover; object-position: 50% 34%;
+    border: 1px solid var(--signal); box-shadow: 0 8px 18px rgba(122,33,19,.26); }
+  figcaption { font: 8.5px/1.5 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin-top: 6px; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+  h2 { font: 9px/1.5 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--signal);
+    margin: 0 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  h2 i { color: var(--muted); font-style: normal; }
+  ul { margin: 0; padding: 0; list-style: none; }
+  ul li { margin-bottom: 6px; font-size: 11.5px; line-height: 1.4; }
+  ul li b { font-weight: 700; }
+
+  .cases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line); margin-top: 11px; }
+  .cases div { background: var(--paper); padding: 9px 10px; }
+  .cases .n { font: 9px/1.5 var(--mono); color: var(--signal); letter-spacing: .1em; }
+  .cases h3 { margin: 2px 0 3px; font-size: 11px; }
+  .cases p { margin: 0; font-size: 10px; color: var(--muted); line-height: 1.35; }
+
+  .facts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line); margin-top: 11px; }
+  .facts div { background: var(--paper); padding: 9px 10px; }
+  .facts .n { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+  .facts .k { font: 8.5px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .facts .lead { border-left: 3px solid var(--signal); }
+
+  .pilot { border: 1px solid var(--ink); padding: 10px 13px; margin-top: 11px;
+    display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
+  .pilot h3 { margin: 0 0 3px; font-size: 13px; }
+  .pilot p { margin: 0; font-size: 11px; color: var(--muted); }
+  .pilot .card { text-align: right; font: 9px/1.7 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  .pilot .card b { display: block; font: 700 13px/1.4 var(--sans); letter-spacing: 0; text-transform: none; }
+
+  footer { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 6px;
+    font: 8px/1.45 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+  @page { size: A4; margin: 0; }
+  @media print {
+    body { background: var(--paper); }
+    .sheet { margin: 0; box-shadow: none; width: auto; min-height: auto; }
+  }
+  /* Only on a screen: at print width the page is exactly A4 and must keep its columns. */
+  @media screen and (max-width: 230mm) {
+    .sheet { width: auto; padding: 18px; }
+    .two, .cases, .facts, .pilot { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="top">
+    <div class="brand">EPICRISIS COMPANION<small>NOT A MEDICAL DEVICE</small></div>
+    <div class="who">For medical underwriting<br>and claims teams</div>
+  </div>
+
+  <h1>The whole medical file, read once.<br><span>Every value one click from its page.</span></h1>
+  <p class="lede">Epicrisis turns scanned medical records in five languages into a structured archive that
+    runs on your own servers. Your underwriter sees the full history of a case in one place, can question
+    it through an AI assistant, and every answer points back to the scan.
+    <b>The archive shows what the documents say. Your people decide.</b></p>
+
+  <figure>
+    <img src="../docs/images/04-hba1c.png" alt="One test over fifteen years, on forms in two languages">
+    <figcaption>Demo data, invented patient. Fifteen values of one test over fifteen years: Russian forms
+      first, English after he moved. The shaded band is the range printed on each form, nothing
+      recalculated. The first value above it has a date, a laboratory and a scan behind it.</figcaption>
+  </figure>
+
+  <div class="two">
+    <section>
+      <h2><i>01</i> &nbsp;What the underwriter gets</h2>
+      <ul>
+        <li><b>One timeline per test</b> across laboratories, countries and languages. Units are kept as
+          printed; mg/dL and µmol/L never land on one chart.</li>
+        <li><b>When it started.</b> The first value outside the printed range, dated and linked to its
+          form — the question behind every pre-existing condition review.</li>
+        <li><b>Checks with no model at all:</b> the same result filed three times, a stored number that
+          differs from the print, a date nobody could read.</li>
+        <li><b>Plain-language questions</b> through Claude or ChatGPT (MCP). Read-only. Each answer carries
+          file, page and date.</li>
+      </ul>
+    </section>
+    <section>
+      <h2><i>02</i> &nbsp;Why it fits an insurer</h2>
+      <ul>
+        <li><b>Inside your perimeter.</b> Self-hosted, no vendor cloud, no telemetry. Model calls go out
+          with your own key, one document per call, or not at all.</li>
+        <li><b>One archive per case</b>, isolated by construction. Cases never mix.</li>
+        <li><b>Evidence, not verdicts.</b> It extracts and cites; it does not score, price or decide. Under
+          the EU AI Act, AI for risk assessment and pricing in life and health insurance is high-risk.
+          Scoring stays with your team.</li>
+        <li><b>Source-available.</b> Your IT and compliance read every line before it is installed; a
+          commercial licence covers running it. Nothing is hidden and nothing is free-riding.</li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="cases">
+    <div><div class="n">01</div><h3>Medical underwriting</h3><p>A full case history before the decision,
+      not a stack of PDFs.</p></div>
+    <div><div class="n">02</div><h3>Claims and pre-existing conditions</h3><p>When a value first left range,
+      against the policy start date.</p></div>
+    <div><div class="n">03</div><h3>Post-issue review</h3><p>Contestability and audit work with the page
+      behind every number.</p></div>
+    <div><div class="n">04</div><h3>Cross-border cases</h3><p>IPMI, assistance and expat files in RU, UK,
+      EN, ES and EL.</p></div>
+  </div>
+
+  <div class="facts">
+    <div class="lead"><div class="n">2</div><div class="k">Real archives tested on</div></div>
+    <div><div class="n">500+</div><div class="k">Documents</div></div>
+    <div><div class="n">5,000+</div><div class="k">Values as printed</div></div>
+    <div><div class="n">1989–2026</div><div class="k">Years covered</div></div>
+    <div><div class="n">200+</div><div class="k">Institutions · 5 languages</div></div>
+  </div>
+
+  <div class="pilot">
+    <div>
+      <h3>Looking for two or three underwriting or claims teams for a pilot.</h3>
+      <p>Your own files, on your own server. We learn what your reviewers actually need; you keep
+        everything. A data processing agreement under Article 28 GDPR comes with the licence.</p>
+    </div>
+    <div class="card"><b>Artem Berman</b>
+      epicrisis.bermana.net<br>linkedin.com/in/artemberman</div>
+  </div>
+
+  <footer>Not a medical device. Not for diagnosis, treatment or clinical decisions.
+    EU AI Act: Regulation (EU) 2024/1689, Annex III, point 5(c). Business Source License 1.1 —
+    free for a person and their family, a commercial licence for organisations.</footer>
+
+</div>
+</body>
+</html>

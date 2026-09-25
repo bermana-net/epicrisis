@@ -1,0 +1,4 @@
+# Phrases that belong to this archive and are published deliberately: the author's own name in
+# the licence, the copyright line and the project page. Everything else out of a data directory
+# is a leak, and tools/nothing-of-yours.py says so before a push.
+Artem Berman

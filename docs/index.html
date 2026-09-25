@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epicrisis Companion — a lifetime of medical paper, on your own machine</title>
+<meta name="description" content="Self-hosted, free for you and your family. Scanned medical records become structured data: every value exactly as printed, in the language it was printed in, one click from the original page.">
+<style>
+  /* The page is drawn on the same paper as the program, so a screenshot sits in it rather
+     than on it. Every picture is framed the way this program frames what matters: a thin red
+     line and a dark red shadow under it. */
+  :root {
+    --paper: #f3f2ee; --ink: #0e0e0e; --signal: #d9502a; --deep: #7a2113;
+    --muted: #55544f; --line: #dcdad3; --faint: #e9e7e1;
+    --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.62 var(--sans); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  a { color: #8a2f1c; }
+
+  header.top { border-bottom: 4px solid var(--ink); position: sticky; top: 0; background: var(--paper); z-index: 20; }
+  header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; padding-bottom: 12px; }
+  .brand { font-weight: 700; letter-spacing: .02em; }
+  .brand small { display: block; font: 11px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  header.top nav { display: flex; gap: 8px; flex-wrap: wrap; }
+  header.top nav a { text-decoration: none; color: var(--ink); border: 1px solid var(--ink);
+    padding: 5px 12px; font: 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  header.top nav a:hover { background: var(--ink); color: var(--paper); }
+
+  /* Hero: the pitch on the left, a wall of small pictures on the right. */
+  .hero { padding: 54px 0 40px; border-bottom: 1px solid var(--line); }
+  .hero .wrap { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 46px; align-items: start; }
+  .hero h1 { font-size: clamp(30px, 4.2vw, 50px); line-height: 1.04; margin: 0 0 18px; letter-spacing: -.02em; }
+  .hero .lede { font-size: 20px; margin: 0 0 18px; }
+  .hero p { margin: 0 0 14px; }
+  .hero .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0 0; }
+  .chip { font: 11px/1.5 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+    border: 1px solid var(--ink); padding: 4px 10px; }
+  .chip.on { background: var(--ink); color: var(--paper); }
+  .thumbs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .thumbs button { padding: 0; border: 1px solid var(--signal); background: var(--paper); cursor: pointer;
+    box-shadow: 0 8px 18px rgba(122,33,19,.26), 0 2px 5px rgba(122,33,19,.22); overflow: hidden; display: block; }
+  .thumbs button:hover { box-shadow: 0 12px 26px rgba(122,33,19,.40), 0 3px 7px rgba(122,33,19,.30); }
+  .thumbs img { display: block; width: 100%; height: 168px; object-fit: cover; object-position: top center; }
+  .thumbs .caption { display: block; font: 10px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); padding: 5px 6px; text-align: left; border-top: 1px solid var(--line); background: var(--paper); }
+
+  section { padding: 54px 0; border-bottom: 1px solid var(--line); scroll-margin-top: 86px; }
+  section h2 { font-size: clamp(26px, 3.4vw, 38px); line-height: 1.08; margin: 0 0 8px; letter-spacing: -.01em; }
+  section h2 + .sub { color: var(--muted); margin: 0 0 26px; }
+  section h3 { font-size: 20px; margin: 34px 0 6px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 26px; }
+  figure { margin: 28px 0 0; }
+  figure img { display: block; width: 100%; border: 1px solid var(--signal);
+    box-shadow: 0 14px 32px rgba(122,33,19,.34), 0 3px 8px rgba(122,33,19,.28); cursor: zoom-in; }
+  figcaption { font-size: 15px; color: var(--muted); margin-top: 12px; }
+  figcaption b { color: var(--ink); }
+
+  /* The carousel: one picture at a time, scrolled by hand or by the two buttons. */
+  /* The strip is one thing, and says so: a frame around the pictures and the buttons together,
+     so that a page scrolled to the bottom of it shows a panel that ends rather than a row of
+     controls under something that stopped. */
+  .reel { position: relative; border: 1px solid var(--signal); padding: 18px 18px 14px; background: var(--paper);
+    box-shadow: 0 14px 32px rgba(122,33,19,.34), 0 3px 8px rgba(122,33,19,.28); }
+  .reel .rail { display: flex; gap: 20px; overflow-x: auto; scroll-snap-type: x mandatory;
+    scroll-behavior: smooth; padding: 6px 2px 20px; }
+  .reel .rail::-webkit-scrollbar { height: 8px; }
+  .reel .rail::-webkit-scrollbar-thumb { background: var(--faint); }
+  .reel .slide { flex: 0 0 min(760px, 84vw); scroll-snap-align: center; }
+  /* One height for every slide. The pictures are pages of different lengths, and a strip as tall
+     as the longest of them left half a screen of nothing under the short ones, with the buttons
+     adrift below that. Each is shown from the top, as much as fits; a click opens it whole. */
+  .reel .slide img { width: 100%; height: min(58vh, 560px); object-fit: contain; object-position: top center;
+    background: var(--paper);
+    border: 1px solid var(--signal); display: block; cursor: zoom-in;
+    box-shadow: 0 14px 32px rgba(122,33,19,.34), 0 3px 8px rgba(122,33,19,.28); }
+  .reel .slide h4 { margin: 14px 0 4px; font-size: 17px; }
+  .reel .slide p { margin: 0; color: var(--muted); font-size: 15px; }
+  .reel .arm { display: flex; gap: 8px; align-items: center; margin-top: 14px;
+    border-top: 1px solid var(--line); padding-top: 14px; }
+  .reel button.step { border: 2px solid var(--ink); background: var(--paper); color: var(--ink);
+    font: 12px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 9px 14px; cursor: pointer; }
+  .reel button.step:hover { background: var(--ink); color: var(--paper); }
+  .reel .count { font: 12px/1 var(--mono); color: var(--muted); letter-spacing: .1em; }
+
+  table { border-collapse: collapse; width: 100%; margin: 20px 0 0; font-size: 15px; }
+  th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--faint); font: 12px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  ul.plain { padding-left: 20px; }
+  ul.plain li { margin-bottom: 8px; }
+  pre { background: var(--faint); border-left: 3px solid var(--signal); padding: 15px 18px; overflow-x: auto;
+    font: 14px/1.6 var(--mono); }
+  code { font: .92em var(--mono); background: var(--faint); padding: .12em .35em; }
+  pre code { background: none; padding: 0; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 2px; background: var(--line);
+    border: 1px solid var(--line); margin-top: 22px; }
+  .facts div { background: var(--paper); padding: 14px 16px; }
+  .facts .n { font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
+  .facts .k { font: 11px/1.5 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .note { border: 1px solid var(--ink); padding: 18px 20px; margin-top: 26px; }
+
+  /* Who pays and who does not, side by side, with the one-pager framed like every other
+     picture on this page: a thin red line and a dark red shadow under it. */
+  /* Two scenarios, one at a time: a person reading about their own family has no use for a
+     data processing agreement, and an insurer has none for a demo command line. */
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 26px;
+    border-bottom: 1px solid var(--line); }
+  .tab { background: none; border: 0; border-bottom: 3px solid transparent; cursor: pointer;
+    padding: 8px 2px 10px; margin-right: 22px; color: var(--muted);
+    font: 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .tab:hover { color: var(--ink); }
+  .tab.on { color: var(--ink); border-bottom-color: var(--signal); }
+  .panel { padding-top: 22px; }
+  .panel .who { font: 11px/1.5 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    color: var(--signal); }
+  .panel h3 { margin: 2px 0 4px; font-size: 21px; }
+  .fine { font-size: 13px; line-height: 1.6; color: var(--muted); margin-top: 16px; }
+  /* Under both columns, the width of the panel: one line of terms belonging as much to the text
+     on the left as to the sheet on the right, which is what ties the two together. */
+  .fine.under { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .panel h4 { margin: 30px 0 4px; font-size: 17px; }
+  .panel p { margin: 10px 0 0; }
+  .panel ul { margin: 10px 0 0; padding-left: 18px; }
+  .panel li { margin-bottom: 6px; }
+  .org-cols p, .org-cols ul { max-width: 62ch; }
+  .org-cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 34px; align-items: start; }
+  .sheet-card img { width: 100%; display: block; border: 1px solid var(--signal); background: var(--paper);
+    box-shadow: 0 14px 32px rgba(122,33,19,.34), 0 3px 8px rgba(122,33,19,.28); cursor: zoom-in; }
+  .grab { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .grab a { text-decoration: none; color: var(--paper); background: var(--ink); border: 1px solid var(--ink);
+    padding: 9px 16px; font: 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .grab a:hover { background: var(--signal); border-color: var(--signal); color: var(--paper); }
+  footer { padding: 40px 0 70px; color: var(--muted); font-size: 15px; }
+  footer p { margin: 0 0 6px; }
+  footer .by { font: 12px/1.7 var(--mono); letter-spacing: .06em; }
+
+  /* A picture opened whole. */
+  dialog.lightbox { border: 0; padding: 0; background: transparent; max-width: 96vw; max-height: 96vh; }
+  dialog.lightbox::backdrop { background: rgba(14,14,14,.86); }
+  dialog.lightbox img { max-width: 96vw; max-height: 88vh; display: block; border: 1px solid var(--signal);
+    box-shadow: 0 20px 60px rgba(122,33,19,.5); }
+  dialog.lightbox .bar { display: flex; justify-content: space-between; gap: 12px; color: var(--paper);
+    font: 12px/1.6 var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 10px 2px; }
+  dialog.lightbox button { background: none; border: 1px solid var(--paper); color: var(--paper);
+    font: inherit; padding: 4px 10px; cursor: pointer; }
+
+  @media (max-width: 860px) {
+    .org-cols { grid-template-columns: 1fr; }
+    .hero .wrap { grid-template-columns: 1fr; gap: 30px; }
+    .thumbs img { height: 120px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <span class="brand">Epicrisis Companion<small>Not a medical device</small></span>
+    <nav>
+      <a href="#pictures">Pictures</a>
+      <a href="#why">Why not a chatbot</a>
+      <a href="#security">Security</a>
+      <a href="#try">Try it</a>
+      <a href="#licence">Licence</a>
+      <a href="https://github.com/bermana-net/epicrisis">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <h1>The box of paper in the cupboard, turned into something you can read.</h1>
+      <p class="lede">Thirty years of test results, discharge summaries, ultrasound reports —
+        printed by clinics that no longer exist, in countries you no longer live in, in languages
+        your current doctor does not read.</p>
+      <p><b>Epicrisis Companion turns that box into an archive on your own computer.</b> Every
+        value exactly as it was printed, in the language it was printed in, next to the reference
+        range printed beside it, one click from the original page.</p>
+      <p>You run it for yourself, then for your father, then for your grandmother — one instance,
+        one archive per person, and the archives never touch.</p>
+      <div class="chips">
+        <span class="chip on">Self-hosted</span>
+        <span class="chip">Free for your family</span>
+        <span class="chip">No account</span>
+        <span class="chip">Runs offline</span>
+        <span class="chip">RU · UK · EN · ES · EL</span>
+      </div>
+    </div>
+    <div class="thumbs" id="thumbs"></div>
+  </div>
+</div>
+
+<section id="who">
+  <div class="wrap">
+    <h2>Who it is for</h2>
+    <p class="sub">The same program, three different reasons to open it.</p>
+    <div class="cols">
+      <div>
+        <h3>For yourself</h3>
+        <p>The appointment is in an hour and the doctor asks how long your haemoglobin has been at
+          that level. Three years — and here are the eleven measurements, in the units each of the
+          three laboratories used.</p>
+      </div>
+      <div>
+        <h3>For your father with type 2 diabetes</h3>
+        <p>Fifteen years of glycated haemoglobin in one line: before it was found, the two years it
+          was bad, the year treatment started, and every year since. The picture no single form
+          contains, and the one every endocrinologist asks for.</p>
+      </div>
+      <div>
+        <h3>For your grandmother</h3>
+        <p>Her archive is small, on paper, in the language of another decade, and nobody but the
+          family will ever type it up. Twenty documents are still twenty documents you can hand
+          over as a chart instead of a plastic bag.</p>
+      </div>
+    </div>
+    <figure>
+      <img src="images/04-hba1c.png?v=3" alt="Fifteen years of HbA1c">
+      <figcaption><b>A father's diabetes, in one line.</b> The shaded band is the reference range
+        <i>printed on each form</i>, held until another form printed a different one. It steps
+        because laboratories differ — not because anything was calculated. The rows below are
+        Russian where his clinic was Russian, and English after he moved.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="pictures">
+  <div class="wrap">
+    <h2>Every page, in pictures</h2>
+    <p class="sub">All of it is the built-in demo: three archives of people who do not exist, drawn
+      as scanned forms in five languages and then transcribed, checked and indexed for real —
+      without a single model call and without anything leaving the machine.
+      Drag the strip, or use the buttons. Click a picture to open it whole.</p>
+    <div class="reel">
+      <div class="rail" id="rail"></div>
+      <div class="arm">
+        <button class="step" id="back">← Back</button>
+        <button class="step" id="next">Next →</button>
+        <span class="count" id="count"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="careful">
+  <div class="wrap">
+    <h2>The charts are careful on purpose</h2>
+    <p class="sub">Most of the work in this program is refusing to be helpful.</p>
+    <figure>
+      <img src="images/05-creatinine.png?v=3" alt="One test, two units, two charts">
+      <figcaption><b>One test, two countries, two charts.</b> Creatinine measured in µmol/L in one
+        country and mg/dL in another. Nothing is converted: the moment a number is converted it is
+        no longer the number printed on the page a doctor can ask you to show.</figcaption>
+    </figure>
+    <figure>
+      <img src="images/03-by-test.png?v=3" alt="Blood, urine and stool kept apart">
+      <figcaption><b>Blood, urine and stool are kept apart, by a tab.</b> The same printed word —
+        Protein, Glucose, Leukocytes — is a different measurement in blood and in urine, and a
+        chart that puts them on one line lies quietly for years.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="checks">
+  <div class="wrap">
+    <h2>The machine checks itself</h2>
+    <p class="sub">Models misread pages. So the archive does not trust its own reading.</p>
+    <figure>
+      <img src="images/18-review.png?v=3" alt="The page of what needs checking">
+      <figcaption>Checks that run <b>with no model at all</b>: a stored number that differs from the
+        printed one, a date nobody could make out, a corner nobody could read, and the same blood
+        draw filed three times. Copies come as a group with one already chosen — you change it only
+        if the choice was wrong. Nothing on this page is changed for you.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="languages">
+  <div class="wrap">
+    <h2>Five languages, one test</h2>
+    <p class="sub">Read and in daily use in Russian, Ukrainian, English, Spanish and Greek —
+      including Greek capitals that lose their accents, headings spaced o u t like this, and tables
+      printed sideways.</p>
+    <div class="cols">
+      <figure><img src="images/11-card-es.png?v=3" alt="A Spanish laboratory form">
+        <figcaption>The same program, a Spanish form: <i>Hemoglobina</i>, <i>Hematíes</i>,
+          mg/dL, and the laboratory's own arrow in the margin.</figcaption></figure>
+      <figure><img src="images/12-card-ru.png?v=3" alt="A Russian laboratory form">
+        <figcaption>And a Russian one: <i>Гемоглобин</i>, <i>Эритроциты</i>, мкмоль/л — the same
+          test as the English form above, kept as one test and never rewritten.</figcaption></figure>
+    </div>
+    <figure>
+      <img src="images/17-indicators.png?v=3" alt="One test, every spelling">
+      <figcaption><b>Гемоглобін, Гемоглобин, Hemoglobina, Haemoglobin, Αιμοσφαιρίνη are one test.</b>
+        A model proposes the grouping, a second and deliberately different model reads it again, a
+        reference is consulted where that is allowed — and then the person whose archive it is
+        approves it. After that the vocabulary is stable, which is what makes a fifteen-year chart
+        possible at all.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <h2>“Couldn't I just upload the files to a chatbot?”</h2>
+    <p class="sub">For one page, yes — and it will read it better than any rule. For an archive it
+      is a different job, and the difference is structural rather than a matter of prompting.</p>
+    <table>
+      <tr><th></th><th>A model reading your files</th><th>Epicrisis</th></tr>
+      <tr><td><b>Scale</b></td><td>Thousands of pages do not fit in a context window</td><td>Read once, stored, indexed; the whole archive answers in milliseconds</td></tr>
+      <tr><td><b>Repeatability</b></td><td>Ask twice, get two answers</td><td>The reading is a file on your disk; tomorrow's answer is today's</td></tr>
+      <tr><td><b>Provenance</b></td><td>A number in a chat</td><td>Every value carries its file, page and date, and links to the scan</td></tr>
+      <tr><td><b>Your corrections</b></td><td>Die with the conversation</td><td>Stored apart from the model's output, keyed to the printed line, reapplied after every re-read</td></tr>
+      <tr><td><b>Catching mistakes</b></td><td>You have to notice</td><td>Deterministic checks find them; a second, different model reads again and disagreements are shown</td></tr>
+      <tr><td><b>Units and specimens</b></td><td>Quietly converted, quietly merged</td><td>Never converted; split by unit and by specimen</td></tr>
+      <tr><td><b>Vocabulary</b></td><td>Regrouped differently every time</td><td>One vocabulary, approved once, in five languages</td></tr>
+      <tr><td><b>Several people</b></td><td>One pile</td><td>One archive per person, one index file each, by construction</td></tr>
+      <tr><td><b>With no model at all</b></td><td>Nothing works</td><td>Search, charts, index, checks and the whole dashboard</td></tr>
+    </table>
+    <div class="note">The model is used for the one thing it is genuinely better at: reading a page.
+      Everything built on top of that reading is ordinary code you can inspect — which is why this
+      archive keeps working when the models change.</div>
+  </div>
+</section>
+
+<section id="tested">
+  <div class="wrap">
+    <h2>Tested on</h2>
+    <p class="sub">Two real archives on one machine, kept by the people whose archives they are.
+      Whose they are is nobody's business, and nothing from them appears here: every picture on
+      this page comes from <code>epicrisis demo</code>, which invents its own people.</p>
+    <div class="facts">
+      <div><div class="n">479</div><div class="k">documents</div></div>
+      <div><div class="n">5 355</div><div class="k">values, as printed</div></div>
+      <div><div class="n">1989–2026</div><div class="k">years covered</div></div>
+      <div><div class="n">5</div><div class="k">languages</div></div>
+      <div><div class="n">200+</div><div class="k">institutions on the forms</div></div>
+      <div><div class="n">492</div><div class="k">approved test groups</div></div>
+      <div><div class="n">292</div><div class="k">tests, no network, no model</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap">
+    <h2>Your archive stays yours</h2>
+    <p class="sub">The whole design assumes the machine is yours and the network is not.</p>
+    <div class="cols">
+      <div>
+        <h3>On the machine</h3>
+        <ul class="plain">
+          <li><b>Self-hosted.</b> Your computer or your own server. No account, no service, no telemetry.</li>
+          <li><b>The dashboard listens on <code>127.0.0.1</code> only.</b> From anywhere else, through an SSH tunnel.</li>
+          <li><b>Your scans are read-only.</b> Nothing is copied, moved or renamed. Everything derived lives under <code>data/</code> and can be deleted and rebuilt from scratch.</li>
+          <li><b>Each person is a separate database.</b> A folder is one owner's; two owners' folders may not contain one another; ids are random, because folder names carry surnames.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Before anything is sent to a model</h3>
+        <ul class="plain">
+          <li><b>A one-time written consent</b>, on a page that shows you exactly what would be sent. Change the notice and it asks again.</li>
+          <li><b>Your own key or subscription</b>, one isolated call per document, carrying that document's pages and nothing else.</li>
+          <li><b>The steps that need no model never ask</b> — inventory, validation, index, search and every chart.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>If you let an assistant read it over the network</h3>
+        <ul class="plain">
+          <li><b>Read-only tools only.</b> Nothing writes, nothing runs, nothing reads a file outside the index.</li>
+          <li><b>An unguessable secret path.</b> Without it the server answers as though nothing were there.</li>
+          <li><b>A private tunnel</b> (Tailscale Funnel) that admits only the connector's own network.</li>
+          <li><b>A six-digit code from your authenticator (RFC 6238).</b> <code>unlock</code> returns a pass good for four hours; every tool refuses without it; <code>lock</code> ends it early. The secret behind that code is generated on your server, read once into your phone, and never travels through a conversation.</li>
+          <li><b>An access log</b> of time, address, tool name and whether the call was let through — never the secret, never the question, never the answer. A log of a medical archive that holds the questions is a second copy of the archive.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note">A secret path and a private tunnel say <i>where</i> a request came from and
+      nothing at all about <i>who</i> sent it. The code from a phone is the only part a stranger
+      cannot copy out of an address bar.</div>
+    <figure>
+      <img src="images/19-status.png?v=3" alt="Three archives and the network lock">
+      <figcaption>Three archives on one server, each at its own stage of the pipeline, and below
+        them the read-only network tools with the state of the lock that guards them.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="licence">
+  <div class="wrap">
+    <h2>Two ways to use it</h2>
+    <p class="sub">Which of the two you are is written into the licence itself, not promised on a
+      page that can be edited later.</p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab on" role="tab" id="tab-mine" aria-controls="panel-mine" aria-selected="true">Private use</button>
+      <button class="tab" role="tab" id="tab-org" aria-controls="panel-org" aria-selected="false">Organisations</button>
+    </div>
+
+    <div class="panel" id="panel-mine" role="tabpanel" aria-labelledby="tab-mine">
+      <div class="who">For you and your family</div>
+      <h3>Free, for good</h3>
+      <p>Keeping and reading medical records — your own, your household's, and those of relatives
+        or friends you help without being paid — costs nothing and always will. So does reading the
+        code, changing it, publishing your changes and running it to see what it does.</p>
+      <p><b>You run it yourself, and you use it at your own risk.</b> It is provided as is, with no
+        warranty of any kind: it is not a medical device, it does not say whether a value is normal,
+        and a transcription from a scan can be wrong — which is why every value is one click from
+        the page it came from. The page, not the program, is the authority.</p>
+      <p class="fine"><a href="https://github.com/bermana-net/epicrisis/blob/main/LICENSE">Business
+        Source License 1.1</a> &middot; free production use for a person keeping records of their own,
+        their household's, or of relatives and friends they help without being paid &middot; every
+        version becomes Apache 2.0 four years after it is published</p>
+
+    </div>
+
+    <div class="panel" id="panel-org" role="tabpanel" aria-labelledby="tab-org" hidden>
+      <div class="who">For organisations</div>
+      <h3>A commercial licence</h3>
+      <div class="org-cols">
+        <div>
+          <p>A clinic, a hospital, a laboratory, an insurer, an employer, a research institution —
+            and anyone offering this program, or what it does, to other people as a product or a
+            service — needs a commercial licence. It carries:</p>
+          <ul>
+            <li>the right to run it in production, for your own people and your own clients;</li>
+            <li>a data processing agreement under Article 28 GDPR, and answers to a security review;</li>
+            <li>releases, and a named person to write to when something is wrong;</li>
+            <li>terms of liability a business can sign — the free version is provided as is, and
+              that is the honest position for something given away.</li>
+          </ul>
+          <p>The first teams this is built for are <b>medical underwriting and claims</b>: a full
+            case history before the decision instead of a stack of PDFs, when a value first left the
+            range printed on its own form, and the scan behind every number. Self-hosted, inside
+            your own perimeter. It extracts and cites; it does not score, price or decide.</p>
+          <p><b>Write to <a href="mailto:artem.berman@gmail.com">artem.berman@gmail.com</a></b> and
+            say what your organisation does and how many people would use it.</p>
+        </div>
+        <div class="sheet-card">
+          <a href="epicrisis-for-underwriting.pdf" target="_blank" rel="noopener">
+            <img src="images/one-pager.png?v=1" alt="One page: Epicrisis for underwriting and claims teams"></a>
+          <div class="grab">
+            <a href="epicrisis-for-underwriting.pdf" download>Download the PDF &mdash; one page, A4</a>
+          </div>
+        </div>
+      </div>
+      <p class="fine under"><a href="https://github.com/bermana-net/epicrisis/blob/main/LICENSE">Business
+        Source License 1.1</a> &middot; running it in production by or for an organisation is not
+        covered by the free grant and needs a <a href="https://github.com/bermana-net/epicrisis/blob/main/COMMERCIAL.md">commercial
+        licence</a> &middot; reading the code, changing it and evaluating it are free for everyone
+        &middot; every version becomes Apache 2.0 four years after it is published</p>
+    </div>
+  </div>
+</section>
+
+<section id="try">
+  <div class="wrap">
+    <h2>Try it without a page of your own</h2>
+    <p class="sub">The same four commands whichever of the two you are: a person about to type up a
+      parent's folder, or a team looking at this before it goes anywhere near a real case.</p>
+    <p>Python 3.14 and <a href="https://docs.astral.sh/uv/">uv</a>.</p>
+<pre><code>git clone https://github.com/bermana-net/epicrisis &amp;&amp; cd epicrisis
+uv sync
+uv run epicrisis demo --into /tmp/demo        # three invented archives, no model called
+uv run epicrisis serve --data-dir /tmp/demo/data</code></pre>
+    <p>That demo is everything on this page: three lives that never happened — Vera, her father
+      Anders, her grandmother Zoya — drawn as scanned forms in five languages, transcribed, checked
+      and indexed for real, with not one call leaving your machine.</p>
+    <p>Then, when you are ready:</p>
+<pre><code>uv run epicrisis sources add ~/scans --owner "Your name"
+uv run epicrisis update          # inventory → classify → extract → validate → index
+uv run epicrisis serve</code></pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>Your data, your machine, your call.</p>
+    <p class="by">Copyright © 2026 Artem Berman<br>
+      <a href="https://www.bermana.net" target="_blank" rel="noopener">www.bermana.net</a></p>
+  </div>
+</footer>
+
+<dialog class="lightbox" id="box">
+  <div class="bar"><span id="boxname"></span><button id="boxclose">Close</button></div>
+  <img id="boximg" alt="">
+</dialog>
+
+<script>
+const V = "?v=3";  // bumped when the pictures are taken again
+const SHOTS = [
+  ["01-timeline", "Timeline", "Every document under the date printed on it, newest first, with the year bars above. Laboratory panels, imaging reports, consultations — and the search over everything at the top."],
+  ["02-lanes", "Timeline by kind", "The same archive as lanes: one row per kind of document, one mark per document. It answers what a list cannot — when this stopped and that started."],
+  ["03-by-test", "Timeline by test", "One row per test, one mark per measurement, the last value on the right. Blood, urine and stool are separate tabs."],
+  ["04-hba1c", "One test, fifteen years", "A father's glycated haemoglobin from before his diabetes was found to the years after it was treated. The band is the range printed on each form."],
+  ["05-creatinine", "One test, two units", "Measured in µmol/L in one country and mg/dL in another: two charts, never a conversion."],
+  ["06-ferritin", "A story with a beginning and an end", "Ferritin falling for three years, treated, and coming back — with the table of every measurement under the drawing."],
+  ["07-vitamin-d", "A test that follows the calendar", "Vitamin D, low in February and high in August, year after year. Nothing here knows that; the archive only draws what the forms said."],
+  ["08-urine-protein", "Values that are words", "“Not detected”, “traces”, “0.033”. Nothing to plot, so nothing is plotted — and the page says so instead of inventing a number."],
+  ["09-documents", "Documents", "Everything in the open archive: the file, the pages, the kind, the institution, how many values were read from it. Copies are grouped, so one blood draw filed three times counts once."],
+  ["10-card-en", "A document card", "Names as printed, values as printed, units, the range the laboratory printed beside each value, and the mark it put in the margin. The banner says plainly that no person has checked this transcription yet."],
+  ["11-card-es", "The same card, a Spanish form", "Hemoglobina, Hematíes, mg/dL — a different laboratory in a different country, kept exactly as it printed itself."],
+  ["12-card-ru", "The same card, a Russian form", "Гемоглобин, Эритроциты, мкмоль/л. Nothing is translated, normalised or converted on the way in."],
+  ["13-card-el", "The same card, a Greek form", "Αιμοσφαιρίνη, Ερυθρά, g/dL — including a heading in capitals, which in Greek loses its accents and used to slip past the reader."],
+  ["14-scan", "The original page", "The scan itself, served from your own disk. Every value, card and finding is one click from the page behind it."],
+  ["15-search", "Search", "Text, titles, institutions and the printed names of values, with the line each was found on."],
+  ["16-search-ru", "Search, across alphabets", "A Russian word finds the forms that printed it, matched across Ukrainian and Russian letter differences and across accents."],
+  ["17-indicators", "Indicators", "Five spellings of one test, grouped by a model, read again by a second, and approved by the person whose archive it is."],
+  ["18-review", "To check", "What the checks found: a number that disagrees with the page, a date nobody could read, an unreadable corner, and one blood draw filed three times."],
+  ["19-status", "Status", "Three archives, five steps each, and the read-only network tools with the lock that guards them. Sources are read-only."],
+  ["20-settings", "Settings", "Which model does which reading: a cheap one for every page, a strong one wherever a check failed, and a third, deliberately different one to disagree with both."],
+  ["21-ask", "Ask", "A question about your own archive, answered by an isolated model call that can read this archive and nothing else. Shown here in its default state: off."],
+  ["22-card-words", "A card that is words", "A consultation: the text as printed, the diagnoses as printed, the medications as printed. Nothing summarised, nothing inferred."],
+];
+const PICK = ["04-hba1c", "10-card-en", "03-by-test", "05-creatinine",
+              "18-review", "19-status", "11-card-es", "15-search"];
+
+const rail = document.getElementById("rail");
+for (const [file, title, caption] of SHOTS) {
+  const slide = document.createElement("div");
+  slide.className = "slide";
+  slide.innerHTML = `<img src="images/${file}.png${V}" alt="${title}" loading="lazy">
+    <h4>${title}</h4><p>${caption}</p>`;
+  rail.appendChild(slide);
+}
+const thumbs = document.getElementById("thumbs");
+for (const name of PICK) {
+  const [file, title] = SHOTS.find(s => s[0] === name);
+  const button = document.createElement("button");
+  button.innerHTML = `<img src="images/${file}.png${V}" alt="${title}" loading="lazy">
+    <span class="caption">${title}</span>`;
+  button.addEventListener("click", () => open_box(file, title));
+  thumbs.appendChild(button);
+}
+
+const count = document.getElementById("count");
+const at = () => Math.round(rail.scrollLeft / (rail.firstElementChild.offsetWidth + 20));
+const say = () => count.textContent = `${Math.min(at() + 1, SHOTS.length)} / ${SHOTS.length}`;
+const step = way => rail.scrollBy({left: way * (rail.firstElementChild.offsetWidth + 20)});
+document.getElementById("next").addEventListener("click", () => step(1));
+document.getElementById("back").addEventListener("click", () => step(-1));
+rail.addEventListener("scroll", say, {passive: true});
+say();
+
+(() => {
+  // Both panels are in the page; the script hides one. A browser with no JavaScript shows both,
+  // which is longer but never empty.
+  const tabs = {"tab-mine": "panel-mine", "tab-org": "panel-org"};
+  const show = (which) => {
+    for (const [tab, panel] of Object.entries(tabs)) {
+      const on = tab === which;
+      document.getElementById(tab).classList.toggle("on", on);
+      document.getElementById(tab).setAttribute("aria-selected", String(on));
+      document.getElementById(panel).hidden = !on;
+    }
+  };
+  for (const tab of Object.keys(tabs)) {
+    document.getElementById(tab).addEventListener("click", () => show(tab));
+  }
+  const fromHash = () => {
+    if (location.hash === "#for-organisations") { show("tab-org"); document.getElementById("licence").scrollIntoView(); }
+  };
+  addEventListener("hashchange", fromHash);
+  show("tab-mine");
+  fromHash();
+})();
+
+const box = document.getElementById("box");
+const boximg = document.getElementById("boximg");
+const boxname = document.getElementById("boxname");
+function open_box(file, title) {
+  boximg.src = `images/${file}.png${V}`;
+  boximg.alt = title;
+  boxname.textContent = title;
+  box.showModal();
+}
+document.addEventListener("click", event => {
+  const picture = event.target.closest("figure img, .slide img");
+  if (!picture) return;
+  const file = picture.getAttribute("src").split("/").pop().split("?")[0].replace(".png", "");
+  open_box(file, picture.alt);
+});
+document.getElementById("boxclose").addEventListener("click", () => box.close());
+box.addEventListener("click", event => { if (event.target === box) box.close(); });
+</script>
+</body>
+</html>

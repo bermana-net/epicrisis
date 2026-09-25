@@ -1,0 +1,4 @@
+#!/bin/sh
+# Nothing out of an archive, and no secret of this machine, goes to a remote.
+# Turn it on once:  git config core.hooksPath .githooks
+exec .venv/bin/python tools/nothing-of-yours.py --repo . --data-dir data

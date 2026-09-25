@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not a page · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page">
+
+  {% include "_header.html" %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>That is not an address of this archive</h1>
+    <p class="empty">Something in the address could not be read{% if wrong %}: <span class="mono">{{ wrong|join(", ") }}</span>{% endif %}. Nothing was looked for, so this says nothing about what the archive holds.</p>
+    <p><a class="btn" href="/">The timeline</a></p>
+  </section>
+
+</div>
+</body>
+</html>

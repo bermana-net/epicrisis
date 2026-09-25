@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indicators · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page indicators">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "indicators" %}
+  {% include "_header.html" %}
+
+  {% if missing %}
+  {{ nothing("Indicators") }}
+  {% else %}
+  <section class="rule" style="padding-top: 18px;">
+    <h1>Indicators</h1>
+    <p class="lead caps">The same test is printed differently by every laboratory. An indicator puts those spellings under one label, so a history can be asked for once. Printed names, units and ranges never change. A model fills these groups where it is sure and marks them as not looked at yet: your part is to read them and take out what does not belong. Where it is unsure, it leaves a spelling waiting instead.</p>
+    <div class="docs-summary caps">
+      <span>{{ printed_total }} printed names</span>
+      <span>{{ rows|length }} indicators shown</span>
+      <span{% if waiting_total %} class="signal"{% endif %}>{{ waiting_total }} names in no indicator</span>
+      <span{% if to_review %} class="signal"{% endif %}>{{ to_review }} not looked at yet</span>
+      <span{% if related_loose %} class="signal"{% endif %}>{{ related_loose }} lookalikes in no indicator</span>
+      {% if checked %}<span{% if disagreed %} class="signal"{% endif %}>{{ disagreed }} of {{ checked }} groups a second reader disagrees with</span>{% endif %}
+      <form method="get" action="/indicators" class="find">
+        <input name="find" value="{{ find }}" placeholder="Find" autocomplete="off">
+        <select name="show">
+          {% for value, title in [("all", "All indicators"), ("to_review", "Not looked at yet"), ("disagreed", "Two readers disagree")] %}
+          <option value="{{ value }}"{% if show == value %} selected{% endif %}>{{ title }}</option>
+          {% endfor %}
+        </select>
+        <select name="status">
+          {% for value, title in [("all", "All"), ("approved", "Approved"), ("proposed", "Proposed")] %}
+          <option value="{{ value }}"{% if status == value %} selected{% endif %}>{{ title }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn small" type="submit">Show</button>
+      </form>
+    </div>
+  </section>
+
+  <details class="docs-year">
+    <summary><span class="check-title">New indicator</span></summary>
+    <form class="indicator-form" method="post" action="/indicators">
+      <input type="hidden" name="action" value="save">
+      <input name="label" placeholder="Label, for instance Creatinine" required>
+      <textarea name="names" rows="3" placeholder="Printed names, one per line"></textarea>
+      <label class="caps"><input type="radio" name="status" value="approved" checked> approved</label>
+      <label class="caps"><input type="radio" name="status" value="proposed"> proposed</label>
+      <button class="btn small" type="submit">Add</button>
+    </form>
+  </details>
+
+  {% for row in rows %}
+  {% set indicator = row.indicator %}
+  <details class="docs-year indicator{% if indicator.status == 'proposed' %} is-proposed{% endif %}">
+    <summary>
+      <span class="check-title">{{ indicator.label }}</span>
+      <span class="caps muted">{{ row.values_count }} values{% if row.materials|length > 1 %} &middot; <span class="signal">{{ row.materials|join(" and ") }}</span>{% elif row.materials %} &middot; {{ row.materials[0] }}{% endif %} &middot; {{ row.spellings|length }} spellings{% if row.proposed %} &middot; <span class="signal">{{ row.proposed|length }} to decide</span>{% endif %}{% if row.check and not row.check.agrees %} &middot; <span class="signal">a second reader disagrees</span>{% elif row.check %} &middot; a second reader agrees{% endif %}{% if not indicator.reviewed %} &middot; <span class="signal">not looked at yet</span>{% endif %} &middot; {{ indicator.status }}{% if indicator.source == "model" %} &middot; by a model{% endif %}</span>
+    </summary>
+
+    {% if row.check and not row.check.agrees %}
+    {# A second model read this group on its own and would leave these names out. It is not
+       right by being second; it is worth reading because the two readings differ. #}
+    <div class="card-findings">
+      <span class="caps signal">A second reader ({{ row.check.by }}) would not keep {{ row.check.does_not_belong | length }} of these spellings here</span>
+      <ul>
+        {% for item in row.check.does_not_belong %}
+        <li><b>{{ item.name }}</b> &mdash; {{ item.why }}</li>
+        {% endfor %}
+      </ul>
+      <p class="caps muted">Take a spelling out below if you agree, or leave the group as it is. Nothing here has been changed.</p>
+    </div>
+    {% endif %}
+
+    {# Why this group is in use, or why it is still waiting, said where the group is. #}
+    {% if indicator.note %}<p class="caps muted indicator-note">{{ indicator.note }}</p>{% endif %}
+
+    {% if row.proposed %}
+    <div class="proposed-names">
+      <span class="caps">Suggested spellings</span>
+      {% for item in row.proposed %}
+      <div class="proposed-row">
+        <span>{{ item.name }} <span class="caps muted">{{ item.times }} values{% if item.units %} &middot; {{ item.units|join(", ") }}{% endif %}</span></span>
+        <span class="proposed-actions">
+          {% for action, title in [("accept", "Add"), ("reject", "Not this")] %}
+          <form method="post" action="/indicators">
+            <input type="hidden" name="action" value="{{ action }}">
+            <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
+            <input type="hidden" name="names" value="{{ item.folded }}">
+            <button class="btn small" type="submit">{{ title }}</button>
+          </form>
+          {% endfor %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="spellings">
+      {% for item in row.spellings %}
+      <span class="spelling{% if item.elsewhere %} elsewhere{% endif %}"{% if item.elsewhere %} title="This archive has never printed this spelling; it is shown in the folded form the index keeps"{% endif %}>{{ item.name }} <span class="caps muted">{% if item.elsewhere %}not in this archive{% else %}{{ item.times }}{% endif %}</span>
+        <form method="post" action="/indicators">
+          <input type="hidden" name="action" value="drop">
+          <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
+          <input type="hidden" name="spelling" value="{{ item.folded }}">
+          <button type="submit" title="Take this spelling out of the indicator">&times;</button>
+        </form>
+      </span>
+      {% endfor %}
+      {% if not indicator.reviewed %}
+      <form method="post" action="/indicators" class="reviewed-form">
+        <input type="hidden" name="action" value="reviewed">
+        <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
+        <button class="btn small" type="submit">Looks right</button>
+      </form>
+      {% endif %}
+    </div>
+
+    {% if row.related %}
+    <details class="related">
+      <summary class="caps">{{ row.related|length }} names in the archive share a word with this one</summary>
+      <div class="related-list">
+        {% for item in row.related %}
+        <div class="related-row">
+          <span>{{ item.name }} <span class="caps muted">{{ item.times }} values &middot; {% if item.in_label %}in {{ item.in_label }}{% else %}<span class="signal">in no indicator</span>{% endif %}</span></span>
+          <form method="post" action="/indicators">
+            <input type="hidden" name="action" value="assign">
+            <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
+            <input type="hidden" name="spelling" value="{{ item.folded }}">
+            <button class="btn small" type="submit">Put here</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+
+    <form class="indicator-form" method="post" action="/indicators">
+      <input type="hidden" name="action" value="save">
+      <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
+      <input name="label" value="{{ indicator.label }}" required>
+      <textarea name="names" rows="{{ [row.spellings|length + 1, 12]|min }}">{% for item in row.spellings %}{{ item.folded }}
+{% endfor %}</textarea>
+      <div class="indicator-actions">
+        {% for value in ["approved", "proposed"] %}
+        <label class="caps"><input type="radio" name="status" value="{{ value }}"{% if indicator.status == value %} checked{% endif %}> {{ value }}</label>
+        {% endfor %}
+        <button class="btn small" type="submit">Save</button>
+        <button class="btn small" type="submit" name="action" value="delete">Delete</button>
+      </div>
+
+    </form>
+  </details>
+  {% endfor %}
+
+  {% if waiting %}
+  <details class="docs-year">
+    <summary>
+      <span class="check-title">Names in no indicator</span>
+      <span class="caps muted">{{ waiting_total }} names, most used first</span>
+    </summary>
+    <div class="doc-table">
+      <div class="doc-row head caps waiting-row"><span>Printed name</span><span>Values</span><span>Units</span><span>Years</span><span>Put into</span></div>
+      {% for item in waiting %}
+      <div class="doc-row waiting-row">
+        <span>{{ item.name }}</span>
+        <span class="mono">{{ item.times }}</span>
+        <span class="caps muted">{{ item.units|join(", ") }}</span>
+        <span class="caps muted">{{ (item.first_date or "")[:4] }}{% if item.last_date and item.last_date[:4] != (item.first_date or "")[:4] %}&ndash;{{ item.last_date[:4] }}{% endif %}</span>
+        <span>
+          <form method="post" action="/indicators" class="assign">
+            <input type="hidden" name="action" value="assign">
+            <input type="hidden" name="spelling" value="{{ item.folded }}">
+            <input name="indicator_id" list="every-indicator" required placeholder="Indicator" autocomplete="off" aria-label="Indicator to put this spelling in">
+            <button class="btn small" type="submit">Put</button>
+          </form>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+  <div class="feed-foot">
+    <span class="caps muted">Showing {{ rows | length }} of {{ rows_total }} groups</span>
+    <span class="feed-more">
+      {% set query = "status=" ~ status ~ "&show=" ~ show ~ "&find=" ~ find %}
+      {% if skip %}<a class="caps" href="/indicators?{{ query }}&skip={{ [skip - page_size, 0] | max }}">&larr; back</a>{% endif %}
+      {% if skip + (rows | length) < rows_total %}<a class="caps" href="/indicators?{{ query }}&skip={{ skip + page_size }}">next {{ page_size }} &rarr;</a>{% endif %}
+    </span>
+  </div>
+
+  <datalist id="every-indicator">
+    {% for indicator in all_indicators %}<option value="{{ indicator.id }}">{{ indicator.label }}</option>{% endfor %}
+  </datalist>
+
+  {% endif %}
+</div>
+</body>
+</html>

@@ -1,0 +1,101 @@
+{# A page appears in the menu when it has something to show. A new instance offers one thing to
+   do; the rest arrive as the documents do. Typing an address still reaches any page, and the
+   page then says which step is missing. #}
+{% set here = stage() %}
+{% set all_pages = [
+  ("/status", "status", "Archive status", "Archives and progress", "always"),
+  ("/documents", "documents", "Documents", "What each page is", "scanned"),
+  ("/consent", "consent", "Model processing", "What is sent and where", "scanned"),
+  ("/", "timeline", "Timeline", "The archive by its own dates", "read"),
+  ("/search", "search", "Search", "One line over every document", "read"),
+  ("/review", "review", "To check", "Findings of the validation", "read"),
+  ("/ask", "ask", "Ask", "Questions about the archive", "read"),
+  ("/indicators", "indicators", "Indicators", "Printed names grouped by test", "read"),
+  ("/settings", "settings", "Settings", "What this instance allows", "scanned"),
+] %}
+{# A brand new instance offers the one thing there is to do, because nine pages that all say
+   "nothing yet" is not an interface. From the moment a folder is added the menu is whole and
+   stays whole: with two archives on one server, a menu that shrank when a person switched to
+   the one not read yet would read as the interface breaking. A page with nothing to show says
+   so where it stands. #}
+{% set reached = {"no_archive": ["always"],
+                  "scanning": ["always", "scanned", "read"],
+                  "unread": ["always", "scanned", "read"],
+                  "ready": ["always", "scanned", "read"]} %}
+{# Whatever page a person typed their way to stays in the menu, so they can see where they are
+   and get back out of it. #}
+{% set menu = [] %}
+{% for page in all_pages %}{% if page[4] in reached[here.state] or page[1] == current %}{% set _ = menu.append(page) %}{% endif %}{% endfor %}
+{% set who = owners() %}
+<header class="topbar">
+  {# The name, and under it in small letters what this is not. It is a standing statement about
+     the program, not a label on the bar, and it belongs with the name it qualifies. #}
+  <span class="brand-block">
+    <a class="brand" href="/">Epicrisis Companion</a>
+    <small class="caps not-a-device">Not a medical device</small>
+  </span>
+  <div class="topbar-right">
+    <button type="button" class="menu-button" id="menu-button" aria-label="Menu" aria-expanded="false" aria-controls="menu-panel">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+  {% if who.whose %}
+  <div class="owner-line">
+    {% if who.all | length > 1 %}
+    {# One control whatever the number of archives. Names as buttons fit two or three and fill
+       the whole bar at five, and the bar is not where a person should be choosing anything. #}
+    <form class="owner-pick caps" method="post" action="/owner">
+      {# Switching whose archive is shown does not change which page is being read: the same
+         question is simply asked of somebody else, and a page with nothing to show for them
+         says so where it stands. #}
+      <input type="hidden" name="back" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+      <label for="owner-pick">Archive of</label>
+      <select id="owner-pick" name="source">
+        {% for item in who.all %}
+        <option value="{{ item.id }}"{% if item.id == who.active_id %} selected{% endif %}>{{ item.whose }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn small" type="submit" id="owner-go">Show</button>
+    </form>
+    {% else %}
+    <span class="caps owner-name" title="Whose archive this is">Archive of <b>{{ who.whose }}</b></span>
+    {% endif %}
+  </div>
+  {% endif %}
+  <nav class="menu-panel" id="menu-panel" aria-label="Pages" hidden>
+    {% for href, key, title, hint, needs in menu %}
+    <a href="{{ href }}"{% if current == key %} aria-current="page"{% endif %}><span>{{ title }}</span><small>{{ hint }}</small></a>
+    {% endfor %}
+  </nav>
+</header>
+<script>
+  (() => {
+    // Choosing a name is the whole act; pressing a button after it is a second one. The button
+    // stays in the page for anyone without this script, and steps aside when it runs.
+    const pick = document.getElementById("owner-pick");
+    const go = document.getElementById("owner-go");
+    if (pick && go) {
+      go.hidden = true;
+      pick.addEventListener("change", () => pick.form.submit());
+    }
+  })();
+  (() => {
+    const button = document.getElementById("menu-button");
+    const panel = document.getElementById("menu-panel");
+    const setOpen = (open) => {
+      button.setAttribute("aria-expanded", String(open));
+      panel.hidden = !open;
+      if (open) panel.querySelector("a").focus();
+    };
+    button.addEventListener("click", () => setOpen(panel.hidden));
+    document.addEventListener("click", (event) => {
+      if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) setOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !panel.hidden) {
+        setOpen(false);
+        button.focus();
+      }
+    });
+  })();
+</script>

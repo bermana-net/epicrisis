@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page">
+
+  {% set current = "status" %}
+  {% include "_header.html" %}
+  <div class="status-meta caps"><span class="live">{{ host }}</span><span>Updated {{ updated }}</span></div>
+  {% if not model_consent %}
+  <div class="notice caps"><span>Model processing is off.</span><a href="/consent">See where page data would go and turn it on</a></div>
+  {% endif %}
+  {% if forgotten %}
+  <div class="notice caps">{% if forgotten == "nothing" %}<span>There was nothing read from that archive to put aside.</span>{% else %}<span>The reading was moved aside. It is at <span class="mono">{{ forgotten }}</span> and nothing was deleted.</span><a href="/status">Read new documents below to start over</a>{% endif %}</div>
+  {% endif %}
+
+  <section class="rule hero">
+    <h1>Archive<br>status</h1>
+    {# Whose numbers these are, said where they stand: the table under them lists every archive
+       on this server, and a total of several people is a number about nobody. #}
+    {% if whose_totals %}<p class="caps muted">Of the archive of {{ whose_totals }}</p>{% endif %}
+    <div class="stats">
+      <div class="stat"><span class="caps">Files</span><span class="value">{{ totals.files|thousands }}</span></div>
+      <div class="stat"><span class="caps">Pages</span><span class="value">{{ totals.pages|thousands }}</span></div>
+      <div class="stat signal"><span class="caps">Vision pass pages</span><span class="value">{{ totals.vision_pages|thousands }}</span></div>
+      <div class="stat"><span class="caps">Scanned pages, no text</span><span class="value">{{ totals.pages_without_text|thousands }}</span></div>
+      <div class="stat"><span class="caps">Duplicates</span><span class="value">{{ totals.duplicates|thousands }}</span></div>
+      <div class="stat"><span class="caps">Damaged</span><span class="value">{{ totals.damaged|thousands }}</span></div>
+    </div>
+  </section>
+
+  {# The one thing to do next, said before the numbers, because a person who has just added a
+     folder has no idea that reading it is a separate step they have to ask for. #}
+  {% set here = stage() %}
+  {% if here.state != "ready" or update_running %}
+  <section class="rule next-step">
+    {% if here.state == "no_archive" %}
+    <h2>Next: add a folder of documents</h2>
+    <p>Point this at a folder on the server and it reads everything under it &mdash; scans, photographs, spreadsheets, documents in any language. The folder itself is never changed.</p>
+    <p><a class="btn" href="#add-form">Add an archive</a></p>
+    {% elif here.state == "scanning" %}
+    <h2>Next: wait for the folder to be looked through</h2>
+    <p>Every file is being opened to see what it is and how many pages it holds. No model is involved in this and nothing leaves the server.</p>
+    {% elif update_running %}
+    <h2>The documents are being read</h2>
+    <p>This takes a while &mdash; minutes for a few files, hours for decades of them &mdash; and it carries on if you close this page. The bars below move as it goes.</p>
+    {% elif not model_consent %}
+    <h2>Next: decide about the model</h2>
+    <p>The documents are found but not read. Reading them means sending each page to a model: that is the step that turns scans into values, dates and text you can search. Nothing is sent until you have read what goes and agreed to it.</p>
+    <p><a class="btn" href="/consent">See what would be sent</a></p>
+    {% elif not model_ready %}
+    <h2>The program that talks to the model is missing</h2>
+    <p>The documents are found, but this server has no way to reach a model, so they cannot be read yet.</p>
+    {% else %}
+    <h2>Next: read the documents</h2>
+    <p>{{ everyone.pages|thousands }} pages are waiting{% if everyone.archives > 1 %}, across all {{ everyone.archives }} archives on this server{% endif %}. Reading them sends each page to a model and is the slowest and costliest step there is &mdash; minutes for a few files, hours for decades of them. It can be stopped and continued; what is already read is skipped.</p>
+    <form method="post" action="/update"><button class="btn" type="submit">Read the documents</button></form>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section class="rule sources">
+    <div class="table">
+      <div class="row head caps">
+        <span>Source (read only)</span>
+        <span>Files</span>
+        {% for step in steps %}<span><b>{{ "%02d"|format(loop.index) }}</b> {{ step }}</span>{% endfor %}
+      </div>
+
+      {% for row in rows %}
+      <div class="row source" data-source="{{ row.id }}">
+        <div class="who">
+          {# "Active" rather than "open": one archive is the one every other page answers for,
+             and a folder is not a thing that opens and closes. Renaming sits beside the name
+             itself, because that is where a person looks for it. #}
+          {# The name, a quiet way to change it, and — hard against the right edge — which of
+             the archives every other page is answering for. #}
+          <span class="name">{{ row.whose }}
+            <details class="rename">
+              <summary class="caps" title="Change the name this archive is shown under">Rename</summary>
+              <form method="post" action="/owners/{{ row.id }}/name">
+                <input name="owner" value="{{ row.owner }}" placeholder="A name for this archive" aria-label="Whose archive" required>
+                <button class="btn small" type="submit">Save the name</button>
+              </form>
+            </details>
+          </span>
+          {% if row.active %}<span class="caps active-badge" title="Every other page answers for this archive">active</span>{% endif %}
+          <span class="path mono">{{ row.path }}</span>
+          <span class="caps note{% if row.alert %} alert{% endif %}">
+            {% if row.note %}{{ row.note }} &middot; {% endif %}
+            {% if row.can_rescan %}<form class="rescan" method="post" action="/sources/{{ row.id }}/inventory"><button type="submit">Rescan</button></form>{% else %}Scanning{% endif %}
+          </span>
+          <details class="fix-row">
+            <summary class="caps">This archive</summary>
+            <div class="owner-row">
+              <form method="post" action="/owners/{{ row.id }}/remove">
+                <button class="btn small" type="submit" title="Takes this archive off the list. The folder and everything read from it stay on disk.">Take off the list</button>
+              </form>
+            </div>
+            <div class="owner-row start-again">
+              <form method="post" action="/sources/{{ row.id }}/forget">
+                <label class="check caps"><input type="checkbox" name="understood" value="yes" required> Read every document again from nothing</label>
+                <button class="btn small" type="submit" title="The folder is not touched. The inventory, the transcriptions, the checks and the index are moved aside into a dated folder, and the reading steps start over. Your corrections stay and apply again.">Start again</button>
+              </form>
+              <p class="caps muted">The folder and your corrections stay. What the models read is moved aside, not deleted, and the reading starts over &mdash; the slowest and costliest step there is.</p>
+            </div>
+          </details>
+        </div>
+        <span class="files">{% if row.files is not none %}{{ row.files|thousands }}{% else %}&ndash;{% endif %}</span>
+        {% for step in row.steps %}
+        <div class="step" data-step="{{ loop.index0 }}" title="{{ step.title }}">
+          {# Every bar gets a label slot, so labelled and bare bars line up. #}
+          <span class="caps label{% if step.state in ['running', 'failed'] %} signal{% endif %}">{{ step.label or " " }}</span>
+          <div class="bar {{ step.state }}">{% if step.state in ["running", "partial"] %}<span style="width: {{ step.percent }}%"></span>{% endif %}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty">No folders yet. Add a folder on this server below; its inventory starts right away.</div>
+      {% endfor %}
+    </div>
+    <div class="later caps update-row">
+      <span>Steps 04&ndash;05 run without a model.</span>
+      {% if update_running %}<span class="signal">Processing new files&hellip;</span>
+      {% elif not model_consent %}<a class="btn small" href="/consent">Allow model processing first</a>
+      {% elif not model_ready %}<span class="alert">The program that talks to the model is not installed on this server, so the reading steps cannot run.</span>
+      {% else %}<form method="post" action="/update"><button class="btn small" type="submit" title="Inventory, classify, extract, date search, validate and index for all archives. What is done is skipped.">Read new documents</button></form>{% endif %}
+    </div>
+  </section>
+
+  {% if mcp %}
+  <section class="rule card-section mcp-row">
+    <h2>Archive over the network</h2>
+    <p class="caps muted">The read-only tools, reachable by an assistant. Times are this server's.</p>
+    <dl class="card-meta">
+      <div><dt class="caps">Last call</dt><dd class="mono">{{ mcp.last.at.replace("T", " ")[:16] if mcp.last else "never" }}{% if mcp.last %} · {{ mcp.last.tool or mcp.last.call or "—" }}{% endif %}</dd></div>
+      <div><dt class="caps">From</dt><dd class="mono">{{ (mcp.last["x-forwarded-for"] or mcp.last["from"]) if mcp.last else "—" }}{% if mcp.last and mcp.last.agent %} · {{ mcp.last.agent[:40] }}{% endif %}</dd></div>
+      <div><dt class="caps">Calls recorded</dt><dd>{{ mcp.counts.calls }}{% if mcp.counts.refused %} · {{ mcp.counts.refused }} refused{% endif %}</dd></div>
+      <div><dt class="caps">Lock</dt><dd>{% if mcp.lock %}on · a code opens it for four hours at a time{% elif mcp.secret %}off · a code is set up, <a href="/settings">turn it on</a>{% else %}off · no code set up{% endif %}</dd></div>
+      <div><dt class="caps">Last day</dt><dd>{{ mcp.day.calls }} calls answered · busiest {{ mcp.day.busy_minutes }} minutes: <span{% if mcp.day.unusual %} class="signal"{% endif %}>{{ mcp.day.busiest }}</span>{% if mcp.day.unusual %} <span class="caps signal">look at this</span>{% endif %}</dd></div>
+      {# Turned away at the address is a stranger sweeping the internet and means nothing. Turned
+         away at the path came from an address this server answers and asked for something that
+         is not the secret, which is rarer and worth an eye. They are never one number. #}
+      <div><dt class="caps">Turned away, last day</dt><dd>{% if not mcp.day.refused %}none{% else %}{{ mcp.day.wrong_address }} at the address{% if mcp.day.wrong_path %} · <span class="signal">{{ mcp.day.wrong_path }} knew the address, not the path</span>{% endif %}{% if mcp.day.door_unrecorded %} · {{ mcp.day.door_unrecorded }} before this was written down{% endif %}{% endif %}</dd></div>
+    </dl>
+  </section>
+  {% endif %}
+
+  <form class="add" id="add-form" method="post" action="/sources">
+    <label class="caps" for="path">Add an archive</label>
+    <input id="path" name="path" value="{{ form_path }}" placeholder="/path/on/this/server" autocomplete="off" spellcheck="false" required>
+    {# Whose it is, before where it is: every page carries the name, the tools say it in every
+       answer, and an archive added without one is a folder nobody owns. #}
+    <input id="owner" name="owner" value="{{ form_owner }}" placeholder="Whose archive is it" autocomplete="off" aria-label="Whose archive is it" required>
+    <button type="button" id="open-picker">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+      <span>Add folder</span>
+    </button>
+  </form>
+  {% if error %}<div class="error caps" role="alert">{{ error }}</div>{% endif %}
+  <div class="footnote caps">Sources are read only. Nothing is copied, moved or renamed.</div>
+
+</div>
+
+<dialog class="picker" id="picker" aria-labelledby="picker-title">
+  <div class="picker-head">
+    <h2 id="picker-title">Choose a folder</h2>
+    <button type="button" class="icon-button" id="picker-close" aria-label="Close">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>
+    </button>
+  </div>
+  <nav class="crumbs" id="picker-crumbs" aria-label="Folder path"></nav>
+  <div class="listing" id="picker-listing"></div>
+  <div class="picker-foot">
+    <div class="current" id="picker-current"></div>
+    <div class="foot-row">
+      <div class="foot-info">
+        <span class="caps" id="picker-counts"></span>
+        <span class="caps reason" id="picker-reason" role="status"></span>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" id="picker-cancel">Cancel</button>
+        <button type="button" class="btn primary" id="picker-choose" disabled>Add this folder</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<template id="folder-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></template>
+<template id="up-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></template>
+
+<script>
+  // Folder names come from the file system: build nodes with textContent only, never innerHTML.
+  (() => {
+    const form = document.getElementById("add-form");
+    const input = document.getElementById("path");
+    const picker = document.getElementById("picker");
+    const crumbs = document.getElementById("picker-crumbs");
+    const listing = document.getElementById("picker-listing");
+    const current = document.getElementById("picker-current");
+    const counts = document.getElementById("picker-counts");
+    const reason = document.getElementById("picker-reason");
+    const choose = document.getElementById("picker-choose");
+    let shown = null;
+    let request = 0;
+
+    const plural = (n, word) => `${n.toLocaleString("en")} ${word}${n === 1 ? "" : "s"}`;
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function entry(label, icon, badge, onClick) {
+      const button = el("button", "entry");
+      button.type = "button";
+      button.append(document.getElementById(icon).content.cloneNode(true), el("span", "", label), el("span", "badge", badge));
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    async function load(path, fallbackMessage) {
+      const token = ++request;
+      choose.disabled = true;
+      reason.textContent = "";
+      let response, data;
+      try {
+        response = await fetch(`/browse?path=${encodeURIComponent(path)}`, { headers: { Accept: "application/json" } });
+        data = await response.json();
+      } catch {
+        data = { error: "Could not reach the server." };
+        response = { ok: false };
+      }
+      if (token !== request) return;
+      if (!response.ok) {
+        if (!shown && path) return load("", data.error);
+        reason.textContent = data.error;
+        return;
+      }
+      render(data);
+      if (fallbackMessage) reason.textContent = fallbackMessage;
+    }
+
+    function render(data) {
+      shown = data;
+
+      crumbs.replaceChildren();
+      data.crumbs.forEach((crumb, index) => {
+        if (index > 1) crumbs.append(el("span", "sep", "/"));
+        const button = el("button", "", crumb.name);
+        button.type = "button";
+        if (index === data.crumbs.length - 1) button.setAttribute("aria-current", "location");
+        button.addEventListener("click", () => load(crumb.path));
+        crumbs.append(button);
+      });
+
+      listing.replaceChildren();
+      if (data.parent) listing.append(entry("Up one level", "up-icon", "", () => load(data.parent)));
+      data.folders.forEach((folder) => {
+        listing.append(entry(folder.name, "folder-icon", folder.added ? "Added" : "", () => load(folder.path)));
+      });
+      if (!data.folders.length) listing.append(el("div", "listing-note caps", "No folders inside."));
+      if (data.truncated) listing.append(el("div", "listing-note caps", `Showing the first ${data.folders.length} folders.`));
+      listing.scrollTop = 0;
+
+      current.textContent = data.path;
+      counts.textContent = `Here: ${plural(data.folder_count, "folder")}, ${plural(data.file_count, "file")}`;
+      reason.textContent = data.reason;
+      choose.disabled = !data.can_add;
+    }
+
+    document.getElementById("open-picker").addEventListener("click", () => {
+      shown = null;
+      picker.showModal();
+      load(input.value.trim());
+    });
+    document.getElementById("picker-close").addEventListener("click", () => picker.close());
+    document.getElementById("picker-cancel").addEventListener("click", () => picker.close());
+    choose.addEventListener("click", () => {
+      if (!shown || !shown.can_add) return;
+      input.value = shown.path;
+      choose.disabled = true;
+      form.submit();
+    });
+  })();
+</script>
+<script>
+  // Refresh only the step bars every 10 seconds instead of reloading the whole page.
+  (() => {
+    const fillStates = ["running", "partial"];
+    async function refresh() {
+      let data;
+      try {
+        const response = await fetch("/progress", { headers: { Accept: "application/json" } });
+        if (!response.ok) return;
+        data = await response.json();
+      } catch {
+        return;  // the server is restarting; try again on the next tick
+      }
+      for (const row of data.rows) {
+        const rowNode = document.querySelector(`.row.source[data-source="${CSS.escape(row.id)}"]`);
+        if (!rowNode) continue;
+        row.steps.forEach((step, index) => {
+          const stepNode = rowNode.querySelector(`.step[data-step="${index}"]`);
+          if (!stepNode) return;
+          stepNode.title = step.title;
+          const label = stepNode.querySelector(".label");
+          label.textContent = step.label || "\u00a0";
+          label.classList.toggle("signal", step.state === "running" || step.state === "failed");
+          const bar = stepNode.querySelector(".bar");
+          bar.className = `bar ${step.state}`;
+          bar.replaceChildren();
+          if (fillStates.includes(step.state)) {
+            const fill = document.createElement("span");
+            fill.style.width = `${step.percent}%`;
+            bar.append(fill);
+          }
+        });
+      }
+    }
+    setInterval(refresh, 10000);
+  })();
+</script>
+</body>
+</html>

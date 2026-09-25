@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documents · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page documents">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "documents" %}
+  {% include "_header.html" %}
+
+  {# The empty state is the page when there is nothing in it: the heading and the legend of a
+     colour scale mean nothing above an archive whose documents have not been read. #}
+  {% if not sources %}
+  {{ nothing("Documents") }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>Documents</h1>
+    <p class="lead caps">Documents by the date printed on them, newest first. Hover a date to see it as printed; open a page to check it against the original.</p>
+    <p class="lead caps reading-legend">File ID colour shows how much text was read: {% for item in legend %}<span class="file-id" style="background: {{ item.background }}; color: {{ item.color }}">{{ item.label }}</span> {% endfor %}<span class="file-id" style="background: var(--line); color: var(--ink)">not transcribed yet</span></p>
+  </section>
+
+  {% for source in sources %}
+  <section class="docs-source">
+    <div class="docs-summary caps">
+      <span>{{ source.name }}</span>
+      <span>{{ source.classified_pages|thousands }} of {{ source.total_pages|thousands }} pages classified</span>
+      <span>{{ source.document_count|thousands }} documents</span>
+      {% if source.dates_to_check %}<span class="signal">{{ source.dates_to_check }} dates to check</span>{% endif %}
+      {% if source.running %}<span class="signal">Classify is running, reload for more</span>{% endif %}
+    </div>
+
+    {% for group in source.years %}
+    <details class="docs-year">
+      <summary>
+        <span class="year">{% if group.year %}{{ group.year }}{% else %}No date{% endif %}</span>
+        <span class="caps muted">{{ group.document_count }} {% if group.document_count == 1 %}document{% else %}documents{% endif %} &middot; {{ group.transcribed_count }} transcribed{% if group.dates_to_check %} &middot; <span class="signal">{{ group.dates_to_check }} {% if group.dates_to_check == 1 %}date{% else %}dates{% endif %} to check</span>{% endif %}</span>
+      </summary>
+      <div class="doc-table">
+        <div class="doc-row head caps">
+          <span>Date</span><span>Type</span><span>File</span><span>Institution as printed</span><span>Language</span><span>Original</span>
+        </div>
+        {% for document in group.documents %}
+        {% set file = document.file %}
+        <div class="doc-row{% if not document.goes_to_extract %} skipped{% endif %}">
+          <span class="doc-date">{% if document.date.label %}<span class="mono" title="As printed: {{ document.date.printed }}">{{ document.date.label }}</span>{% if document.date.by_hand %}<span class="caps muted date-flag-hand">set by hand</span>{% endif %}{% elif document.date.printed %}<span title="As printed">{{ document.date.printed }}</span>{% else %}–{% endif %}{% for flag in document.date.flags %}<span class="caps date-flag">{{ flag.label }}</span>{% endfor %}</span>
+          <span>{% if document.unreadable %}<span class="caps muted">Could not be read</span>{% else %}<a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type }}</a>{% if document.extracted %} <span class="caps extracted">transcribed</span>{% endif %}{% if not document.goes_to_extract %} <span class="caps muted">not extracted</span>{% endif %}{% if document.illegible %} <span class="caps muted">hard to read</span>{% endif %}{% endif %}</span>
+          <span class="doc-file-cell"><span class="file-id" style="background: {{ file.reading.background }}; color: {{ file.reading.color }}" title="File ID {{ file.file_id }}. {{ file.reading.title }}.">{{ file.file_id }}</span> <span class="path mono">{{ file.path }}</span> <span class="caps muted">p. {{ document.page_label }}</span></span>
+          <span>{{ document.provider or "–" }}</span>
+          <span>{{ document.language or "–" }}</span>
+          <span class="page-links">{% for number in document.pages %}<a href="/sources/{{ source.id }}/files/{{ file.sha256 }}/pages/{{ number }}" target="_blank" rel="noopener">p{{ number }}</a>{% endfor %}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    <p class="empty">Nothing classified yet.</p>
+    {% endfor %}
+  </section>
+  {% endfor %}
+  {% endif %}
+
+</div>
+</body>
+</html>

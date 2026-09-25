@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>To check · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page documents review">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "review" %}
+  {% include "_header.html" %}
+
+  {# The empty state is the page: what the checks found means nothing above an archive that has
+     not been read, and printing the heading twice is two pages stacked. #}
+  {# Until the checks have run over something there is nothing to check, so this page says what
+     every other one says. Findings that exist are always shown, index or no index: validation
+     runs before the index is built, and its findings are not to be hidden in between. #}
+  {% if not sources or not (sources | selectattr("validated_at") | list) %}
+  {{ nothing("To check") }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>To check</h1>
+    <p class="lead caps">What the validation found, without a model: values that do not match what is printed, dates, possible copies, parts that could not be read. Nothing here is changed automatically. Open a document to compare it with the original.</p>
+  </section>
+
+  {% for source in sources %}
+  <section class="docs-source">
+    <div class="docs-summary caps">
+      <span>{{ source.name }}</span>
+      {% if source.validated_at %}
+      <span>{{ source.documents_with_findings }} of {{ source.documents_checked }} documents to check</span>
+      <span>Checked {{ source.validated_at.replace("T", " ")[:16] }} UTC</span>
+      {% if source.outdated %}<span class="signal">Data changed since</span>{% endif %}
+      {% else %}
+      <span>Not checked yet</span>
+      {% endif %}
+      <form method="post" action="/sources/{{ source.id }}/validate"><button class="btn small" type="submit">Run checks</button></form>
+    </div>
+
+    {% if source.lost_corrections %}
+    <div class="card-findings">
+      <span class="caps signal">Corrections that no longer match a line: {{ source.lost_corrections | length }}</span>
+      <p class="caps muted">A correction follows the printed line it was made on. These were made on lines a model has since read differently, so they now apply to nothing. Open the document and make them again, or leave them: the archive shows what the model read.</p>
+      <ul>
+        {% for item in source.lost_corrections %}
+        <li>
+          {% if item.row %}<a href="/documents/{{ source.id }}/{{ item.file_sha256 }}/{{ item.pages[0] }}">{{ item.row.file.file_id }} p. {{ item.pages | join(", ") }}</a>
+          {% else %}<span class="mono">{{ item.file_sha256[:8] }} p. {{ item.pages | join(", ") }}</span> &middot; that document is no longer in the archive{% endif %}
+          {% if item.removed %} &middot; marked as not a value{% elif item.changes %} &middot; {{ item.changes.keys() | join(", ") | replace("_as_printed", "") }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if source.copy_groups %}
+    <details class="docs-year copies" id="copies"{% if open_copies %} open{% endif %}>
+      <summary>
+        <span class="check-title">The same document in more than one file</span>
+        <span class="caps muted">{{ source.copy_groups|length }} {% if source.copy_groups|length == 1 %}group{% else %}groups{% endif %}</span>
+      </summary>
+      <p class="caps muted copies-note">One of each group answers a question; the others stay in the archive and are not repeated. The one marked is the one chosen &mdash; a lab report before a letter quoting it, then the page read by the stronger model, then fewer unreadable parts and more values. If the other one is the better scan, say so here.</p>
+      {% for group in source.copy_groups %}
+      <div class="copy-group">
+        <div class="copy-head caps">
+          <span class="mono">{{ group.date or "no date" }}</span>
+          <span class="muted">{{ group.count }} files</span>
+        </div>
+        {% for item in group.members %}
+        <div class="copy-row{% if item.chosen %} chosen{% endif %}">
+          <span class="copy-mark caps">{% if item.chosen %}Answers{% else %}&nbsp;{% endif %}</span>
+          <span class="copy-what">
+            <a class="doc-link" href="/documents/{{ source.id }}/{{ item.file_sha256 }}/{{ item.pages[0] }}">{{ item.title or item.doc_type }}</a>
+            <span class="path mono">{{ item.path }}</span>
+          </span>
+          <span class="copy-why caps muted">{{ item.doc_type }} &middot; {{ item.values_count }} value{{ "s" if item.values_count != 1 }}{% if item.unreadable_count %} &middot; {{ item.unreadable_count }} unreadable{% endif %}{% if item.model %} &middot; {{ item.model.replace("claude-", "") }}{% endif %}</span>
+          <span class="copy-pick">
+            {% if not item.chosen %}
+            <form method="post" action="/review/{{ source.id }}/{{ item.file_sha256 }}/{{ item.pages[0] }}/copy">
+              <button class="btn small" type="submit" title="Answers come from this file instead. Nothing is deleted and the other files stay in the archive.">Use this one</button>
+            </form>
+            {% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </details>
+    {% endif %}
+
+    {% for check in source.checks %}
+    {# Closed to begin with: nine checks and a thousand findings opened at once are a wall, not
+       a list. The headings say what each one is and how much of it there is, and a person opens
+       the one they mean to work on. #}
+    <details class="docs-year">
+      <summary>
+        <span class="check-title">{{ check.label }}</span>
+        <span class="caps muted">{{ check.entries|length }} {% if check.entries|length == 1 %}document{% else %}documents{% endif %}</span>
+      </summary>
+      {% if check.ask %}<p class="caps muted copies-note">{{ check.ask }}</p>{% endif %}
+      <div class="doc-table">
+        <div class="doc-row head caps review-row">
+          <span>Date</span><span>Type</span><span>File</span><span>Findings</span>
+        </div>
+        {% for entry in check.entries %}
+        {% set document = entry.row %}{% set file = document.file %}
+        <div class="doc-row review-row">
+          <span class="mono">{{ document.date.label or "–" }}</span>
+          <span><a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type }}</a></span>
+          <span class="doc-file-cell"><span class="file-id" style="background: {{ file.reading.background }}; color: {{ file.reading.color }}" title="File ID {{ file.file_id }}. {{ file.reading.title }}.">{{ file.file_id }}</span> <span class="path mono">{{ file.path }}</span> <span class="caps muted">p. {{ document.page_label }}</span></span>
+          <span class="mono">{{ entry.count }}{% for copy in entry.copies %}<br><a class="doc-link" href="/documents/{{ source.id }}/{{ copy.file.sha256 }}/{{ copy.pages[0] }}">{{ copy.file.file_id }} p. {{ copy.page_label }}</a>{% endfor %}</span>
+        </div>
+        {% if entry.parts %}
+        <div class="doc-row unreadable-row">
+          <ul class="unreadable-parts">
+            {% for part in entry.parts %}
+            <li><span class="caps muted">p. {{ part.page }}</span> {{ part.what }}{% if part.why %} <span class="muted">&mdash; {{ part.why }}</span>{% endif %}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </details>
+    {% else %}
+    {% if source.validated_at %}<p class="empty">Nothing to check.</p>{% endif %}
+    {% endfor %}
+  </section>
+  {% endfor %}
+  {% endif %}
+
+</div>
+</body>
+</html>

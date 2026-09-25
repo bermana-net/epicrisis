@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timeline · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page timeline">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "timeline" %}
+  {% include "_header.html" %}
+
+  {% if missing %}
+  {{ nothing("Timeline") }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 16px;">
+    <div class="timeline-head">
+      <h1>Timeline</h1>
+      <p class="caps muted">{{ overview.documents }} documents &middot; {{ overview.first_date }} – {{ overview.last_date }}<br>by the date printed in the document</p>
+    </div>
+    {% include "_searchline.html" %}
+    <nav class="views caps" aria-label="Views">
+      {% for key, label, hint in [("feed", "By year", "the strip of years, and the documents under it"), ("lanes", "By type", "what kind of care, and when"), ("indicators", "By test", "when each test was taken, and its last value")] %}
+      <a href="/?view={{ key }}{% if doc_type %}&doc_type={{ doc_type }}{% endif %}"{% if view == key %} aria-current="page"{% endif %} title="{{ hint }}">{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </section>
+
+  {% if view == "feed" %}
+  <section class="card-section" style="padding-top: 0;">
+    <div class="types caps">
+      <a href="/"{% if not doc_type and not paperwork %} aria-current="page"{% endif %}>Records</a>
+      {% for name, count in overview.types.items() %}
+      <a href="/?doc_type={{ name }}"{% if doc_type == name %} aria-current="page"{% endif %}>{{ name }} <span class="muted">{{ count }}</span></a>
+      {% endfor %}
+      {% if paperwork_count %}
+      <a href="/?paperwork=1"{% if paperwork and not doc_type %} aria-current="page"{% endif %} title="Appointment slips, insurance letters and the like: kept, but they hold no results">and the paperwork <span class="muted">{{ paperwork_count }}</span></a>
+      {% endif %}
+    </div>
+  </section>
+  {% set top = (years | map(attribute="documents") | max) if years else 1 %}
+  <section class="card-section">
+    <div class="yearstrip" role="list">
+      {% for item in years %}
+      <a class="year{% if year == item.year %} chosen{% endif %}" role="listitem" href="/?view={{ view }}{% if year != item.year %}&year={{ item.year }}{% endif %}{% if doc_type %}&doc_type={{ doc_type }}{% endif %}" title="{{ item.documents }} documents in {{ item.year }}">
+        <span class="count caps">{{ item.documents }}</span>
+        <span class="bar" style="height: {{ (6 + 128 * item.documents / top) | round | int }}px"></span>
+        <span class="label caps">{{ "%02d" | format(item.year % 100) if item.year >= 2000 else item.year }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% if year %}<p class="caps chosen-year">{{ year }} &middot; <a href="/?view={{ view }}">show every year</a></p>{% endif %}
+  </section>
+  {% endif %}
+
+  {% if view == "feed" %}
+  <section class="card-section">
+    {% set ns = namespace(year=None) %}
+    <div class="feed">
+      {% for item in documents %}
+      {% set this_year = item.date[:4] if item.date else "no date" %}
+      {% if this_year != ns.year %}
+      {% set ns.year = this_year %}
+      <h2 class="feed-year">{{ this_year }}</h2>
+      {% endif %}
+      <a class="feed-row" href="{{ item.card_url }}">
+        <span class="mono when">{{ item.date[5:] if item.date else "–" }}</span>
+        <span class="what"><b>{{ item.title or item.doc_type }}</b><span class="caps muted">{{ item.doc_type }}{% if item.provider %} &middot; {{ item.provider }}{% endif %}{% if not item.transcribed %} &middot; <span class="signal">not transcribed</span>{% endif %}</span></span>
+        <span class="caps muted how-many">{% if item.value_count %}{{ item.value_count }} values &middot; {% endif %}p. {{ item.pages | join(", ") }}</span>
+        <span class="mono file-id-plain">{{ item.file_id }}</span>
+      </a>
+      {% else %}
+      <p class="empty">Nothing here.</p>
+      {% endfor %}
+    </div>
+    <div class="feed-foot">
+      <span class="caps muted">Showing {{ documents | length }} of {{ total }}{% if undated %} documents with no date{% elif year %} in {{ year }}{% endif %}</span>
+      <span class="feed-more">
+        {% if skip %}<a class="caps" href="/?{% if year %}year={{ year }}&{% endif %}{% if undated %}undated=1&{% endif %}{% if paperwork %}paperwork=1&{% endif %}{% if doc_type %}doc_type={{ doc_type }}&{% endif %}skip={{ [skip - 120, 0] | max }}">&larr; earlier page</a>{% endif %}
+        {% if skip + (documents | length) < total %}<a class="caps" href="/?{% if year %}year={{ year }}&{% endif %}{% if undated %}undated=1&{% endif %}{% if paperwork %}paperwork=1&{% endif %}{% if doc_type %}doc_type={{ doc_type }}&{% endif %}skip={{ skip + 120 }}">next 120 &rarr;</a>{% endif %}
+        {% if undated %}<a class="caps" href="/">back to the dated documents</a>
+        {% elif undated_count %}<a class="caps signal" href="/?undated=1">{{ undated_count }} documents carry no date at all</a>{% endif %}
+      </span>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if view == "lanes" %}
+  {% set first = years[0].year if years else 1989 %}
+  {% set last = (years[-1].year + 1) if years else 2026 %}
+  <section class="card-section">
+    <div class="lanes">
+      <div class="lane head">
+        <span class="caps muted">Type</span>
+        <span class="track">{% for item in years %}{% if item.year % 5 == 0 %}<span class="tick caps" style="left: {{ ((item.year - first) / (last - first) * 100) | round(2) }}%">{{ item.year }}</span>{% endif %}{% endfor %}</span>
+        <span class="caps muted count">All</span>
+      </div>
+      {% for lane in lanes %}
+      <div class="lane">
+        <span class="name">{{ lane.doc_type }}</span>
+        <span class="track">
+          {% for item in lane.documents %}
+          <a class="dot" style="left: {{ ((item.date[:4] | int) - first + ((item.date[5:7] | int) - 1) / 12) / (last - first) * 100 }}%" href="/documents/{{ item.source_id }}/{{ item.file_sha256 }}/{{ item.first_page }}" title="{{ item.date }} · {{ item.title or item.doc_type }}"></a>
+          {% endfor %}
+        </span>
+        <span class="mono count">{{ lane.count }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if view == "indicators" %}
+  {% set first = years[0].year if years else 1989 %}
+  {% set last = (years[-1].year + 1) if years else 2026 %}
+  <section class="card-section">
+    <div class="materials caps">
+      {% for item in materials %}
+      <a href="/?view=indicators&material={{ item.key }}"{% if material == item.key %} aria-current="page"{% endif %}>{{ item.label }} <span class="muted">{{ item.count }}</span></a>
+      {% endfor %}
+    </div>
+    <div class="lanes">
+      <div class="lane head">
+        <span class="caps muted">Test</span>
+        <span class="track">{% for item in years %}{% if item.year % 5 == 0 %}<span class="tick caps" style="left: {{ ((item.year - first) / (last - first) * 100) | round(2) }}%">{{ item.year }}</span>{% endif %}{% endfor %}</span>
+        <span class="caps muted count">Last</span>
+      </div>
+      {% for item in series %}
+      <div class="lane">
+        <span class="name"><a href="/tests/{{ item.indicator_id }}{% if material %}?material={{ material }}{% endif %}">{{ item.label }}</a><small class="caps muted">{{ item.count }} values{% if item.materials %} &middot; {{ item.materials | join(", ") }}{% endif %}</small></span>
+        <span class="track">
+          {% for point in item.points %}
+          <a class="dot{% if loop.last %} last{% endif %}" style="left: {{ ((point.date[:4] | int) - first + ((point.date[5:7] | int) - 1) / 12) / (last - first) * 100 }}%" href="/documents/{{ point.source_id }}/{{ point.file_sha256 }}/{{ point.first_page }}" title="{{ point.date }} · {{ point.value }} {{ point.unit or '' }}"></a>
+          {% endfor %}
+        </span>
+        <span class="last-value"><b class="mono">{% if item.last_comparator and not item.last_value.startswith(item.last_comparator) %}{{ item.last_comparator }}{% endif %}{{ item.last_value }}</b><small class="caps muted">{{ item.last_unit or "" }}</small></span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="feed-foot">
+      <span class="caps muted">Showing {{ series | length }} of {{ series_total }} tests{% if material %} in this material{% endif %} &middot; most values first</span>
+      {% if series | length < series_total %}<a class="caps" href="/?view=indicators{% if material %}&material={{ material }}{% endif %}&all_tests=1">show every test &rarr;</a>{% endif %}
+    </div>
+    <p class="caps muted">Values exactly as the form printed them. Nothing here is converted or compared.</p>
+  </section>
+  {% endif %}
+
+  {% endif %}
+</div>
+</body>
+</html>

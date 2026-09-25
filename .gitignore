@@ -1,0 +1,34 @@
+# Medical data and derived artifacts: never commit
+/data/
+archive/
+extracted/
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+
+# Never a downloaded package or a built demo
+*.whl
+/demo/
+
+# Secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

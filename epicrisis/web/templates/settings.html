@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page settings">
+
+  {% set current = "settings" %}
+  {% include "_header.html" %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>Settings</h1>
+    <p class="lead caps">What this instance allows. These choices belong to the person whose archive this is; they are stored on this server in data/settings.json and apply to every answer given here.</p>
+  </section>
+
+  {% if trouble %}<div class="notice caps"><span class="alert">{{ trouble }}</span></div>{% endif %}
+  {% if saved %}<p class="caps signal">Saved.</p>{% endif %}
+
+  <form class="settings-form" method="post" action="/settings">
+    <fieldset>
+      <legend class="caps">Ask page</legend>
+      {% if not confirmed %}<p class="note alert caps">Model processing is not confirmed on this instance, so these choices do nothing yet. <a href="/consent">Read what would be sent</a> first.</p>
+      {% elif not model_ready %}<p class="note alert caps">The program that talks to the model is not installed on this server, so nothing here can answer yet.</p>{% endif %}
+      <label class="choice"><input type="checkbox" name="ask_page" value="on"{% if enabled %} checked{% endif %}{% if not confirmed %} disabled{% endif %}>
+        <span><b>Answer questions about the archive</b><small>Adds the Ask page. Each question goes to one isolated model call that can only read this archive.{% if not confirmed %} Model processing is not confirmed yet: <a href="/consent">review what is sent</a>.{% endif %}</small></span>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend class="caps">Which model does which reading</legend>
+      <p class="note caps">A subscription cannot be asked what it holds, so this list is what the program knows how to name. Another name can be typed in; a model the subscription does not have simply fails when that step runs.</p>
+      {% set unknown = passes | rejectattr("chosen", "in", known_names) | list %}
+      {% if unknown %}<p class="note alert caps">This program does not know {{ unknown | map(attribute="chosen") | join(", ") }}. If the subscription has no such model, the step using it will fail when it runs.</p>{% endif %}
+      {% for item in passes %}
+      <label class="choice model-choice">
+        <span><b>{{ item.label }}</b><small>{{ item.about }}</small></span>
+        <select name="model_{{ item.key }}">
+          {% for name, description in known_models %}
+          <option value="{{ name }}"{% if item.chosen == name %} selected{% endif %}>{{ description }}</option>
+          {% endfor %}
+          {% if item.chosen not in known_names %}<option value="{{ item.chosen }}" selected>{{ item.chosen }}</option>{% endif %}
+        </select>
+      </label>
+      {% endfor %}
+    </fieldset>
+
+    <fieldset>
+      <legend class="caps">What was measured</legend>
+      <label class="choice"><input type="checkbox" name="read_materials" value="on"{% if read_materials %} checked{% endif %}>
+        <span><b>Let a model say what a form did not</b><small>Many forms never print which specimen they are of. Blood usually goes unsaid, because a laboratory has no reason to write it; a urinalysis printed without its heading looks the same; and a keratometry reading or the width of a ventricle is of no specimen at all. Off, all of those stay under &ldquo;not said&rdquo;, which is exactly what the form says. On, a model reads each table &mdash; its headings and the names of its values, never a number or a date &mdash; and settles the ones it is sure of. Those values are marked on the page as read rather than printed, and what the model was unsure of is never used either way. Changing this rebuilds the index, which takes a moment.{% if read_materials_known %} {{ read_materials_known }} tables have been read so far.{% endif %}</small></span>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend class="caps">What answers may contain</legend>
+      <label class="choice"><input type="radio" name="mode" value="as_printed"{% if mode == "as_printed" %} checked{% endif %}>
+        <span><b>As printed only</b><small>Values, units and the reference ranges printed on the same form, with the document behind each number. The model does not say whether a value is normal, does not explain what results mean and does not advise. This is the default of the project.</small></span>
+      </label>
+      <label class="choice"><input type="radio" name="mode" value="with_meaning"{% if mode == "with_meaning" %} checked{% endif %}>
+        <span><b>May also read the values</b><small>For your own records. The model may compare a value with the range printed on its own form, describe how values moved, explain what a test measures and say what is worth asking a doctor. It keeps what is printed apart from its own reading, and it still does not diagnose, prescribe or judge urgency.</small></span>
+      </label>
+      <label class="choice"><input type="radio" name="mode" value="direct"{% if mode == "direct" %} checked{% endif %}>
+        <span><b>No limits set here</b><small>A plain conversation with the model. It is told where your archive is and nothing else: no rule about what it may say, no line between what is printed and its own reading. It answers the way it would anywhere else, and it can be wrong about your records as easily as about anything else.</small></span>
+      </label>
+      <p class="note alert caps">Turning this on lets the model read your results, not only show them. The application still only stores and displays; the reading is done by a general-purpose model, under your own account, at your choice. Keep it for your own archive. It is not a doctor, and it is not a medical device: nothing here is a diagnosis or a treatment decision. Check any number against the original page before you act on it.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend class="caps">Units on a chart</legend>
+      <label class="choice"><input type="checkbox" name="scale" value="on"{% if scale %} checked{% endif %}>
+        <span><b>Bring one test to one scale</b><small>Laboratories print creatinine in µmol/L and in mg/dL, haemoglobin in g/L and in g/dL, and a history then falls into several charts. With this on, a chart converts the units this archive has a factor for and says what it converted and by how much. The printed value, its unit and its range stay untouched beside the chart, nothing converted is stored, and a unit with no factor keeps its own chart. Off, every unit is drawn exactly as the form printed it.</small></span>
+      </label>
+      <label class="choice"><input type="checkbox" name="unit_from_range" value="on"{% if unit_from_range %} checked{% endif %}>
+        <span><b>Read the unit from the printed range</b><small>Where a form has no unit column, the range beside the value often names the unit anyway: &laquo;53-115 &micro;mol/L&raquo;, &laquo;19,0-37,0%&raquo;. With this on, such a value is drawn on that scale and marked as having taken its unit from the range. A range holding two ranges at once &mdash; the relative and the absolute count on one line &mdash; says nothing, because which of them the value belongs to is written nowhere. Off, only the unit column counts.</small></span>
+      </label>
+      <label class="choice"><input type="checkbox" name="unit_by_numbers" value="on"{% if unit_by_numbers %} checked{% endif %}>
+        <span><b>Values with no unit anywhere: place them by their numbers</b><small>Old forms print a leukocyte formula with no unit column and no range at all. The numbers are per-cents and nothing on the page says so. With this on, such values join the scale their own middle agrees with &mdash; within a factor of two, and only where exactly one scale fits &mdash; and every one of them is marked, on the chart and in the table. This is the only reading in this program taken from numbers rather than from a page, which is why it is off unless you ask for it. Nothing is converted and nothing is stored.</small></span>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend class="caps">The archive over the network</legend>
+      <label class="choice"><input type="checkbox" name="mcp_lock" value="on"{% if mcp_lock %} checked{% endif %}>
+        <span><b>Ask for a code before answering an assistant</b><small>The read-only tools served over the network stay shut until someone gives the six digits from your authenticator. Tools used on this machine are not affected.{% if not mcp_secret %} No code is set up yet, so this switch does nothing.{% endif %}</small></span>
+      </label>
+      <details class="fix-row">
+        <summary class="caps">What this means in use</summary>
+        <div class="lock-how-to">
+          <p><b>Once, on the server:</b> <span class="mono">sudo epicrisis mcp-lock init</span>. It prints a line for your authenticator app &mdash; that line is the code's secret, so read it there and send it nowhere.</p>
+          <p><b>Then, in a conversation:</b> the assistant hits the lock, asks you for the six digits, and the archive opens. A new conversation asks again; within one it stays open for the window below.</p>
+          <p><b>Ending a conversation:</b> ask the assistant to lock the archive. The pass it was given stays written in that conversation, and locking makes it useless to anyone who reads it later.</p>
+          <p><b>If you lose the phone with the authenticator:</b> <span class="mono">epicrisis mcp-lock off</span> on the server takes the lock away, and <span class="mono">mcp-lock init --force</span> sets up a new code. Nothing is lost.</p>
+        </div>
+      </details>
+      <div class="lock-how">
+        <label class="caps">A code opens
+          <select name="mcp_lock_scope">
+            <option value="conversation"{% if mcp_lock_scope == "conversation" %} selected{% endif %}>the conversation it was given in</option>
+            <option value="server"{% if mcp_lock_scope == "server" %} selected{% endif %}>everything, until the window runs out</option>
+          </select>
+        </label>
+        <label class="caps">For, in minutes
+          <input type="number" name="mcp_lock_minutes" min="1" max="10080" value="{{ mcp_lock_minutes }}">
+        </label>
+      </div>
+      <p class="note caps">Opening the conversation keeps the opening with whoever made it: a stranger who reached the server would still have no way in. Opening everything is easier to live with and gives that up for the length of the window.</p>
+    </fieldset>
+
+    <button class="btn" type="submit">Save</button>
+  </form>
+
+</div>
+</body>
+</html>

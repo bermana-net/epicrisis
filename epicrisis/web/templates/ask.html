@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page ask">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "ask" %}
+  {% include "_header.html" %}
+
+  {# When there is nothing to show, the empty state is the page. Printing the heading and its
+     explanation first and the same heading again underneath is two pages stacked. #}
+  {% if stage().state != "ready" %}
+  {{ nothing("Ask") }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>Ask</h1>
+    <p class="lead caps">Questions about this archive, answered from the index by a model that can only read it. Values come as printed, with the document behind each number. It does not say whether a value is normal and does not give medical advice: that is for a doctor.</p>
+  </section>
+
+  {% if not enabled %}
+  <p class="empty">Answering questions is turned off on this instance. Turn it on in <a href="/settings">Settings</a>, or with <span class="mono">epicrisis ask --on</span>.</p>
+  {% if not confirmed %}<p class="caps muted">It also needs model processing to be allowed: <a href="/consent">read what would be sent</a>.</p>{% endif %}
+  {% elif not confirmed %}
+  <p class="empty">Model processing is not confirmed yet. <a href="/consent">Review what is sent</a>.</p>
+  {% else %}
+  <div class="ask-layout">
+    <aside class="chat-list">
+      <form method="post" action="/ask" class="new-chat"><input type="hidden" name="question" value=""><a class="btn small" href="/ask">New chat</a></form>
+      {% for item in chats %}
+      <a class="chat-item{% if chat and item.id == chat.id %} current{% endif %}" href="/ask/{{ item.id }}">
+        <span>{{ item.title }}</span>
+        <small class="caps">{{ item.updated_at.replace("T", " ")[:16] }} · {{ item.messages // 2 }} q</small>
+      </a>
+      {% else %}
+      <p class="caps muted">No chats yet.</p>
+      {% endfor %}
+    </aside>
+
+    <main class="chat" id="chat" data-chat="{{ chat.id if chat else "" }}">
+      <div class="chat-head">
+      <p class="caps muted mode-note">{% if mode == "direct" %}No limits set here. <a href="/settings">Settings</a>{% elif mode == "with_meaning" %}Answers may read the values, not only show them. <a href="/settings">Settings</a>{% else %}Answers show what is printed only. <a href="/settings">Settings</a>{% endif %}</p>
+      {% if chat %}
+      <form method="post" action="/ask/{{ chat.id }}/delete" onsubmit="return confirm('Delete this chat? The questions and answers go for good; the archive is untouched.')">
+        <button class="btn small" type="submit">Delete chat</button>
+      </form>
+      {% endif %}
+      </div>
+      {% if chat %}
+      {% for message in chat.messages %}
+      <div class="message {{ message.role }}">
+        {% if message.role == "person" %}
+        <p>{{ message.text }}</p>
+        {% else %}
+        {% if message.steps %}
+        <details class="steps"{% if message.state == "running" %} open{% endif %}>
+          <summary class="caps">{{ message.steps|length }} queries to the archive</summary>
+          <ul>{% for step in message.steps %}<li class="mono">{{ step.tool }}({% for key, value in step.input.items() %}{{ key }}={{ value }}{% if not loop.last %}, {% endif %}{% endfor %})</li>{% endfor %}</ul>
+        </details>
+        {% endif %}
+        {% if message.state == "running" %}<p class="caps signal running-note">Reading the archive&hellip;</p>{% endif %}
+        {% if message.state == "failed" %}<p class="caps signal">The answer failed: {{ message.error or "unknown reason" }}</p>{% endif %}
+        <div class="answer">{{ message.text|markdown }}</div>
+        {% if message.text %}
+        <div class="answer-foot">
+          <button class="btn small copy" type="button" data-copy="{{ message.text }}">Copy answer</button>
+          <span class="caps muted">{% if message.seconds %}Answered in {{ message.seconds }} seconds{% endif %}{% if message.mode == "with_meaning" %} &middot; this answer may read the values, not only show them{% elif message.mode == "direct" %} &middot; answered with no limits set here{% endif %}</span>
+        </div>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="empty">Ask a question about the archive, for instance: how did cystatin C change, what was in February 2026, which documents mention C5.</p>
+      {% endif %}
+
+      <form class="ask-form" method="post" action="/ask{% if chat %}/{{ chat.id }}{% endif %}">
+        <textarea name="question" rows="3" placeholder="Your question" required{% if chat and chat.messages and chat.messages[-1].state == "running" %} disabled{% endif %}></textarea>
+        <div class="ask-foot">
+          {% if chat and chat.messages %}
+          <label class="choice inline"><input type="checkbox" name="continue" value="on" checked>
+            <span><b>Continue this conversation</b><small>The {{ carried }} earlier question{{ "s" if carried != 1 }} and the answers go to the model with this one. Unchecked, the question starts a new chat and the model sees nothing of this one.</small></span>
+          </label>
+          {% endif %}
+          <button class="btn" type="submit"{% if chat and chat.messages and chat.messages[-1].state == "running" %} disabled{% endif %}>Ask</button>
+        </div>
+      </form>
+    </main>
+  </div>
+  {% endif %}
+  {% endif %}
+
+</div>
+<script>
+  (() => {
+    const chat = document.getElementById("chat");
+    const id = chat && chat.dataset.chat;
+    if (!id || !document.querySelector(".running-note")) return;
+    const poll = async () => {
+      try {
+        const state = await (await fetch(`/ask/${id}/state`)).json();
+        if (!state.running) { location.reload(); return; }
+        const steps = state.messages[state.messages.length - 1].steps || [];
+        const list = document.querySelector(".steps ul");
+        const summary = document.querySelector(".steps summary");
+        if (list && steps.length !== list.children.length) {
+          list.innerHTML = steps.map((step) => `<li class="mono"></li>`).join("");
+          steps.forEach((step, index) => {
+            const args = Object.entries(step.input).map(([key, value]) => `${key}=${value}`).join(", ");
+            list.children[index].textContent = `${step.tool}(${args})`;
+          });
+          summary.textContent = `${steps.length} queries to the archive`;
+        }
+      } catch (error) { /* keep polling */ }
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 2000);
+  })();
+
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest(".copy");
+    if (!button) return;
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      const was = button.textContent;
+      button.textContent = "Copied";
+      setTimeout(() => { button.textContent = was; }, 1500);
+    } catch (error) {
+      button.textContent = "Select and copy by hand";
+    }
+  });
+</script>
+</body>
+</html>

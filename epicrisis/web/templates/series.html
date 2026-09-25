@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ label or "Test" }} · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page series">
+
+  {% from "_nothing.html" import nothing %}
+  {% set current = "timeline" %}
+  {% include "_header.html" %}
+
+  {% if none_here %}
+  <section class="rule" style="padding-top: 18px;">
+    <p class="caps"><a href="/?view=indicators">&larr; Timeline by test</a></p>
+    <h1>{{ label }}</h1>
+    <p class="empty">This archive has no values of this test. Another one on this server may: the test is in the vocabulary, which is shared, and the values are not.</p>
+    <p><a class="btn" href="/?view=indicators">The tests this archive has</a></p>
+  </section>
+  {% elif missing %}
+  {{ nothing("Test") }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 16px;">
+    <a class="caps back" href="/?view=indicators">&larr; Timeline by test</a>
+    <div class="timeline-head">
+      <h1>{{ label }}</h1>
+      <p class="caps muted">{{ values | length }} values{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}<br>every number exactly as its form printed it</p>
+    </div>
+    {% if materials | length > 1 %}
+    <div class="materials caps">
+      {% for item in materials %}
+      <a href="/tests/{{ indicator_id }}?material={{ item.key }}"{% if material == item.key %} aria-current="page"{% endif %}>{{ item.label }} <span class="muted">{{ item.count }}</span></a>
+      {% endfor %}
+    </div>
+    {# A person looking at blood should know the rest exists, and be able to reach it, without
+       it being drawn on their line. Most values whose form said nothing are blood; some are
+       not, and the archive has no way to tell which, so it says so instead of deciding. #}
+    <p class="caps muted materials-note">One material at a time: the same name is a different measurement in each.
+      {% for item in materials %}{% if item.key == "none" and material != "none" %}
+      <a href="/tests/{{ indicator_id }}?material=none">{{ item.count }} more value{{ "s" if item.count != 1 }} of this test</a> came on forms that did not say what was measured. Most such forms are blood; this one does not say so.
+      {% elif item.key == "none" and material == "none" %}{% endif %}{% endfor %}
+      {% if material == "none" %}These forms did not say what was measured, and no model would say either. Usually it means blood, and sometimes it does not: a urine test printed without its heading looks the same here.{% endif %}
+      {% if read_by_model %}<br><span class="signal">{{ read_by_model }} of these {{ "value" if read_by_model == 1 else "values" }} came on a form that printed no material; a model read the table it stands in and said this one.</span>{% endif %}
+    </p>
+    {% endif %}
+  </section>
+
+  {% for chart in charts %}
+  <section class="card-section">
+    <div class="chart-head">
+      <h2>{{ chart.unit or "no unit printed" }}</h2>
+      <span class="caps muted">{{ chart.count }} value{{ "s" if chart.count != 1 }}{% if chart.spellings | length > 1 %} &middot; printed as {{ chart.spellings | join(", ") }}{% endif %}{% if chart.converted_from %} &middot; brought to {{ chart.unit }}: {% for from_unit, factor in chart.converted_from.items() %}{{ from_unit }} &times; {{ "%g"|format(factor) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if chart.by_numbers %} &middot; {{ chart.by_numbers }} with no unit printed, placed here by their numbers{% endif %}{% if chart.beside_the_result %} &middot; {{ chart.beside_the_result }} printed beside the result, listed but not drawn{% endif %}</span>
+    </div>
+
+    {% if chart.points %}
+    <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.count }} values of {{ label }} in {{ material_label }}, in {{ chart.unit }}, oldest first. The numbers are listed in the table below.">
+      {% for band in chart.bands %}
+      <rect x="{{ band.x }}" y="{{ band.y }}" width="{{ band.width }}" height="{{ band.height }}" class="band"></rect>
+      {% endfor %}
+      {% for tick in chart.y_ticks %}
+      <line x1="{{ chart.plot.left }}" y1="{{ tick.y }}" x2="{{ chart.plot.right }}" y2="{{ tick.y }}" class="grid"></line>
+      <text x="{{ chart.plot.left - 8 }}" y="{{ tick.y + 4 }}" class="tick" text-anchor="end">{{ tick.label }}</text>
+      {% endfor %}
+      {% for tick in chart.x_ticks %}
+      <text x="{{ tick.x }}" y="{{ chart.height - 8 }}" class="tick" text-anchor="middle">{{ tick.label }}</text>
+      {% endfor %}
+      <polyline points="{{ chart.line }}" class="line"></polyline>
+      {% for point in chart.points %}
+      <a href="{{ point.card_url }}">
+        <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4.5" class="point{% if point.corrected %} corrected{% endif %}"></circle>
+        <title>{{ point.date }} · {% if point.comparator and not point.value.startswith(point.comparator) %}{{ point.comparator }}{% endif %}{{ point.value }} {{ point.unit or "" }}{% if point.reference %} · printed range {{ point.reference }}{% endif %} · {{ point.file_id }}</title>
+      </a>
+      {% endfor %}
+    </svg>
+    {% else %}
+    <p class="empty">Not enough numbers to draw a line here.</p>
+    {% endif %}
+    {# Directly under the drawing, not over it: every chart says which test and what was
+       measured, and at the top that line runs into the unit and the count. A chart with too few
+       points to draw says it too, because it is still a chart of something. #}
+    <p class="chart-what">{{ label }} <span class="chart-material caps">{{ material_label }}</span> <span class="chart-unit">{{ chart.unit or "no unit printed" }}</span></p>
+    {% if chart.points %}
+    <p class="caps muted chart-note">The shaded band is the reference range printed on each form, held until another form printed a different one. It moves because laboratories differ, not because anything was calculated.</p>
+    {% endif %}
+
+    <div class="obs-table series-table">
+      <div class="obs-row head caps" style="grid-template-columns: 96px minmax(120px, 1fr) 110px 150px minmax(0, 1.4fr) 76px;">
+        <span>Date</span><span>Name as printed</span><span>Value</span><span>Printed range</span><span>Institution</span><span>Document</span>
+      </div>
+      {% for item in chart.rows %}
+      <div class="obs-row" style="grid-template-columns: 96px minmax(120px, 1fr) 110px 150px minmax(0, 1.4fr) 76px;">
+        <span class="mono">{{ item.date_label or item.date or "date to check" }}</span>
+        <span>{{ item.name }}{% if item.material %} <span class="caps muted{% if item.material_source == "model" %} read-by-model{% endif %}"{% if item.material_source == "model" %} title="The form printed no material. A model read the table this value stands in."{% endif %}>{{ item.material }}{% if item.material_source == "model" %}*{% endif %}</span>{% endif %}</span>
+        <span class="value mono">{% if item.comparator and not item.value.startswith(item.comparator) %}{{ item.comparator }}{% endif %}{{ item.value }}{% if item.corrected %} <span class="caps signal">corrected</span>{% endif %}{% if item.value_role and item.value_role != "result" %} <span class="caps muted" title="Printed beside the result of this form{% if item.column_heading %}, under &laquo;{{ item.column_heading }}&raquo;{% endif %}. It belongs to another day, so it is listed here and not drawn.">{{ item.column_heading or "beside the result" }}</span>{% endif %}{% if item.unit_by_numbers %} <span class="caps muted" title="This form printed no unit for this value. It is shown on this scale because its numbers agree with it.">unit by numbers</span>{% endif %}{% if item.unit_from_reference %} <span class="caps muted" title="This form printed no unit column. The unit was read from the range printed beside the value.">unit from the range</span>{% endif %}{% if item.unit_from_the_row %} <span class="caps muted" title="The unit is the one printed for this row of the form.">unit from the row</span>{% endif %}</span>
+        <span class="mono">{{ item.reference or "–" }}</span>
+        <span class="muted">{{ item.provider or "–" }}</span>
+        <span><a class="mono" href="{{ item.card_url }}">{{ item.file_id }}</a></span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <p class="empty">No values of this test in the archive.</p>
+  {% endfor %}
+
+  <p class="provenance caps muted">Shown, not read: nothing here is averaged, no trend is drawn, and no value is marked high or low. What the numbers mean is for a doctor.</p>
+  {% endif %}
+
+</div>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{# One answer for every page that has nothing to show yet: what state this instance is in, and
+   the one thing to do next. A tool with no data should read as new, not as broken. #}
+{% macro nothing(what) %}
+{% set here = stage() %}
+<section class="rule" style="padding-top: 18px;">
+  <h1>{{ what }}</h1>
+  {% if here.state == "no_archive" %}
+  <p class="empty">No archive here yet. Add a folder of medical documents &mdash; scans, photographs, spreadsheets, whatever you have &mdash; and this page fills in by itself.</p>
+  <p class="caps muted">The folder is only ever read. Nothing in it is renamed, moved or changed.</p>
+  <p><a class="btn" href="/status">Add an archive</a></p>
+  {% elif here.state == "unindexed" %}
+  <p class="empty">The documents of {{ here.whose }} have been read, but the index every page of this interface is built from is missing or older than they are.</p>
+  <p class="caps muted">Nothing is being sent anywhere by this: the index is built here, from what is already on this machine, in seconds.</p>
+  <p><code class="mono">epicrisis index</code></p>
+  <p><a class="btn" href="/status">Archive status</a></p>
+  {% elif here.state == "scanning" %}
+  <p class="empty">The archive of {{ here.whose }} is being looked through right now. This page appears once its documents have been read.</p>
+  <p><a class="btn" href="/status">Watch the progress</a></p>
+  {% else %}
+  <p class="empty">The documents of {{ here.whose }} have not been read yet. Reading them is the step that fills every page of this interface.</p>
+  <p class="caps muted">Reading sends each page to a model{% if here.archives > 1 %}, and it reads every archive on this server, not only this one{% endif %}. Nothing is sent before you agree to it, and the screen before it says exactly what goes and where.</p>
+  {# The one thing to do next is done from here, not from another page found first. It still
+     cannot start before a person has read what would be sent and said yes. #}
+  {% if here.running %}
+  <p class="caps signal">The documents are being read right now.</p>
+  <p><a class="btn" href="/status">Watch the progress</a></p>
+  {% elif not here.consented %}
+  <p><a class="btn" href="/consent">Read what would be sent</a></p>
+  {% elif not here.installed %}
+  <p class="caps alert">The program that talks to the model is not installed on this server, so the reading cannot run.</p>
+  <p><a class="btn" href="/status">Archive status</a></p>
+  {% else %}
+  <form method="post" action="/update"><button class="btn" type="submit">Read the documents</button></form>
+  {% endif %}
+  {% endif %}
+</section>
+{% endmacro %}

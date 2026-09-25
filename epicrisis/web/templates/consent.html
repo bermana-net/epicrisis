@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model processing · Epicrisis Companion</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v=48">
+</head>
+<body>
+<div class="page consent">
+
+  {% set current = "consent" %}
+  {% include "_header.html" %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>Before pages go to a model</h1>
+    <dl>
+      <dt class="caps">What is sent</dt>
+      <dd>The full image of a page, or all of its text, with everything printed on it, including names, dates of birth and results. {% if pages %}This run will send {{ pages|thousands }} pages from {{ files|thousands }} files, one page per request{% if archives|length > 1 %}, out of every archive on this server &mdash; {{ archives|join(", ") }}{% endif %}.{% else %}No pages are ready to send yet.{% endif %} Epicrisis removes the file name, folder names, paths and image metadata. It does not remove anything from the page itself.</dd>
+
+      <dt class="caps">Where it goes</dt>
+      <dd>To Anthropic, through Claude Code signed in with your own Claude subscription on this server. This mode is meant for personal use.</dd>
+
+      <dt class="caps">What happens to it there</dt>
+      <dd>Anthropic's consumer terms apply: how long the data is kept, whether it can be used for model training, and when people can review content flagged by safety systems. Consumer plans come without a data processing agreement. Read the <a href="https://www.anthropic.com/legal/consumer-terms" rel="noreferrer noopener" target="_blank">Consumer Terms</a> and the <a href="https://www.anthropic.com/legal/privacy" rel="noreferrer noopener" target="_blank">Privacy Policy</a>.</dd>
+
+      <dt class="caps">Your control</dt>
+      <dd>The model training setting for your account is at claude.ai/settings/data-privacy-controls. A change to it does not apply to data sent before the change. Nothing is sent before you confirm here. A run stops at the subscription usage limit and continues where it left off.</dd>
+    </dl>
+
+    {% if consented %}
+    <p class="confirmed caps">Model processing is on.</p>
+    {% else %}
+    <form method="post" action="/consent">
+      <label class="check">
+        <input type="checkbox" name="understood" value="yes" required>
+        <span>I understand what is sent and where it goes.<br><span class="device-note">Epicrisis Companion is not a medical device and is not intended for diagnosis or treatment.</span></span>
+      </label>
+      <button class="btn primary" type="submit">Turn on model processing</button>
+    </form>
+    {% if error %}<div class="error caps" role="alert">{{ error }}</div>{% endif %}
+    {% endif %}
+  </section>
+
+</div>
+</body>
+</html>
