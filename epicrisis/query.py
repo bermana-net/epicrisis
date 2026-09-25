@@ -13,6 +13,7 @@ from pathlib import Path
 
 from epicrisis.index.build import index_path
 from epicrisis.printed_values import fold, fold_with_offsets
+from epicrisis.values import only_results
 
 MAX_LIMIT = 200
 # A tool's answer is read by a model and has to fit in what it can hold; a page of one test's
@@ -96,7 +97,7 @@ def search(connection: sqlite3.Connection, query: str, limit: int = 20, since: s
         f"""SELECT d.id FROM search JOIN documents d ON d.id = search.rowid
             WHERE search MATCH ? {_filters(since, until, doc_type, all_copies)}
             ORDER BY bm25(search), d.date DESC LIMIT ?""",
-        (match, *_filter_values(since, until, doc_type), _limit(limit)),
+        (match, *_filter_values(since, until, doc_type), within_limit(limit)),
     ).fetchall()
     return [{**_document_row(connection, row["id"]), "snippet": _snippet(connection, row["id"], query)} for row in rows]
 
@@ -118,7 +119,7 @@ def timeline(connection: sqlite3.Connection, since: str | None = None, until: st
     rows = connection.execute(
         f"""SELECT id FROM documents d WHERE 1 = 1 {only} {_filters(since, until, doc_type, all_copies)}
             ORDER BY d.date IS NULL, d.date DESC, d.id LIMIT ? OFFSET ?""",
-        (*_filter_values(since, until, doc_type), _limit(limit), max(0, int(offset))),
+        (*_filter_values(since, until, doc_type), within_limit(limit), max(0, int(offset))),
     ).fetchall()
     return [_document_row(connection, row["id"]) for row in rows]
 
@@ -179,7 +180,7 @@ def lanes(connection: sqlite3.Connection, since: str | None = None, until: str |
 def indicator_timeline(connection: sqlite3.Connection, material: str | None = None, limit: int = 40,
                        include_derived: bool = False) -> list[dict]:  # fmt: skip
     """Per indicator: the days it was measured and the last value, as printed."""
-    conditions = "o.indicator_id IS NOT NULL AND d.date IS NOT NULL AND o.value_role = 'result'"
+    conditions = f"o.indicator_id IS NOT NULL AND d.date IS NOT NULL AND {only_results()}"
     filters: list = []
     if material:
         conditions += " AND o.material IS ?" if material == "none" else " AND o.material = ?"
@@ -216,7 +217,7 @@ def indicator_timeline(connection: sqlite3.Connection, material: str | None = No
             "last_value": last["value"], "last_unit": last["unit"], "last_comparator": last["comparator"],
         })  # fmt: skip
     series.sort(key=lambda item: (-item["count"], item["label"].casefold()))
-    return series[: _limit(limit)]
+    return series[: within_limit(limit)]
 
 
 def language_counts(connection: sqlite3.Connection) -> dict[str, int]:
@@ -252,7 +253,7 @@ def _stands_alone(name: str, text: str) -> bool:
 
 def value_names(connection: sqlite3.Connection, query: str | None = None, limit: int = 100, include_derived: bool = False) -> list[dict]:
     """Names of values as the labs printed them, with how often and over which years."""
-    where = ["o.value_role = 'result'"]
+    where = [only_results()]
     values: list = []
     if not include_derived:
         where.append("o.derived = 0")
@@ -263,7 +264,7 @@ def value_names(connection: sqlite3.Connection, query: str | None = None, limit:
         f"""SELECT o.name, o.unit, count(*) AS times, min(d.date) AS first_date, max(d.date) AS last_date, o.kind
             FROM observations o JOIN documents d ON d.id = o.document_id
             WHERE {" AND ".join(where)} GROUP BY fold(o.name), o.unit ORDER BY times DESC, o.name LIMIT ?""",
-        (*values, _limit(limit)),
+        (*values, within_limit(limit)),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -282,7 +283,7 @@ def indicator_list(connection: sqlite3.Connection, status: str | None = "approve
             FROM indicators i LEFT JOIN observations o ON o.indicator_id = i.id LEFT JOIN documents d ON d.id = o.document_id
             {"WHERE i.status = ?" if status else ""} GROUP BY i.id ORDER BY values_count DESC, i.label
             {"LIMIT ? OFFSET ?" if limit is not None else ""}""",
-        ((status,) if status else ()) + ((_limit(limit), max(0, int(offset))) if limit is not None else ()),
+        ((status,) if status else ()) + ((within_limit(limit), max(0, int(offset))) if limit is not None else ()),
     ).fetchall()
     items = []
     for row in rows:
@@ -331,13 +332,22 @@ def values(connection: sqlite3.Connection, name: str | None = None, since: str |
             WHERE {conditions} {"" if include_derived else "AND o.derived = 0"}
             {_filters(since, until, None, all_copies)}
             ORDER BY d.date IS NULL, d.date, o.page LIMIT ?""",
-        (*words, *_filter_values(since, until, None), _limit(limit, cap)),
+        (*words, *_filter_values(since, until, None), within_limit(limit, cap)),
     ).fetchall()
     return [
         {**{name: value for name, value in dict(row).items() if name not in ("source_id", "file_sha256", "first_page")},
          "card_url": f"/documents/{row['source_id']}/{row['file_sha256']}/{row['first_page']}"}
         for row in rows
     ]  # fmt: skip
+
+
+def whole_history(connection: sqlite3.Connection, indicator: str, material: str | None = None) -> list[dict]:
+    """Every value of one test, not a page of them: what the page of one test is made of.
+
+    It prints the count and the span of the whole history beside the values, so the whole
+    history is what it has to be given. How much that may be is decided here, once.
+    """
+    return values(connection, indicator=indicator, material=material, limit=MAX_SERIES, cap=MAX_SERIES)
 
 
 def count_values(connection: sqlite3.Connection, indicator: str | None = None, material: str | None = None,
@@ -389,7 +399,7 @@ def flagged_values(connection: sqlite3.Connection, since: str | None = None, unt
                    o.kind, o.material, o.material_source, o.corrected, o.table_heading, o.page, d.id AS document_id, d.date, d.doc_type,
                    d.provider, f.file_id, o.indicator_id, d.source_id, d.file_sha256, d.first_page
             FROM observations o JOIN documents d ON d.id = o.document_id JOIN files f ON f.sha256 = d.file_sha256
-            WHERE {" AND ".join(where)} AND o.value_role = 'result' {"" if include_derived else "AND o.derived = 0"}
+            WHERE {" AND ".join(where)} AND {only_results()} {"" if include_derived else "AND o.derived = 0"}
             {_filters(since, until, None, all_copies)}
             ORDER BY d.date IS NULL, d.date, o.page""",
         (*extra, *_filter_values(since, until, None)),
@@ -407,7 +417,7 @@ def flagged_values(connection: sqlite3.Connection, since: str | None = None, unt
             item["outside_printed_range"] = True
         items.append(item)
     start = max(0, int(offset))
-    return items[start : start + _limit(limit)], counts
+    return items[start : start + within_limit(limit)], counts
 
 
 PARTS = ("values", "sections", "text", "diagnoses", "medications", "unreadable", "to_check", "copies")
@@ -437,7 +447,7 @@ def document(connection: sqlite3.Connection, document_id: int | None = None, fil
     if base is None:
         return None
     wanted = tuple(parts) if parts else PARTS
-    start, size = max(0, int(offset)), _limit(limit)
+    start, size = max(0, int(offset)), within_limit(limit)
     whole = {
         "values": lambda: [dict(r) for r in connection.execute(
             "SELECT name, value, value_numeric, comparator, unit, reference, flag, value_role, derived, indicator_id, material,"
@@ -500,7 +510,7 @@ def to_check(connection: sqlite3.Connection, code: str | None = None, limit: int
         findings.sort(key=lambda item: order.get(item["code"], len(order)))
         documents.append({**_document_row(connection, document_id), "to_check": findings})
     documents.sort(key=lambda item: order.get(item["to_check"][0]["code"], len(order)))
-    return documents[: _limit(limit)]
+    return documents[: within_limit(limit)]
 
 
 def _document_row(connection: sqlite3.Connection, document_id: int) -> dict | None:
@@ -579,7 +589,8 @@ def _filter_values(since: str | None, until: str | None, doc_type: str | None) -
     return tuple(value for value in (since, until, doc_type) if value)
 
 
-def _limit(limit: int, cap: int = MAX_LIMIT) -> int:
+def within_limit(limit: int, cap: int = MAX_LIMIT) -> int:
+    """How many a caller may actually have. Every asked-for number passes through here."""
     return max(1, min(int(limit), cap))
 
 
@@ -671,6 +682,6 @@ def materials_present(connection: sqlite3.Connection) -> dict[str, int]:
         (row["material"] or "none"): row["n"]
         for row in connection.execute(
             "SELECT material, count(*) AS n FROM observations WHERE indicator_id IS NOT NULL"
-            " AND value_role = 'result' GROUP BY material"
+            f" AND {only_results('')} GROUP BY material"
         )
     }

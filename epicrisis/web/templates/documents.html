@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Documents · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page documents">
+{% extends "_page.html" %}
+{% set page_class = "documents" %}
+{% block title %}Documents{% endblock %}
+{% block page %}
 
   {% from "_nothing.html" import nothing %}
   {% set current = "documents" %}
@@ -66,6 +59,4 @@
   {% endfor %}
   {% endif %}
 
-</div>
-</body>
-</html>
+{% endblock %}

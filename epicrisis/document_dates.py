@@ -8,6 +8,7 @@ import re
 from datetime import date
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.dates import birth_dates, read_printed_date, same_date
 from epicrisis.extract.run import load_extracted
 
@@ -157,7 +158,7 @@ def source_day_first(output: Path, documents: list[list[dict]]) -> tuple[set[str
     """Files and institutions of this source that print dates day first somewhere."""
     items = []
     for pages in documents:
-        extracted = load_extracted(output / "extracted", pages[0]["file_sha256"])
+        extracted = load_extracted(output / layout.EXTRACTED, pages[0]["file_sha256"])
         numbers = [page["page"] for page in pages]
         items.append((pages[0]["file_sha256"], next((d for d in (extracted or {"documents": []})["documents"] if d["pages"] == numbers), None), pages))
     return day_first_evidence(items)

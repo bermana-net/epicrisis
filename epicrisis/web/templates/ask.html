@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ask · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page ask">
+{% extends "_page.html" %}
+{% set page_class = "ask" %}
+{% block title %}Ask{% endblock %}
+{% block page %}
 
   {% from "_nothing.html" import nothing %}
   {% set current = "ask" %}
@@ -97,7 +90,9 @@
   {% endif %}
   {% endif %}
 
-</div>
+{% endblock %}
+
+{% block after %}
 <script>
   (() => {
     const chat = document.getElementById("chat");
@@ -137,5 +132,4 @@
     }
   });
 </script>
-</body>
-</html>
+{% endblock %}

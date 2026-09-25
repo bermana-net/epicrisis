@@ -28,8 +28,10 @@ PRIVATE_NAME = "Clinic Ivanova oncology"
 class FakeExtractBackend:
     name = "fake"
     model = "fake-sonnet"
+    MOST_TOKENS = 1024  # the real one says how long an answer may be; so does this
 
-    def __init__(self, fail_from: int | None = None, limit_from: int | None = None, model: str | None = None):
+    def __init__(self, fail_from: int | None = None, limit_from: int | None = None, model: str | None = None,
+                 **rest):  # a backend is handed the call its engine makes; this one carries its own
         if model:
             self.model = model
         self.calls = []
@@ -645,14 +647,14 @@ def test_update_runs_every_step_and_skips_what_is_done(setup, monkeypatch):
             classify_calls.append(1)
             raise AssertionError("classify.jsonl already covers every page")
 
-    monkeypatch.setattr(update_module, "ClaudeCodeBackend", Classify)
-    monkeypatch.setattr(update_module, "ModelLadder", lambda first, second: FakeLadder(first))
-    monkeypatch.setattr(update_module, "default_extract_backend", lambda *args: FakeExtractBackend())
-    monkeypatch.setattr(update_module, "ClaudeCodeDateSearch", Search)
-
+    # Every step asks epicrisis.engines for something that can read; the test answers instead.
     class FakeLadder:
-        def __init__(self, first):
+        def __init__(self, first=None):
             self.name, self.model, self.accepted_models = "fake", "fake-ladder", {"fake-ladder"}
+
+    monkeypatch.setattr(update_module.engines, "classifier", lambda *args: FakeLadder(Classify()))
+    monkeypatch.setattr(update_module.engines, "extractor", lambda *args: FakeExtractBackend())
+    monkeypatch.setattr(update_module.engines, "date_search", lambda *args: Search())
 
     # classify.jsonl in the fixture has no ledger and one route for all pages: make both match inventory.
     routes = {(ref.file_sha256, ref.page): ref.route for record in records.values() for ref in page_refs(record)}

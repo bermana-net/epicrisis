@@ -28,6 +28,13 @@
     background-position: calc(100% - 15px) center, calc(100% - 10px) center;
     background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
   select:hover, select:focus { border-color: var(--signal); }
+  /* And one kind of field, for the same reason: a box in system white standing beside a select
+     drawn on this paper is the one thing on the page that came from somewhere else. */
+  input[type="text"], input[type="number"], input[type="search"], input[type="date"], textarea {
+    font: 14px var(--sans); padding: 6px 9px; border: 1px solid var(--ink);
+    background: var(--paper); color: var(--ink); border-radius: 0; }
+  input[type="text"]:hover, input[type="number"]:hover, input[type="search"]:hover,
+  input[type="date"]:hover, textarea:hover { border-color: var(--signal); }
   .brand { font-weight: 800; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; }
   .live { display: flex; align-items: center; gap: 8px; }
   .live::before { content: ""; width: 8px; height: 8px; background: var(--signal); }
@@ -521,3 +528,58 @@
     background: none; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
   .lock-how-to { padding: 4px 0 10px; }
   .lock-how-to p { margin: 0 0 8px; max-width: 70ch; font-size: 14px; }
+
+/* A choice the program cannot make yet is shown, greyed, with what it is waiting for. Hiding it
+   would leave a person wondering whether it exists; offering it live would be a lie. */
+.choice.not-built { opacity: .55; }
+.choice.not-built input { cursor: not-allowed; }
+
+/* Settings, in tabs — the same tab control as the site: captions along a rule, the one you are
+   on in ink with a red underline. The chosen tab is a hidden radio and the panels are its
+   siblings, so the switching is CSS alone: no script, nothing typed on another tab is lost, and
+   Save posts the whole form whichever tab is showing. */
+.tab-pick { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.settings-form .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 26px 0 0;
+  border-bottom: 1px solid var(--line); }
+.settings-form .tabs label { background: none; border: 0; border-bottom: 3px solid transparent;
+  cursor: pointer; padding: 8px 2px 10px; margin-right: 22px; color: var(--muted);
+  font-family: var(--mono); font-size: 12px; line-height: 1.4; letter-spacing: .1em;
+  text-transform: uppercase; }
+.settings-form .tabs label:hover { color: var(--ink); }
+#tab-model:checked ~ .tabs label[for="tab-model"],
+#tab-reading:checked ~ .tabs label[for="tab-reading"],
+#tab-rules:checked ~ .tabs label[for="tab-rules"],
+#tab-network:checked ~ .tabs label[for="tab-network"] {
+  color: var(--ink); border-bottom-color: var(--signal); }
+/* A tab reached by keyboard has to show where it is, or the page cannot be used without a mouse. */
+#tab-model:focus-visible ~ .tabs label[for="tab-model"],
+#tab-reading:focus-visible ~ .tabs label[for="tab-reading"],
+#tab-rules:focus-visible ~ .tabs label[for="tab-rules"],
+#tab-network:focus-visible ~ .tabs label[for="tab-network"] { outline: 2px solid var(--ink); outline-offset: 2px; }
+.tab-panel { display: none; }
+#tab-model:checked ~ .panel-model,
+#tab-reading:checked ~ .panel-reading,
+#tab-rules:checked ~ .panel-rules,
+#tab-network:checked ~ .panel-network { display: block; padding-top: 22px; }
+.tab-panel > .note:first-child { margin: 0 0 4px; max-width: 72ch; }
+.tab-panel > fieldset:first-of-type { margin-top: 4px; }
+
+/* Which part of the program a rule belongs to, said as a mark rather than as a sentence: with
+   a page of them, the step is what a person scans by, and prose cannot be scanned. */
+/* A group heading is a frame, not a fill: a filled mark is what the pages use for the thing you
+   are looking at, and a heading is not that. Red where the step costs a model's reading. */
+.rule-at { font-size: 11px; letter-spacing: .08em; color: var(--ink); border: 1px solid var(--ink);
+  padding: 2px 7px; vertical-align: middle; white-space: nowrap; }
+/* A step that costs hours of a model's reading is not the same kind of switch as one that
+   takes effect on the next page, and the mark says so before the question does. */
+.rule-at.costs { color: var(--signal); border-color: var(--signal); }
+/* Beside a rule's own name the mark is filled, the way this program fills the mark for the one
+   thing you are looking at. The heading above it stays a frame, so the two never read alike. */
+.rule-at.filled { color: var(--paper); background: var(--ink); border-color: var(--ink); }
+.rule-at.filled.costs { background: var(--signal); border-color: var(--signal); color: var(--paper); }
+.ask-first { margin: 12px 0 18px; border-left: 4px solid var(--signal); }
+.ask-first p { margin: 0 0 10px; }
+.ask-first p:last-child { display: flex; align-items: center; gap: 16px; margin: 0; }
+.rule-step { display: flex; align-items: center; gap: 10px; margin: 22px 0 2px; color: var(--muted);
+  border-top: 1px solid var(--line); padding-top: 14px; }
+.rule-step:first-of-type { border-top: 0; padding-top: 0; margin-top: 8px; }

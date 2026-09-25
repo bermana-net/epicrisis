@@ -14,17 +14,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from statistics import median
 
-MIN_HISTORY = 4  # readings of one indicator before its habits mean anything
-# How much each signal says. A number far from every other reading of the same test speaks
-# loudest; a missing unit is common on old forms, so many of them say little more than a few.
-WEIGHT = {
-    "number_far_from_the_others": 3,
-    "institution_looks_like_a_name": 3,
-    "unit_missing_where_others_have_one": 1,
-    "lab_form_without_a_title": 1,
-}
+from epicrisis.rules.subjects import Archive, Found
+from epicrisis.values import only_results
+
+# How much each signal says, how many readings it takes before a test has habits, and how far a
+# number has to be before it looks like a misplaced decimal point, are all settings of the rules
+# now: see epicrisis/rules/shipped/. What stays here is the one decision about combining them.
 CAP = 3  # times one signal can count in one document
-MAGNITUDE = 10  # times away from the median before a number looks like a misplaced decimal point
 
 
 @dataclass
@@ -34,10 +30,11 @@ class Suspect:
     date: str | None
     codes: Counter = field(default_factory=Counter)
     lines: list[str] = field(default_factory=list)
+    weights: dict = field(default_factory=dict)  # what each rule that found this one says it weighs
 
     @property
     def weight(self) -> int:
-        return sum(WEIGHT.get(code, 1) * min(times, CAP) for code, times in self.codes.items())
+        return sum(self.weights.get(code, 1) * min(times, CAP) for code, times in self.codes.items())
 
 
 TITLES = ("проф", "профессор", "професор", "доц", "д-р", "др", "dr", "dra", "prof", "лікар", "врач", "уролог", "mudr", "md")
@@ -125,42 +122,69 @@ def _series_key(row: dict) -> tuple:
     return (row["indicator_id"] or "", (row["unit"] or "").strip(), (row.get("material") or "").strip())
 
 
-def find(rows: list[dict], documents: list[dict]) -> list[Suspect]:
-    """Rows are values with their indicator, unit, number and document; documents carry the header."""
-    habits, numbers = unit_habits(rows), numbers_by_indicator(rows)
+def unit_missing_where_others_have_one(archive, settings: dict) -> list[Found]:
+    """A value with no unit, on a test whose other forms print one."""
+    found = []
+    for row in archive.rows:
+        counts = archive.habits.get(row["indicator_id"] or "", Counter())
+        if not (row["unit"] or "").strip() and row["number"] is not None and sum(counts.values()) >= settings["least_history"]:
+            found.append(Found(row["file_sha256"], row["first_page"], row.get("date"),
+                               f'{row["name"]}: {row["value"]} with no unit (others print {counts.most_common(1)[0][0]})'))  # fmt: skip
+    return found
+
+
+def number_far_from_the_others(archive, settings: dict) -> list[Found]:
+    """A number many times away from the middle of the same test, in the same unit and specimen."""
+    found = []
+    for row in archive.rows:
+        series = archive.numbers.get(_series_key(row), [])
+        if not row["number"] or len(series) < settings["least_history"]:
+            continue
+        middle = median(series)
+        if middle > 0 and (row["number"] / middle >= settings["times_away"] or middle / row["number"] >= settings["times_away"]):
+            found.append(Found(row["file_sha256"], row["first_page"], row.get("date"),
+                               f'{row["name"]}: {row["value"]} {(row["unit"] or "").strip()} (others around {middle:g})'))  # fmt: skip
+    return found
+
+
+def institution_looks_like_a_name(archive, settings: dict) -> list[Found]:
+    """The doctor under the stamp read as the laboratory."""
+    return [
+        Found(document["file_sha256"], document["first_page"], document.get("date"),
+              f'institution as printed: {document["provider"]}')  # fmt: skip
+        for document in archive.documents
+        if provider_looks_like_a_person(document["provider"])
+    ]
+
+
+def lab_form_without_a_title(archive, settings: dict) -> list[Found]:
+    return [
+        Found(document["file_sha256"], document["first_page"], document.get("date"),
+              "no title read on a laboratory form")  # fmt: skip
+        for document in archive.documents
+        if document["doc_type"] == "lab_panel" and not document["title"] and document["transcribed"]
+    ]
+
+
+def find(rows: list[dict], documents: list[dict], found_by) -> list[Suspect]:
+    """Rows are values with their indicator, unit, number and document; documents carry the header.
+
+    The rules are handed in, already chosen, the way the charts are handed theirs: this module
+    gathers what they find into one document at a time and weighs it. Which rules exist, and
+    which of them this archive runs, is not its business.
+    """
+    archive = Archive(rows=rows, documents=documents,
+                      habits=unit_habits(rows), numbers=numbers_by_indicator(rows))  # fmt: skip
     suspects: dict[tuple, Suspect] = {}
-
-    def suspect(row) -> Suspect:
-        key = (row["file_sha256"], row["first_page"])
-        return suspects.setdefault(key, Suspect(row["file_sha256"][:8], row["first_page"], row.get("date")))
-
-    for row in rows:
-        unit = (row["unit"] or "").strip()
-        counts = habits.get(row["indicator_id"] or "", Counter())
-        if not unit and row["number"] is not None and sum(counts.values()) >= MIN_HISTORY:
-            item = suspect(row)
-            item.codes["unit_missing_where_others_have_one"] += 1
-            item.lines.append(f'{row["name"]}: {row["value"]} with no unit (others print {counts.most_common(1)[0][0]})')
-        series = numbers.get(_series_key(row), [])
-        if row["number"] and len(series) >= MIN_HISTORY:
-            middle = median(series)
-            if middle > 0 and (row["number"] / middle >= MAGNITUDE or middle / row["number"] >= MAGNITUDE):
-                item = suspect(row)
-                item.codes["number_far_from_the_others"] += 1
-                item.lines.append(f'{row["name"]}: {row["value"]} {unit} (others around {middle:g})')
-
-    for document in documents:
-        if provider_looks_like_a_person(document["provider"]):
-            key = (document["file_sha256"], document["first_page"])
-            item = suspects.setdefault(key, Suspect(document["file_sha256"][:8], document["first_page"], document.get("date")))
-            item.codes["institution_looks_like_a_name"] += 1
-            item.lines.append(f'institution as printed: {document["provider"]}')
-        if document["doc_type"] == "lab_panel" and not document["title"] and document["transcribed"]:
-            key = (document["file_sha256"], document["first_page"])
-            item = suspects.setdefault(key, Suspect(document["file_sha256"][:8], document["first_page"], document.get("date")))
-            item.codes["lab_form_without_a_title"] += 1
-            item.lines.append("no title read on a laboratory form")
-
+    weights: dict[str, int] = {}
+    for rule in found_by:
+        weights[rule.id] = rule.settings.get("weight", 1)
+        for item in rule.check.run(archive, rule.settings):
+            key = (item.file_sha256, item.first_page)
+            suspect = suspects.setdefault(key, Suspect(item.file_sha256[:8], item.first_page, item.date))
+            suspect.codes[rule.id] += 1
+            suspect.lines.append(item.line)
+            suspect.weights = weights
     return sorted(suspects.values(), key=lambda item: (-item.weight, item.file_id))
 
 
@@ -168,9 +192,9 @@ def rows_from_index(connection) -> tuple[list[dict], list[dict]]:
     values = [
         dict(row)
         for row in connection.execute(
-            """SELECT o.name, o.value, o.unit, o.value_numeric AS number, o.indicator_id, o.material, d.file_sha256, d.first_page, d.date
+            f"""SELECT o.name, o.value, o.unit, o.value_numeric AS number, o.indicator_id, o.material, d.file_sha256, d.first_page, d.date
                FROM observations o JOIN documents d ON d.id = o.document_id
-               WHERE o.value_role = 'result' AND o.derived = 0"""
+               WHERE {only_results()} AND o.derived = 0"""
         )
     ]
     documents = [

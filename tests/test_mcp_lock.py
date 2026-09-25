@@ -115,7 +115,7 @@ def test_the_tools_are_refused_while_the_archive_is_locked(archive_index, monkey
     import time
 
     from epicrisis import mcp_lock as lock_module
-    from epicrisis.ask import set_mcp_lock
+    from epicrisis.settings import set_mcp_lock
     from epicrisis.mcp_server import build_server
 
     data_dir, _, _ = archive_index
@@ -252,7 +252,7 @@ def test_the_code_is_asked_for_over_the_network_and_not_on_this_machine(archive_
     import asyncio
 
     from epicrisis import mcp_lock as lock_module
-    from epicrisis.ask import set_mcp_lock
+    from epicrisis.settings import set_mcp_lock
     from epicrisis.mcp_server import build_server
 
     data_dir, _, _ = archive_index

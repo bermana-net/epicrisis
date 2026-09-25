@@ -19,13 +19,11 @@ from pathlib import Path
 
 from epicrisis import records
 from epicrisis.runs import put_in_place, temporary_name
+from epicrisis.settings import ANSWER_MODES, answer_mode, ask_enabled, settings_path  # noqa: F401
 
 CHATS_DIR = "chats"
-SETTINGS_FILE = "settings.json"
 TIMEOUT_SECONDS = 600
 MAX_HISTORY = 12
-
-ANSWER_MODES = ("as_printed", "with_meaning", "direct")
 
 SHARED_RULES = """You answer questions about one person's own medical archive, using only the epicrisis tools. The person asking is the person the records are about.
 
@@ -64,164 +62,11 @@ def system_prompt(mode: str) -> str:
     return SHARED_RULES + (WITH_MEANING_RULES if mode == "with_meaning" else AS_PRINTED_RULES)
 
 
-def answer_mode(data_dir: Path) -> str:
-    """as_printed: values and printed ranges only. with_meaning: the model may also read them."""
-    mode = _settings(data_dir).get("answer_mode", "as_printed")
-    return mode if mode in ANSWER_MODES else "as_printed"
-
-
-def set_answer_mode(data_dir: Path, mode: str) -> None:
-    if mode not in ANSWER_MODES:
-        raise ValueError("unknown answer mode")
-    _write_settings(data_dir, {"answer_mode": mode})
-
-
-def _settings(data_dir: Path) -> dict:
-    try:
-        return json.loads(settings_path(data_dir).read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return {}
-
-
-def _write_settings(data_dir: Path, changes: dict) -> None:
-    """Written whole and put in place at once, like every other file of state this program keeps.
-
-    A half-written settings file is unreadable, and an unreadable one reads as no settings at
-    all — which would turn the lock on the archive off without anybody saying so.
-    """
-    settings = {**_settings(data_dir), **changes}
-    path = settings_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = temporary_name(path)
-    temporary.write_text(json.dumps(settings, indent=1) + "\n", encoding="utf-8")
-    put_in_place(temporary, path)
-
-
-def settings_path(data_dir: Path) -> Path:
-    return Path(data_dir) / SETTINGS_FILE
-
-
-def converts_units(data_dir: Path) -> bool:
-    """Whether charts bring the units of one test to one scale. Off in the repository by default."""
-    return bool(_settings(data_dir).get("convert_units"))
-
-
-def set_converts_units(data_dir: Path, enabled: bool) -> None:
-    _write_settings(data_dir, {"convert_units": enabled})
-
-
-def reads_unit_from_range(data_dir: Path) -> bool:
-    """Whether a value with no unit of its own takes the one named in its printed range.
-
-    On by default: "19,0-37,0%" and "53-115 мкмоль/л" say the scale as plainly as a unit column
-    would, and reading them is reading the form. Off, a chart shows only what the unit column
-    printed, and values without one stay together under "no unit printed".
-    """
-    return bool(_settings(data_dir).get("unit_from_range", True))
-
-
-def set_reads_unit_from_range(data_dir: Path, enabled: bool) -> None:
-    _write_settings(data_dir, {"unit_from_range": enabled})
-
-
-def places_unit_by_numbers(data_dir: Path) -> bool:
-    """Whether values with no unit anywhere are put on the scale their own numbers match.
-
-    Off in the repository. This is the one reading in the program taken from numbers rather than
-    from a page: an old leukocyte formula printed with no unit column and no range holds
-    per-cents, and only the size of the numbers says so. Turned on, such values join the scale
-    they agree with — within a factor of two, and only where exactly one scale fits — and every
-    one of them is marked on the chart and in the table.
-    """
-    return bool(_settings(data_dir).get("unit_by_numbers"))
-
-
-def set_places_unit_by_numbers(data_dir: Path, enabled: bool) -> None:
-    _write_settings(data_dir, {"unit_by_numbers": enabled})
-
-
-def trusts_read_materials(data_dir: Path) -> bool:
-    """Whether a material a model read is used, where the form printed none.
-
-    Off in the repository, like every other reading this program does not do by itself: with it
-    off, a value whose form said nothing stays under "not said", which is what the form says.
-    Turned on, the panel a model was sure of settles it, and every such value is marked on the
-    page as read rather than printed. What the model was unsure of is never used either way.
-    """
-    return bool(_settings(data_dir).get("read_materials"))
-
-
-def set_trusts_read_materials(data_dir: Path, enabled: bool) -> None:
-    _write_settings(data_dir, {"read_materials": enabled})
-
-
 def _answering_model(data_dir: Path) -> str:
     """A question is thinking work, so it goes to whichever model does the strong pass."""
     from epicrisis.models import model_for
 
     return model_for(data_dir, "strong")
-
-
-def chosen_models(data_dir: Path) -> dict[str, str]:
-    """Which model the person picked for each pass. Empty means the ones this program ships with."""
-    chosen = _settings(data_dir).get("models")
-    return chosen if isinstance(chosen, dict) else {}
-
-
-def set_chosen_models(data_dir: Path, models: dict[str, str]) -> None:
-    from epicrisis.models import PASSES
-
-    # A name is an argument to a command, never a shell string, so nothing here can run; but a
-    # five-hundred-character name would only fail obscurely when that step runs, so it is cut.
-    kept = {name: value.strip()[:80] for name, value in models.items() if name in PASSES and value.strip()}
-    _write_settings(data_dir, {"models": kept})
-
-
-def mcp_lock_on(data_dir: Path) -> bool:
-    """Whether the tools over the network ask for a code first. Off in the repository by default."""
-    return bool(_settings(data_dir).get("mcp_lock"))
-
-
-def set_mcp_lock(data_dir: Path, enabled: bool) -> None:
-    _write_settings(data_dir, {"mcp_lock": enabled})
-
-
-def mcp_lock_scope(data_dir: Path) -> str:
-    """conversation: a code opens the conversation it was given in. server: it opens everything."""
-    from epicrisis.mcp_lock import SCOPES
-
-    scope = _settings(data_dir).get("mcp_lock_scope", "conversation")
-    return scope if scope in SCOPES else "conversation"
-
-
-def set_mcp_lock_scope(data_dir: Path, scope: str) -> None:
-    from epicrisis.mcp_lock import SCOPES
-
-    if scope not in SCOPES:
-        raise ValueError("a lock opens a conversation or the server")
-    _write_settings(data_dir, {"mcp_lock_scope": scope})
-
-
-def mcp_lock_minutes(data_dir: Path) -> int:
-    """How long one code keeps the archive open."""
-    from epicrisis.mcp_lock import PASS_MINUTES
-
-    minutes = _settings(data_dir).get("mcp_lock_minutes", PASS_MINUTES)
-    return minutes if isinstance(minutes, int) and 1 <= minutes <= 7 * 24 * 60 else PASS_MINUTES
-
-
-def set_mcp_lock_minutes(data_dir: Path, minutes: int) -> None:
-    if not 1 <= int(minutes) <= 7 * 24 * 60:
-        raise ValueError("a window runs from a minute to a week")
-    _write_settings(data_dir, {"mcp_lock_minutes": int(minutes)})
-
-
-def ask_enabled(data_dir: Path) -> bool:
-    return bool(_settings(data_dir).get("ask"))
-
-
-def set_ask_enabled(data_dir: Path, enabled: bool) -> None:
-    _write_settings(data_dir, {"ask": enabled})
 
 
 def chats_dir(data_dir: Path) -> Path:
@@ -390,7 +235,15 @@ def _stream(data_dir: Path, prompt: str, mode: str = "as_printed"):
         "--tools", "", "--allowedTools", "mcp__epicrisis",
         "--system-prompt", system_prompt(mode),
     ]  # fmt: skip
-    environment = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1"}
+    # This page runs Claude Code, whichever engine the instance is set to, because a question
+    # needs a conversation with tools and the API engine has no such loop yet. So a key meant for
+    # that other engine is kept out of here too: a question must not quietly bill the key.
+    from epicrisis.engines import KEYS_THE_OTHER_ENGINE_USES
+
+    environment = {
+        **{name: value for name, value in os.environ.items() if name not in KEYS_THE_OTHER_ENGINE_USES},
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
+    }  # fmt: skip
     process = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment
     )

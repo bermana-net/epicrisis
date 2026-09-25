@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Timeline · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page timeline">
+{% extends "_page.html" %}
+{% set page_class = "timeline" %}
+{% block title %}Timeline{% endblock %}
+{% block page %}
 
   {% from "_nothing.html" import nothing %}
   {% set current = "timeline" %}
@@ -151,6 +144,4 @@
   {% endif %}
 
   {% endif %}
-</div>
-</body>
-</html>
+{% endblock %}

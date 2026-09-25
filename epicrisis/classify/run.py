@@ -6,12 +6,12 @@ crash leaves at most one rendered page on disk.
 
 import json
 import os
-import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.classify.backend import PROMPT_VERSION, BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, materialize, page_refs
 from epicrisis.classify.report import latest_pages
@@ -104,19 +104,19 @@ def classify_source(
     workers: int = DEFAULT_WORKERS,
 ) -> RunStats:
     output = source_output_dir(data_dir, source.id)
-    records = list(read_records(output / "inventory.jsonl"))
+    records = list(read_records(output / layout.INVENTORY))
     if sample:
         refs = sample_refs(records)
     elif years is not None:
         refs = refs_for_years(records, years)
     else:
         refs = all_refs(records)
-    done = _done_keys(output / "ledger.jsonl", output / "classify.jsonl")
+    done = _done_keys(output / layout.LEDGER, output / layout.CLASSIFY)
     accepts = getattr(backend, "accepts", None)
     if accepts:
         done |= {
             (line["file_sha256"], line["page"], line.get("route"), backend.model, line["provenance"]["prompt_version"])
-            for line in latest_pages(output / "classify.jsonl")
+            for line in latest_pages(output / layout.CLASSIFY)
             if "error" not in line and accepts(line)
         }
     stats = RunStats(total=len(refs))
@@ -167,14 +167,14 @@ def _classify_refs(refs, done, stats, output, source, backend, limit, progress, 
 
 def _classify_page(ref, stats, output, source, backend) -> bool:
     """Classify one page. Returns False when the run has to stop."""
-    workdir = Path(tempfile.mkdtemp(prefix="epicrisis-page-"))
-    try:
+    with tempfile.TemporaryDirectory(prefix="epicrisis-page-", ignore_cleanup_errors=True) as folder:
+        workdir = Path(folder)
         try:
             payload = materialize(ref, Path(source.path), workdir)
         except PageUnreadable as exc:
             with STATE_LOCK:
-                append_line(output / "classify.jsonl", _page_line(ref, backend, model=None, error=str(exc)))
-                append_line(output / "ledger.jsonl", _ledger_line(ref, backend, "unreadable"))
+                append_line(output / layout.CLASSIFY, _page_line(ref, backend, model=None, error=str(exc)))
+                append_line(output / layout.LEDGER, _ledger_line(ref, backend, "unreadable"))
                 stats.unreadable += 1
             return True
         try:
@@ -185,19 +185,17 @@ def _classify_page(ref, stats, output, source, backend) -> bool:
             return False
         except BackendError as exc:
             with STATE_LOCK:
-                append_line(output / "ledger.jsonl", _ledger_line(ref, backend, "failed", reason=str(exc)))
+                append_line(output / layout.LEDGER, _ledger_line(ref, backend, "failed", reason=str(exc)))
                 stats.failed += 1
             return True
         line = _page_line(ref, backend, model=result.model, fields=result.fields)
         if result.escalation:
             line["provenance"]["escalation"] = result.escalation
         with STATE_LOCK:
-            append_line(output / "classify.jsonl", line)
-            append_line(output / "ledger.jsonl", _ledger_line(ref, backend, "done"))
+            append_line(output / layout.CLASSIFY, line)
+            append_line(output / layout.LEDGER, _ledger_line(ref, backend, "done"))
             stats.classified += 1
         return True
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _done_keys(ledger: Path, results: Path) -> set[tuple]:

@@ -13,7 +13,8 @@ from pathlib import Path
 
 import typer
 
-from epicrisis import __version__
+from epicrisis import layout
+from epicrisis import __version__, engines
 from epicrisis.inventory.report import render
 from epicrisis.inventory.run import OutputInsideArchive, write_inventory
 
@@ -46,7 +47,7 @@ def inventory(
     archive: Path = typer.Argument(
         ..., exists=True, file_okay=False, resolve_path=True, help="Archive root. Only read."
     ),
-    out: Path = typer.Option(Path("inventory.jsonl"), "--out", "-o", help="JSONL output file."),
+    out: Path = typer.Option(Path(layout.INVENTORY), "--out", "-o", help="JSONL output file."),
     usd_per_page: float = typer.Option(
         0.02, "--usd-per-page", min=0, help="Price of one vision page in USD, for the cost estimate."
     ),
@@ -201,7 +202,7 @@ def _prepare_model_step(data_dir: Path, source_id: str | None, backend_name: str
         typer.echo("Choose a source with --source: " + ", ".join(s.id for s in sources), err=True)
         raise typer.Exit(code=2)
     output = source_output_dir(registry.data_dir, source.id)
-    if not (output / "inventory.jsonl").exists():
+    if not (output / layout.INVENTORY).exists():
         typer.echo("Run the inventory for this source first.", err=True)
         raise typer.Exit(code=2)
     _require_consent(registry.data_dir, backend_name)
@@ -229,15 +230,12 @@ def classify(
     data_dir: Path = DATA_DIR_OPTION,
 ) -> None:
     """Classify every page: document type, page role, language, printed date. Sends pages to a model."""
-    from epicrisis.classify.backend import ClaudeCodeBackend, ModelLadder
-    from epicrisis.models import model_for
     from epicrisis.classify.report import latest_pages, render_summary
     from epicrisis.classify.run import all_refs, classify_source, is_running
     from epicrisis.records import read_records
 
     years = _years_option(sample, years_spec)
-    backend = ModelLadder(ClaudeCodeBackend(model=model_for(data_dir, "first")),
-                          ClaudeCodeBackend(model=model_for(data_dir, "strong")))  # fmt: skip
+    backend = engines.classifier(data_dir)
     registry, source, output = _prepare_model_step(data_dir, source_id, backend.name, is_running)
 
     show_progress = sys.stderr.isatty()
@@ -253,8 +251,8 @@ def classify(
     )
     if stats.stopped == "usage_limit":
         typer.echo("Stopped at the subscription usage limit. Run the same command later to continue.")
-    total = len(all_refs(list(read_records(output / "inventory.jsonl"))))
-    typer.echo(render_summary(latest_pages(output / "classify.jsonl"), total))
+    total = len(all_refs(list(read_records(output / layout.INVENTORY))))
+    typer.echo(render_summary(latest_pages(output / layout.CLASSIFY), total))
 
 
 @app.command()
@@ -274,7 +272,7 @@ def extract(
     """Transcribe documents found by classify: values, units, references and text as printed. Sends pages to a model."""
     from epicrisis.classify.report import latest_pages
     from epicrisis.classify.run import is_running
-    from epicrisis.extract.backend import ClaudeCodeExtractBackend, ExtractLadder, default_extract_backend
+    from epicrisis.extract.backend import ClaudeCodeExtractBackend, ExtractLadder
     from epicrisis.models import model_for
     from epicrisis.extract.report import load_documents, render_summary
     from epicrisis.extract.run import LOCK_NAME, document_refs, extract_source
@@ -283,11 +281,11 @@ def extract(
     years = _years_option(sample, years_spec)
     files = {part.strip() for part in files_spec.split(",") if part.strip()} if files_spec else None
     backend = (ExtractLadder(ClaudeCodeExtractBackend(model=model_for(data_dir, "strong")))
-               if strong else default_extract_backend(data_dir))  # fmt: skip
+               if strong else engines.extractor(data_dir))  # fmt: skip
     registry, source, output = _prepare_model_step(
         data_dir, source_id, backend.name, lambda path: is_running(path, LOCK_NAME)
     )
-    if not (output / "classify.jsonl").exists():
+    if not (output / layout.CLASSIFY).exists():
         typer.echo("Run classify for this source first.", err=True)
         raise typer.Exit(code=2)
 
@@ -309,10 +307,10 @@ def extract(
         typer.echo(f"Close-up passes: {stats.close_up_passes}, fewer unreadable parts in {stats.close_up_better}")
     if stats.stopped == "usage_limit":
         typer.echo("Stopped at the subscription usage limit. Run the same command later to continue.")
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
-    total = len(document_refs(records, latest_pages(output / "classify.jsonl")))
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
+    total = len(document_refs(records, latest_pages(output / layout.CLASSIFY)))
     years_by_file = {sha: record.get("folder_year_hint") for sha, record in records.items()}
-    typer.echo(render_summary(load_documents(output / "extracted"), total, years_by_file))
+    typer.echo(render_summary(load_documents(output / layout.EXTRACTED), total, years_by_file))
 
 
 
@@ -324,15 +322,14 @@ def find_dates(
 ) -> None:
     """Look again for dates on documents that have none: stamps, signatures, handwriting. Sends pages to a model."""
     from epicrisis.classify.run import is_running
-    from epicrisis.datesearch import LOCK_NAME, ClaudeCodeDateSearch, search_source
+    from epicrisis.datesearch import LOCK_NAME, search_source
     from epicrisis.records import read_records
     from epicrisis.web.documents import source_documents
 
-    from epicrisis.models import model_for
 
-    backend = ClaudeCodeDateSearch(model=model_for(data_dir, "strong"))
+    backend = engines.date_search(data_dir)
     registry, source, output = _prepare_model_step(data_dir, source_id, backend.name, lambda path: is_running(path, LOCK_NAME))
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
     view = source_documents(source, output)
     targets = [
         (records[row["file"]["sha256"]], tuple(row["pages"]))
@@ -365,12 +362,19 @@ def suspects(
     data_dir: Path = DATA_DIR_OPTION,
 ) -> None:
     """Lines that look misread, ranked: candidates for a second reading. Reads the index only."""
-    from epicrisis.sources import SourceRegistry
+    from epicrisis import rules
+    from epicrisis.rules import kinds
+    from epicrisis.settings import rules_on
+    from epicrisis.sources import showing as sources_showing
     from epicrisis.suspects import find, rows_from_index
 
-    showing = SourceRegistry(data_dir).active()
+    showing = sources_showing(data_dir)
     connection = _read_index(data_dir, showing)
-    found = find(*rows_from_index(connection))
+    found_by = rules_on(data_dir, rules.load(data_dir), kinds.SUSPECTS)
+    if not found_by:
+        typer.echo("Every rule that finds these is turned off for this archive. See the settings page.")
+        return
+    found = find(*rows_from_index(connection), found_by)
     first: dict[str, object] = {}
     for item in found:
         first.setdefault(item.file_id, item)
@@ -409,8 +413,8 @@ def mcp_lock_command(
     `init` makes the shared secret and prints the line an authenticator reads. That line is the
     secret itself, so it is printed once, to whoever runs this, and never passed on.
     """
-    from epicrisis.ask import (mcp_lock_minutes, mcp_lock_on, mcp_lock_scope, set_mcp_lock,
-                               set_mcp_lock_minutes, set_mcp_lock_scope)
+    from epicrisis.settings import (mcp_lock_minutes, mcp_lock_on, mcp_lock_scope, set_mcp_lock,
+                                    set_mcp_lock_minutes, set_mcp_lock_scope)
     from epicrisis.mcp_lock import SCOPES, SECRET_FILE, new_secret, read_secret, uri, write_secret
 
     if action == "init":
@@ -476,12 +480,9 @@ def recheck(
     data_dir: Path = DATA_DIR_OPTION,
 ) -> None:
     """Read documents again with another model and show where the two readings differ. Changes nothing."""
-    from epicrisis.extract.backend import ClaudeCodeExtractBackend
     from epicrisis.recheck import recheck_source
 
-    from epicrisis.models import model_for
-
-    backend = ClaudeCodeExtractBackend(model=model or model_for(data_dir, "second_reader"))
+    backend = engines.second_reader(data_dir) if model is None else engines.second_reader(data_dir, model=model)
     registry, source, output = _prepare_model_step(data_dir, source_id, backend.name, lambda path: False)
     files = {part.strip() for part in files_spec.split(",") if part.strip()} if files_spec else None
     stats = recheck_source(
@@ -520,7 +521,7 @@ def validate(source_id: str | None = SOURCE_OPTION, data_dir: Path = DATA_DIR_OP
         typer.echo("Choose a source with --source: " + ", ".join(s.id for s in sources), err=True)
         raise typer.Exit(code=2)
     output = source_output_dir(registry.data_dir, source.id)
-    if not (output / "classify.jsonl").exists():
+    if not (output / layout.CLASSIFY).exists():
         typer.echo("Run classify for this source first.", err=True)
         raise typer.Exit(code=2)
     result = validate_source(output, Path(source.path))
@@ -546,7 +547,7 @@ def ask(
     data_dir: Path = DATA_DIR_OPTION,
 ) -> None:
     """Whether this instance answers questions about the archive on the Ask page."""
-    from epicrisis.ask import ask_enabled, set_ask_enabled
+    from epicrisis.settings import ask_enabled, set_ask_enabled
 
     if on or off:
         set_ask_enabled(data_dir, on)
@@ -563,18 +564,18 @@ def indicators(
 
     from epicrisis import indicators as store
     from epicrisis.indicator_proposals import ProposalBackend, propose_indicators, unassigned
-    from epicrisis.sources import SourceRegistry
+    from epicrisis.sources import showing as sources_showing
 
-    showing = SourceRegistry(data_dir).active()
+    showing = sources_showing(data_dir)
     connection = _read_index(data_dir, showing)
     printed = store.printed_names(connection)
     waiting = unassigned(data_dir, printed)
     if propose:
-        _require_consent(data_dir, ProposalBackend.name)
+        _require_consent(data_dir, engines.engine_name(data_dir))
         with tempfile.TemporaryDirectory(prefix="epicrisis-indicators-") as workdir:
             from epicrisis.models import model_for
 
-            counts = propose_indicators(data_dir, printed, ProposalBackend(model=model_for(data_dir, "strong")),
+            counts = propose_indicators(data_dir, printed, ProposalBackend(model=model_for(data_dir, "strong"), data_dir=data_dir),
                                         Path(workdir), say=typer.echo)  # fmt: skip
         typer.echo(
             f"Proposed: {counts['new_indicators']} new indicators, {counts['added_to_existing']} spellings for existing ones, "
@@ -658,7 +659,7 @@ def index(data_dir: Path = DATA_DIR_OPTION) -> None:
         raise typer.Exit(code=2)
     for source in sources:
         output = source_output_dir(registry.data_dir, source.id)
-        if (output / "classify.jsonl").exists() and validation_state(output)["state"] != "done":
+        if (output / layout.CLASSIFY).exists() and validation_state(output)["state"] != "done":
             validate_source(output, Path(source.path))
     for source in sources:
         totals = build_index(registry.data_dir, [source])
@@ -723,11 +724,11 @@ def read_materials_command(
 
     from epicrisis.models import model_for
 
-    backend = MaterialBackend(model=model or model_for(data_dir, "first"))
+    backend = MaterialBackend(model=model or model_for(data_dir, "first"), data_dir=data_dir)
     registry, source, output = _prepare_model_step(data_dir, source_id, backend.name, lambda path: False)
     documents = []
-    for record in read_records(output / "inventory.jsonl"):
-        extracted = load_extracted(output / "extracted", record["sha256"]) if "sha256" in record else None
+    for record in read_records(output / layout.INVENTORY):
+        extracted = load_extracted(output / layout.EXTRACTED, record["sha256"]) if "sha256" in record else None
         for document in (extracted or {"documents": []})["documents"]:
             documents.append({**document, "file_sha256": record["sha256"]})
     stats = read_materials(output, documents, backend, output, say=lambda text: typer.echo(text, err=True), limit=limit)
@@ -759,8 +760,8 @@ def check_indicators_command(
     from epicrisis.models import model_for
     from epicrisis.sources import SourceRegistry
 
-    backend = CheckBackend(model=model or model_for(data_dir, "second_reader"))
-    _require_consent(data_dir, CheckBackend.name)
+    backend = CheckBackend(model=model or model_for(data_dir, "second_reader"), data_dir=data_dir)
+    _require_consent(data_dir, engines.engine_name(data_dir))
     registry = SourceRegistry(data_dir.resolve())
     printed, output = _printed_names_everywhere(registry)
     stats = check_groups(registry.data_dir, list(printed.values()), backend, output,

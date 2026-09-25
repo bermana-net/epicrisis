@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.classify.backend import UsageLimitReached
 from epicrisis.classify.report import latest_pages
 from epicrisis.extract.run import document_refs, load_extracted, read_again
@@ -105,14 +106,14 @@ def _recheck_source(
     say=lambda text: None,
 ) -> RecheckStats:
     output = source_output_dir(data_dir, source.id)
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
-    documents = document_refs(records, latest_pages(output / "classify.jsonl"))
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
+    documents = document_refs(records, latest_pages(output / layout.CLASSIFY))
     if files:
         documents = [item for item in documents if any(item.file_sha256.startswith(start) for start in files)]
     stored = {}
     due = []
     for document in documents:
-        extracted = load_extracted(output / "extracted", document.file_sha256)
+        extracted = load_extracted(output / layout.EXTRACTED, document.file_sha256)
         found = next((item for item in (extracted["documents"] if extracted else []) if item["pages"] == list(document.pages)), None)
         if found is not None and done_by and done_by not in (found["provenance"].get("model") or ""):
             continue
@@ -121,7 +122,7 @@ def _recheck_source(
             due.append(document)
 
     stats = RecheckStats()
-    folder = output / "rechecked" / re.sub(r"[^a-z0-9.-]+", "-", backend.model.casefold())
+    folder = output / layout.RECHECKED / re.sub(r"[^a-z0-9.-]+", "-", backend.model.casefold())
     folder.mkdir(parents=True, exist_ok=True)
 
     def work(document) -> bool:

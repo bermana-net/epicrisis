@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Indicators · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page indicators">
+{% extends "_page.html" %}
+{% set page_class = "indicators" %}
+{% block title %}Indicators{% endblock %}
+{% block page %}
 
   {% from "_nothing.html" import nothing %}
   {% set current = "indicators" %}
@@ -201,6 +194,4 @@
   </datalist>
 
   {% endif %}
-</div>
-</body>
-</html>
+{% endblock %}

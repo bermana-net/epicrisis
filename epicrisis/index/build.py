@@ -15,10 +15,11 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.classify.pages import page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
-from epicrisis.corrections import load_corrections, load_primary_copies, load_value_corrections, value_key
-from epicrisis.ask import trusts_read_materials
+from epicrisis.corrections import CORRECTABLE, load_corrections, load_primary_copies, load_value_corrections, value_key
+from epicrisis.settings import trusts_read_materials
 from epicrisis.material_reading import load_materials, panel_key
 from epicrisis.datesearch import load_search_results
 from epicrisis.document_dates import document_date, provider_key, source_day_first
@@ -34,8 +35,6 @@ FILE_NAME = "index.sqlite"
 SCHEMA_VERSION = 6
 
 # Fields of a value a person may correct; everything else stays as the model read it.
-CORRECTABLE = ("name_as_printed", "value_as_printed", "unit_as_printed", "reference_as_printed", "flag_as_printed")
-
 # What was measured, from the heading of the table or the title of the document: the same name
 # means a different test in urine and in blood ("Білок" in a urine panel is not serum protein).
 MATERIALS = {
@@ -181,7 +180,7 @@ def index_state(data_dir: Path, output: Path, source_id: str | None = None) -> d
     path = index_path(data_dir, source_id)
     if not path.exists():
         return {"state": "not_started", "label": "", "title": "Index: not built yet"}
-    inputs = [output / name for name in ("classify.jsonl", "corrections.jsonl", "date_search.jsonl", "validation.json", "extracted")]
+    inputs = [output / name for name in (layout.CLASSIFY, layout.CORRECTIONS, layout.DATE_SEARCH, layout.VALIDATION, layout.EXTRACTED)]
     changed = max((item.stat().st_mtime for item in inputs if item.exists()), default=0)
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
@@ -216,7 +215,7 @@ def _build_index(path: Path, data_dir: Path, sources: list[Source]) -> dict:
         totals = {"documents": 0, "transcribed": 0, "observations": 0, "copy_groups": 0}
         for source in sources:
             output = source_output_dir(data_dir, source.id)
-            if (output / "classify.jsonl").exists():
+            if (output / layout.CLASSIFY).exists():
                 _index_source(connection, source, output, totals, names, data_dir)
         built_at = datetime.now(UTC).isoformat(timespec="seconds")
         connection.executemany(
@@ -232,14 +231,14 @@ def _build_index(path: Path, data_dir: Path, sources: list[Source]) -> dict:
 def _index_source(connection: sqlite3.Connection, source: Source, output: Path, totals: dict,
                   indicator_names: dict[str, str], data_dir: Path) -> None:  # fmt: skip
     connection.execute("INSERT INTO sources VALUES (?, ?)", (source.id, source.name))
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
     for sha256, record in records.items():
         connection.execute(
             "INSERT OR IGNORE INTO files VALUES (?, ?, ?, ?, ?, ?)",
             (sha256, sha256[:8], source.id, record["path"], record.get("category"), len(page_refs(record))),
         )
 
-    groups = group_documents(latest_pages(output / "classify.jsonl"))
+    groups = group_documents(latest_pages(output / layout.CLASSIFY))
     corrections = load_corrections(output)
     # The person whose archive this is decides whether a material a model read is used at all.
     read_materials = load_materials(output) if trusts_read_materials(data_dir) else {}
@@ -258,7 +257,7 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
         sha256, pages = group[0]["file_sha256"], tuple(page["page"] for page in group)
         if sha256 not in records:
             continue
-        extracted = load_extracted(output / "extracted", sha256)
+        extracted = load_extracted(output / layout.EXTRACTED, sha256)
         item = next((doc for doc in (extracted or {"documents": []})["documents"] if tuple(doc["pages"]) == pages), None)
         if not goes_to_extract(group[0]):
             item = None

@@ -10,20 +10,20 @@ Output: data/sources/<id>/date_search.jsonl, one line per document per run; the 
 import hashlib
 import json
 import os
-import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis import records
-from epicrisis.classify.backend import STRONG_MODEL, BackendError, UsageLimitReached, claude_command, run_claude
+from epicrisis.classify.backend import STRONG_MODEL, BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, _clean_image, _close_ups, _file_bytes, _page_image, page_refs
 from epicrisis.records import read_records
 from epicrisis.runs import belongs_to_the_folder
 from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
 from epicrisis.sources import Source, source_output_dir
 
-FILE_NAME = "date_search.jsonl"
+FILE_NAME = layout.DATE_SEARCH
 LOCK_NAME = "date_search.lock"
 MAX_PAGES_PER_CALL = 3
 KINDS = ["study", "report", "issue", "signature", "stamp", "birth", "validity", "device", "other"]
@@ -79,16 +79,29 @@ class SearchStats:
 class ClaudeCodeDateSearch:
     name = "claude-code-subscription"
 
-    def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = 600):
+    def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = 600,
+                 call=None):  # fmt: skip
         self.model, self.executable, self.timeout_seconds = model, executable, timeout_seconds
+        self._call = call
+        if call is not None:
+            self.name = call.backend_name  # the instance says where its pages actually went
+
+    @property
+    def call(self):
+        if getattr(self, "_call", None) is None:
+            from epicrisis.engines import ClaudeCodeCall
+
+            self._call = ClaudeCodeCall(model=self.model, executable=self.executable,
+                                        timeout_seconds=self.timeout_seconds, read_files=True)  # fmt: skip
+        return self._call
 
     def search(self, images: list[tuple[Path, list[Path]]], workdir: Path) -> tuple[list[dict], str]:
         request = "Find the dates on these pages.\n\n" + "\n".join(
             REQUEST_LINE.format(number=number, name=page.name, close_ups=", ".join(path.name for path in close_ups))
             for number, (page, close_ups) in enumerate(images, 1)
         )
-        command = claude_command(self.executable, self.model, SYSTEM_PROMPT, SCHEMA, read_files=True)
-        fields, model = run_claude(command, request, workdir, self.timeout_seconds)
+        pages = tuple(path for page, close_ups in images for path in (page, *close_ups))
+        fields, model = self.call.ask(SYSTEM_PROMPT, SCHEMA, request, workdir, pages)
         if not isinstance(fields.get("dates"), list):
             raise BackendError("no valid structured output")
         return fields["dates"], model
@@ -130,8 +143,8 @@ def _search_document(record: dict, pages: tuple[int, ...], output: Path, source:
             raise PageUnreadable("no page images")
         for start in range(0, len(refs), MAX_PAGES_PER_CALL):
             chunk = refs[start : start + MAX_PAGES_PER_CALL]
-            workdir = Path(tempfile.mkdtemp(prefix="epicrisis-dates-"))
-            try:
+            with tempfile.TemporaryDirectory(prefix="epicrisis-dates-", ignore_cleanup_errors=True) as folder:
+                workdir = Path(folder)
                 images = _images(chunk, Path(source.path), workdir)
                 dates, model = backend.search(images, workdir)
                 models.add(model)
@@ -139,8 +152,6 @@ def _search_document(record: dict, pages: tuple[int, ...], output: Path, source:
                     position = item["page"] - 1
                     if 0 <= position < len(chunk):
                         found.append({**item, "page": chunk[position].page})
-            finally:
-                shutil.rmtree(workdir, ignore_errors=True)
     except UsageLimitReached:
         with STATE_LOCK:
             stats.stopped = "usage_limit"

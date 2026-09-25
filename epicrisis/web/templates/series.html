@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ label or "Test" }} · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page series">
+{% extends "_page.html" %}
+{% set page_class = "series" %}
+{% block title %}{{ label or "Test" }}{% endblock %}
+{% block page %}
 
   {% from "_nothing.html" import nothing %}
   {% set current = "timeline" %}
@@ -54,7 +47,7 @@
   <section class="card-section">
     <div class="chart-head">
       <h2>{{ chart.unit or "no unit printed" }}</h2>
-      <span class="caps muted">{{ chart.count }} value{{ "s" if chart.count != 1 }}{% if chart.spellings | length > 1 %} &middot; printed as {{ chart.spellings | join(", ") }}{% endif %}{% if chart.converted_from %} &middot; brought to {{ chart.unit }}: {% for from_unit, factor in chart.converted_from.items() %}{{ from_unit }} &times; {{ "%g"|format(factor) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if chart.by_numbers %} &middot; {{ chart.by_numbers }} with no unit printed, placed here by their numbers{% endif %}{% if chart.beside_the_result %} &middot; {{ chart.beside_the_result }} printed beside the result, listed but not drawn{% endif %}</span>
+      <span class="caps muted">{{ chart.count }} value{{ "s" if chart.count != 1 }}{% if chart.spellings | length > 1 %} &middot; printed as {{ chart.spellings | join(", ") }}{% endif %}{% if chart.converted_from %} &middot; brought to {{ chart.unit }}: {% for from_unit, factor in chart.converted_from.items() %}{{ from_unit }} &times; {{ "%g"|format(factor) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if chart.by_numbers %} &middot; {{ chart.by_numbers }} with no unit printed, placed here by their numbers{% endif %}{% if chart.scaled %} &middot; {{ chart.scaled }} printed at another scale, drawn on this one{% endif %}{% if chart.beside_the_result %} &middot; {{ chart.beside_the_result }} printed beside the result, listed but not drawn{% endif %}</span>
     </div>
 
     {% if chart.points %}
@@ -96,7 +89,7 @@
       <div class="obs-row" style="grid-template-columns: 96px minmax(120px, 1fr) 110px 150px minmax(0, 1.4fr) 76px;">
         <span class="mono">{{ item.date_label or item.date or "date to check" }}</span>
         <span>{{ item.name }}{% if item.material %} <span class="caps muted{% if item.material_source == "model" %} read-by-model{% endif %}"{% if item.material_source == "model" %} title="The form printed no material. A model read the table this value stands in."{% endif %}>{{ item.material }}{% if item.material_source == "model" %}*{% endif %}</span>{% endif %}</span>
-        <span class="value mono">{% if item.comparator and not item.value.startswith(item.comparator) %}{{ item.comparator }}{% endif %}{{ item.value }}{% if item.corrected %} <span class="caps signal">corrected</span>{% endif %}{% if item.value_role and item.value_role != "result" %} <span class="caps muted" title="Printed beside the result of this form{% if item.column_heading %}, under &laquo;{{ item.column_heading }}&raquo;{% endif %}. It belongs to another day, so it is listed here and not drawn.">{{ item.column_heading or "beside the result" }}</span>{% endif %}{% if item.unit_by_numbers %} <span class="caps muted" title="This form printed no unit for this value. It is shown on this scale because its numbers agree with it.">unit by numbers</span>{% endif %}{% if item.unit_from_reference %} <span class="caps muted" title="This form printed no unit column. The unit was read from the range printed beside the value.">unit from the range</span>{% endif %}{% if item.unit_from_the_row %} <span class="caps muted" title="The unit is the one printed for this row of the form.">unit from the row</span>{% endif %}</span>
+        <span class="value mono">{% if item.comparator and not item.value.startswith(item.comparator) %}{{ item.comparator }}{% endif %}{{ item.value }}{% if item.corrected %} <span class="caps signal">corrected</span>{% endif %}{% if item.value_role and item.value_role != "result" %} <span class="caps muted" title="Printed beside the result of this form{% if item.column_heading %}, under &laquo;{{ item.column_heading }}&raquo;{% endif %}. It belongs to another day, so it is listed here and not drawn.">{{ item.column_heading or "beside the result" }}</span>{% endif %}{% if item.scaled %} <span class="caps muted" title="This form printed the value and its range at another scale. The number here is as printed; the point on the chart is moved by {{ "%g"|format(item.scaled.factor) }} so that one test printed two ways draws one history.">&times;{{ "%g"|format(item.scaled.factor) }} on the chart</span>{% endif %}{% if item.unit_by_numbers %} <span class="caps muted" title="This form printed no unit for this value. It is shown on this scale because its numbers agree with it.">unit by numbers</span>{% endif %}{% if item.unit_from_reference %} <span class="caps muted" title="This form printed no unit column. The unit was read from the range printed beside the value.">unit from the range</span>{% endif %}{% if item.unit_from_the_row %} <span class="caps muted" title="The unit is the one printed for this row of the form.">unit from the row</span>{% endif %}</span>
         <span class="mono">{{ item.reference or "–" }}</span>
         <span class="muted">{{ item.provider or "–" }}</span>
         <span><a class="mono" href="{{ item.card_url }}">{{ item.file_id }}</a></span>
@@ -111,6 +104,4 @@
   <p class="provenance caps muted">Shown, not read: nothing here is averaged, no trend is drawn, and no value is marked high or low. What the numbers mean is for a doctor.</p>
   {% endif %}
 
-</div>
-</body>
-</html>
+{% endblock %}

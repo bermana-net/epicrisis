@@ -2,8 +2,13 @@
 
 import pytest
 
+from epicrisis import rules
 from epicrisis.units import SCALES, convert, scale_of, unit_from_reference
 from epicrisis.series import charts
+
+# The rules as they ship: what a chart does with units is theirs to decide now.
+ALL = rules.load()
+TO_SCALE = [ALL.get("unit_from_range"), ALL.get("one_scale_for_a_test")]
 
 
 def test_a_factor_is_used_only_where_the_table_names_it():
@@ -50,7 +55,7 @@ def test_one_scale_joins_the_charts_and_says_what_it_moved():
 
     assert len(charts(values, indicator="creatinine")) == 2
 
-    joined = charts(values, indicator="creatinine", to_scale=True)
+    joined = charts(values, indicator="creatinine", placing=TO_SCALE)
     assert len(joined) == 1
     assert joined[0]["unit"] == "мкмоль/л" and joined[0]["converted_from"] == {"mg/dL": 88.4}
     # The printed values stay printed: the table under the chart is untouched.
@@ -62,7 +67,7 @@ def test_a_value_with_no_unit_takes_the_one_printed_in_its_range():
     values = [value("мкмоль/л", 80.0, 2019), value(None, 75.0, 2020, reference="53-115 мкмоль/л"),
               value(None, 4.2, 2021)]  # fmt: skip
 
-    made = {chart["unit"]: chart for chart in charts(values, indicator="creatinine")}
+    made = {chart["unit"]: chart for chart in charts(values, indicator="creatinine", placing=TO_SCALE[:1])}
 
     assert made["мкмоль/л"]["count"] == 2  # the one whose range names the unit joins it
     assert made[""]["count"] == 1  # the one that names nothing stays apart
@@ -78,7 +83,7 @@ def test_a_converted_chart_moves_the_printed_range_with_the_values():
         for year in range(3)
     ]  # fmt: skip
 
-    drawn = charts(values, indicator="creatinine", to_scale=True)[0]
+    drawn = charts(values, indicator="creatinine", placing=TO_SCALE)[0]
     point = drawn["points"][0]
 
     assert drawn["unit"] == "мкмоль/л"

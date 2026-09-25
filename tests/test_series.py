@@ -2,6 +2,7 @@
 
 from fastapi.testclient import TestClient
 
+from epicrisis import rules
 from epicrisis.index.build import index_path
 from epicrisis.series import charts, printed_range
 from epicrisis.units import unit_key
@@ -184,8 +185,8 @@ def test_urine_never_joins_the_blood_line_even_in_the_same_unit():
         {"date": "2024-07-15", "value_numeric": 44.1, "value": "44,1", "unit": "mg/dL", "reference": None,
          "name": "Creatinina", "material": "urine"},
     ]
-    for to_scale in (False, True):
-        drawn = charts(values, indicator="creatinine", to_scale=to_scale)
+    for to_scale in ((), TO_SCALE):
+        drawn = charts(values, indicator="creatinine", placing=[*FROM_RANGE, *to_scale])
         blood = [chart for chart in drawn if chart["material"] == ""]
         urine = [chart for chart in drawn if chart["material"] == "urine"]
         assert len(blood) == 1 and len(urine) == 1
@@ -395,7 +396,7 @@ def test_values_with_no_unit_anywhere_are_placed_by_their_numbers_only_when_aske
     as_printed = charts(values)
     assert sorted(chart["unit"] for chart in as_printed) == ["", "%", "10^9/L"]
 
-    joined = charts(values, by_numbers=True)
+    joined = charts(values, placing=[*FROM_RANGE, *BY_NUMBERS])
     assert sorted(chart["unit"] for chart in joined) == ["%", "10^9/L"]
     per_cent = next(chart for chart in joined if chart["unit"] == "%")
     assert per_cent["count"] == 3 and per_cent["by_numbers"] == 1
@@ -405,7 +406,7 @@ def test_values_with_no_unit_anywhere_are_placed_by_their_numbers_only_when_aske
     unclear = [*values[:2], {**blood, "value_numeric": "31.0", "unit": "mg/dl", "date": "2011-01-01"},
                {**blood, "value_numeric": "33.0", "unit": "mg/dl", "date": "2012-01-01"},
                {**blood, "value_numeric": "30.0", "unit": None, "date": "2013-12-16"}]  # fmt: skip
-    assert "" in {chart["unit"] for chart in charts(unclear, by_numbers=True)}
+    assert "" in {chart["unit"] for chart in charts(unclear, placing=[*FROM_RANGE, *BY_NUMBERS])}
 
 
 def test_the_unit_named_in_a_range_is_used_unless_a_person_turns_it_off():
@@ -413,5 +414,99 @@ def test_the_unit_named_in_a_range_is_used_unless_a_person_turns_it_off():
         {"value_numeric": "29.0", "unit": None, "reference": "19,0-37,0%", "material": "blood", "date": "2006-01-01"},
         {"value_numeric": "32.0", "unit": "%", "material": "blood", "date": "2007-01-17"},
     ]
-    assert [chart["unit"] for chart in charts(values)] == ["%"]
-    assert sorted(chart["unit"] for chart in charts(values, from_range=False)) == ["", "%"]
+    assert [chart["unit"] for chart in charts(values, placing=FROM_RANGE)] == ["%"]
+    # With the rule off — which is what no rules at all means — the unit column is all that counts.
+    assert sorted(chart["unit"] for chart in charts(values, placing=[])) == ["", "%"]
+
+
+# The rules as they ship, read from their own files: these tests are the rules' tests too.
+ALL = rules.load()
+SCALE_RULES = [ALL.get("two-scales-in-one-test")]
+FROM_RANGE = [ALL.get("unit_from_range")]
+BY_NUMBERS = [ALL.get("unit_by_numbers")]
+TO_SCALE = [ALL.get("one_scale_for_a_test")]
+
+
+def _gravity(date: str, printed: str, number: float, band: str) -> dict:
+    return {"date": date, "value": printed, "value_numeric": number, "unit": None, "reference": band}
+
+
+def test_one_test_printed_at_two_scales_draws_one_history():
+    """1,015 and 1015 are one measurement, and the range printed beside each one says so."""
+    values = [
+        _gravity("2004-06-25", "1,020", 1.02, "1,001-1,040"),
+        _gravity("2005-02-01", "1,015", 1.015, "1,001-1,040"),
+        _gravity("2015-04-17", "1,016", 1.016, "1,005-1,025"),
+        _gravity("2020-11-24", "1017", 1017.0, "[ 1010 - 1030 ]"),
+        _gravity("2023-05-11", "1016", 1016.0, "1010 - 1030"),
+    ]
+    chart = charts(values, placing=[*FROM_RANGE, *SCALE_RULES])[0]
+    assert chart["scaled"] == 2  # the two forms that printed the thousandfold scale
+    drawn = sorted(round(item["value_numeric"], 4) for item in chart["rows"])
+    assert drawn == [1.015, 1.016, 1.016, 1.017, 1.02]
+    assert [item["value"] for item in chart["rows"] if item.get("scaled")] == ["1017", "1016"]
+    assert all(item["scaled"]["factor"] == 0.001 for item in chart["rows"] if item.get("scaled"))
+    assert all(float(tick["label"].replace(",", ".")) < 2 for tick in chart["y_ticks"])  # one scale on the axis
+
+    # The same values with the setting off: every number stays where the form printed it.
+    left = charts(values, placing=FROM_RANGE)[0]
+    assert left["scaled"] == 0
+    assert sorted(round(item["value_numeric"], 4) for item in left["rows"]) == [1.015, 1.016, 1.02, 1016.0, 1017.0]
+
+
+def test_a_value_far_outside_its_own_range_is_never_quietly_divided():
+    """An abnormal result is a result. Only the printed ranges may say a test has two scales."""
+    values = [
+        {"date": "2024-07-15", "value": "384", "value_numeric": 384.0, "unit": "ng/ml", "reference": "24 - 336"},
+        {"date": "2023-07-15", "value": "120", "value_numeric": 120.0, "unit": "ng/ml", "reference": "24 - 336"},
+        {"date": "2022-07-15", "value": "90", "value_numeric": 90.0, "unit": "ng/ml", "reference": "24 - 336"},
+    ]
+    chart = charts(values, placing=[*FROM_RANGE, *SCALE_RULES])[0]
+    assert chart["scaled"] == 0
+    assert [item["value_numeric"] for item in chart["rows"]] == [90.0, 120.0, 384.0]
+
+
+def test_ranges_that_are_simply_different_move_nothing():
+    """Two bands three times apart are two laboratories, not two scales."""
+    values = [
+        {"date": "2019-01-01", "value": "5,4", "value_numeric": 5.4, "unit": "mg/dL", "reference": "3,4 - 7,0"},
+        {"date": "2020-01-01", "value": "6,6", "value_numeric": 6.6, "unit": "mg/dL", "reference": "2,6 - 6,8"},
+        {"date": "2021-01-01", "value": "7,0", "value_numeric": 7.0, "unit": "mg/dL", "reference": "3,6 - 7,7"},
+    ]
+    assert charts(values, placing=[*FROM_RANGE, *SCALE_RULES])[0]["scaled"] == 0
+
+
+def test_a_value_with_no_range_of_its_own_joins_the_scale_its_size_matches():
+    values = [
+        _gravity("2004-06-25", "1,020", 1.02, "1,001-1,040"),
+        _gravity("2005-02-01", "1,015", 1.015, "1,001-1,040"),
+        _gravity("2019-10-15", "1.015", 1.015, None),
+        _gravity("2020-11-24", "1017", 1017.0, "1010 - 1030"),
+        _gravity("2023-05-11", "1016", 1016.0, "1010 - 1030"),
+    ]
+    chart = charts(values, placing=[*FROM_RANGE, *SCALE_RULES])[0]
+    assert chart["scaled"] == 2
+    assert sorted(round(item["value_numeric"], 4) for item in chart["rows"]) == [1.015, 1.015, 1.016, 1.017, 1.02]
+
+
+def test_the_range_moves_its_own_distance_and_not_the_value_s():
+    """A form with the range printed and the number written in by hand has said two scales.
+
+    Moved together, the range of such a form landed a thousand below every point, stretched the
+    axis from zero, and drew a history of one test as a single flat line at the top of it.
+    """
+    values = [
+        _gravity("2004-06-25", "1,020", 1.02, "1,001-1,040"),
+        _gravity("2005-02-01", "1,015", 1.015, "1,001-1,040"),
+        _gravity("2015-04-17", "1,016", 1.016, "1,005-1,025"),
+        _gravity("2007-01-22", "1009", 1009.0, "1,001-1,040"),  # range in one scale, number in the other
+        _gravity("2020-11-24", "1017", 1017.0, "1010 - 1030"),  # both in the other
+    ]
+    chart = charts(values, placing=[*FROM_RANGE, *SCALE_RULES])[0]
+    assert chart["scaled"] == 2
+    # The form that printed its range in the drawn scale keeps that range where it printed it.
+    kept = next(item for item in chart["rows"] if item["value"] == "1009")
+    assert kept["scaled"]["factor"] == 0.001 and kept["scaled"]["band_factor"] == 1.0
+    labels = [float(tick["label"].replace(",", ".")) for tick in chart["y_ticks"]]
+    assert min(labels) > 0.9 and max(labels) < 1.1  # the axis is the width of the values, not of zero
+    assert len(set(labels)) == len(labels)  # and five marks up the side say five different numbers

@@ -1,3 +1,6 @@
+# Notes for us: they quote real numbers from a real archive
+/NOTES.internal.md
+
 # Medical data and derived artifacts: never commit
 /data/
 archive/

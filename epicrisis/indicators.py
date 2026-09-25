@@ -16,11 +16,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis import records
 from epicrisis.printed_values import fold
 from epicrisis.runs import one_at_a_time, put_in_place
+from epicrisis.values import only_results
 
-FILE_NAME = "indicators.json"
+FILE_NAME = layout.INDICATORS
 STATUSES = ("approved", "proposed", "rejected")
 
 
@@ -278,7 +280,7 @@ def printed_names(connection, include_derived: bool = False) -> list[dict]:
         f"""SELECT o.name, count(*) AS times, count(DISTINCT o.unit) AS units, min(d.date) AS first_date, max(d.date) AS last_date,
                    group_concat(DISTINCT o.unit) AS unit_list, o.kind
             FROM observations o JOIN documents d ON d.id = o.document_id
-            WHERE o.value_role = 'result' AND d.primary_copy = 1 {"" if include_derived else "AND o.derived = 0"}
+            WHERE {only_results()} AND d.primary_copy = 1 {"" if include_derived else "AND o.derived = 0"}
             GROUP BY fold(o.name) ORDER BY times DESC, o.name""",
     ).fetchall()
     return [{**dict(row), "folded": fold(row["name"]), "units": [unit for unit in (row["unit_list"] or "").split(",") if unit]} for row in rows]

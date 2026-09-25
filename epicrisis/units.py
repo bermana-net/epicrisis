@@ -27,7 +27,9 @@ What keeps this honest:
   each factor is written once, here, with the analyte it belongs to, and each has a test.
 """
 
+import math
 import re
+from collections import Counter
 
 from epicrisis.printed_values import fold
 
@@ -266,3 +268,84 @@ def unit_from_reference(reference: str | None) -> str | None:
     if found:
         return max(found)[1]
     return "%" if PER_CENT_RANGE.match(text.strip().strip("[]()").strip()) else None
+
+
+# Two scales of one measure
+#
+# A laboratory that prints urine specific gravity as 1,015 and one that prints it as 1015 are
+# printing the same measurement, and a haematocrit of 0,44 is the 44% of the next form. Drawn
+# together they are two clouds a thousand apart, and the line between them says nothing.
+#
+# The form itself says which scale it used: the reference range printed beside the value is
+# written at the scale of that value. So the bands decide and the numbers do not — where the
+# bands of one test are the same band ten or a hundred or a thousand times over, the scale most
+# of the values are printed at becomes the scale of the chart.
+#
+# What keeps this honest: nothing moves unless the printed bands themselves say this test is
+# printed at two scales. One value far outside its own band is an abnormal result, and an
+# abnormal result is never quietly divided by ten. Where a single band does not fit the others
+# as a whole power of ten, the test has bands that are simply different, and nothing moves at
+# all. Nothing converted is stored: the value, its range and its unit stay as printed beside
+# the chart, and every moved point says what it was moved by.
+
+# The defaults; a rule file may say otherwise, and the rule is rules/shipped/two-scales-in-one-test.md
+SAME_BAND = 0.15  # how far from a whole power of ten two bands may sit and still be one band
+BANDS_TO_SEE_A_SCALE = 2
+
+
+def band_middle(band: tuple[float | None, float | None] | None) -> float | None:
+    """Where a printed range sits on the scale: its middle, geometrically.
+
+    Only a closed range says a scale. "less than 150" says where a value stops being ordinary,
+    not what size the numbers on this form are.
+    """
+    if not band or band[0] is None or band[1] is None or band[0] <= 0 or band[1] <= 0:
+        return None
+    return math.sqrt(band[0] * band[1])
+
+
+def onto_one_scale(numbers: list[float | None], bands: list[tuple[float | None, float | None] | None],
+                   same_band: float = SAME_BAND, bands_to_see_a_scale: int = BANDS_TO_SEE_A_SCALE) -> list[tuple[int, int]]:  # fmt: skip
+    """How many powers of ten to move each value, and its own printed band, to draw one test.
+
+    Two powers and not one: a form that printed its range at one scale and wrote the number in
+    by hand at another has said both, and each of them moves the distance it is actually at.
+
+    Zero everywhere unless the printed bands say there are two scales. A value with no band of
+    its own is put on the scale its own size is nearest to, which is unambiguous when the scales
+    are a hundred apart and is the only reading here not taken from a form.
+    """
+    nothing = [(0, 0)] * len(numbers)
+    middles = [band_middle(band) for band in bands]
+    known = [middle for middle in middles if middle is not None]
+    if len(known) < bands_to_see_a_scale:
+        return nothing
+    smallest = min(known)
+
+    def power_of(middle: float) -> int | None:
+        distance = math.log10(middle / smallest)
+        return round(distance) if abs(distance - round(distance)) <= same_band else None
+
+    printed = [power_of(middle) for middle in known]
+    if None in printed or len(set(printed)) < 2:
+        return nothing  # bands that are not one band ten times over, or one scale and nothing to do
+
+    scales = sorted(set(printed))
+
+    def nearest(value: float) -> int:
+        return min(scales, key=lambda scale: abs(math.log10(value / (smallest * 10.0**scale))))
+
+    own: list[tuple[int | None, int | None]] = []
+    for value, band, middle in zip(numbers, bands, middles, strict=True):
+        # The range decides the value's scale only while the number is inside it: where it is
+        # not, the number was written at a scale of its own and the two move apart.
+        printed_at = power_of(middle) if middle is not None else None
+        if printed_at is not None and (value is None or band[0] <= value <= band[1]):
+            own.append((printed_at, printed_at))
+        elif value and value > 0:
+            own.append((nearest(value), printed_at))
+        else:
+            own.append((None, printed_at))
+    counted = Counter(scale for scale, _ in own if scale is not None)
+    common = max(counted, key=lambda scale: (counted[scale], -scale))
+    return [(0 if value is None else common - value, 0 if band is None else common - band) for value, band in own]

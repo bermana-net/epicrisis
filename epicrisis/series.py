@@ -18,8 +18,9 @@ from datetime import date
 from statistics import median
 
 from epicrisis import reference
-from epicrisis.units import (AGREEMENT, MIN_TO_JOIN, convert, same_measure, says_its_power,
-                             unit_from_reference, unit_key)
+from epicrisis.values import is_result
+from epicrisis.rules.subjects import Material, Series, Value
+from epicrisis.units import AGREEMENT, MIN_TO_JOIN, same_measure, says_its_power, unit_key
 
 WIDTH, HEIGHT = 900, 260
 PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 52, 16, 16, 28
@@ -80,7 +81,7 @@ def _join_equivalent(by_unit: dict[str, list[dict]]) -> dict[str, list[dict]]:
     return joined
 
 
-def _by_the_numbers(by_unit: dict[str, list[dict]]) -> dict[str, list[dict]]:
+def place_by_the_numbers(by_unit: dict[str, list[dict]], settings: dict) -> dict[str, list[dict]]:
     """Put the values whose form printed no unit at all on the scale their own numbers match.
 
     Old forms print a leukocyte formula with no unit column and no range: the numbers are
@@ -100,11 +101,45 @@ def _by_the_numbers(by_unit: dict[str, list[dict]]) -> dict[str, list[dict]]:
     if not bare or mine is None:
         return by_unit
     near = [key for key, theirs in middles.items()
-            if key and len(by_unit[key]) >= MIN_TO_JOIN and max(mine, theirs) <= AGREEMENT * min(mine, theirs)]  # fmt: skip
+            if key and len(by_unit[key]) >= settings["least_to_join"]
+            and max(mine, theirs) <= settings["agreement"] * min(mine, theirs)]  # fmt: skip
     if len(near) != 1:
         return by_unit  # two scales it could belong to, or none: the numbers do not say
     moved = {key: items for key, items in by_unit.items() if key != ""}
     moved[near[0]] = [*moved[near[0]], *({**item, "unit_by_numbers": True} for item in bare)]
+    return moved
+
+
+def _one_scale(items: list[dict], scale_rules) -> list[dict]:
+    """One test printed at two scales, drawn on one, by whichever rules are on.
+
+    The rules are handed in rather than read from disk here: this file draws, and what an
+    instance has turned on is not its business. Where more than one rule would move a series,
+    the first one that moves anything decides it — two rules quietly moving the same points
+    twice is the one thing worse than neither of them running.
+
+    The printed value and its printed range stay exactly as they are in the rows beside the
+    chart; only the point moves, and it carries what it was moved by.
+    """
+    series = Series(numbers=[number(item.get("value_numeric")) for item in items],
+                    bands=[printed_range(item.get("reference")) for item in items])  # fmt: skip
+    powers = None
+    for rule in scale_rules:
+        moves = rule.check.run(series, rule.settings)
+        if any(value or band for value, band in moves):
+            powers = moves
+            break
+    if powers is None:
+        return items
+    moved = []
+    for item, (power, band_power) in zip(items, powers, strict=True):
+        if not power and not band_power:
+            moved.append(item)
+            continue
+        factor = 10.0**power
+        moved.append({**item, "value_numeric": (number(item.get("value_numeric")) or 0) * factor,
+                      "scaled": {"from_value": item.get("value"), "factor": factor,
+                                 "band_factor": 10.0**band_power}})  # fmt: skip
     return moved
 
 
@@ -121,16 +156,8 @@ def date_label(item: dict) -> str | None:
     return {"month": date[:7].replace("-", "."), "year": date[:4]}.get(precision, date)
 
 
-def is_result(item: dict) -> bool:
-    """Whether this value is the result of the form it stands on, rather than something beside it.
+# What counts as the result of a form is decided in epicrisis/values.py, for every reader of it.
 
-    Laboratories print a previous result next to the new one — "Valor anterior", "Предыдущее" —
-    and that number belongs to an earlier day, one this archive usually holds as its own document.
-    Drawn as a point it landed on the date of the form that quoted it, which is a date the
-    laboratory never gave it. It is printed, so it is listed; it is not this day's result, so it
-    is not a point.
-    """
-    return (item.get("value_role") or "result") == "result"
 
 
 def unit_of_the_row(values: list[dict]) -> list[dict]:
@@ -154,7 +181,7 @@ def unit_of_the_row(values: list[dict]) -> list[dict]:
 
 
 def charts(values: list[dict], width: int = WIDTH, height: int = HEIGHT, indicator: str | None = None,
-           to_scale: bool = False, from_range: bool = True, by_numbers: bool = False) -> list[dict]:  # fmt: skip
+           placing=()) -> list[dict]:  # fmt: skip
     """One chart per material and unit, oldest first. Values that are not numbers come back as a list.
 
     from_range: where a value carries no unit of its own, the unit named inside its printed
@@ -167,22 +194,28 @@ def charts(values: list[dict], width: int = WIDTH, height: int = HEIGHT, indicat
 
     to_scale brings the units this archive knows how to convert onto one scale; see units.py.
 
+    scale_rules are the rules, already chosen by whoever asked for the chart, that may place a
+    value on another scale: one test two laboratories printed a power of ten apart - 1,015 and
+    1015 - drawn as one history. See epicrisis/rules/.
+
     A material is never joined to another. Blood and urine carry the same printed name and often
     the same unit, and their numbers differ by two orders of magnitude, so one line through both
     would be a line through two different measurements. Each material gets its own charts, and
     values whose material the form did not say stay with the blood they are most likely to be.
     """
     by_material: dict[str, dict[str, list[dict]]] = {}
+    from_range = _one(placing, "unit-from-the-printed-range")
+    to_scale = _one(placing, "one-scale-for-a-test")
     for item in unit_of_the_row(values):
         by_unit = by_material.setdefault((item.get("material") or "").strip(), {})
         key = unit_key(item.get("unit"))
         if not key and from_range:
-            from_reference = unit_from_reference(item.get("reference"))
+            from_reference = from_range.check.run(Value(item=item), from_range.settings)
             if from_reference:
                 key = from_reference
                 item = {**item, "unit_from_reference": True}
         if to_scale:
-            moved = convert(number(item.get("value_numeric")), key, indicator, item.get("name"))
+            moved = to_scale.check.run(Value(item=item, indicator=indicator, unit_key=key), to_scale.settings)
             if moved:
                 value, unit, factor = moved
                 item = {**item, "value_numeric": value, "converted": {
@@ -193,17 +226,31 @@ def charts(values: list[dict], width: int = WIDTH, height: int = HEIGHT, indicat
         by_unit.setdefault(key, []).append(item)
     charts_out = []
     for material, by_unit in by_material.items():
-        charts_out += _charts_of(_by_the_numbers(by_unit) if by_numbers else by_unit, material, width, height)
+        by_numbers = _one(placing, "unit-by-the-numbers")
+        grouped = by_numbers.check.run(Material(by_unit=by_unit), by_numbers.settings) if by_numbers else by_unit
+        charts_out += _charts_of(grouped, material, width, height, [rule for rule in placing
+                                                                   if rule.kind == "value-against-its-printed-range"])  # fmt: skip
     # Blood and the unmarked first, then the other materials by name; inside a material, the
     # chart with the most points leads.
     charts_out.sort(key=lambda chart: (chart["material"] != "", chart["material"], -len(chart["points"]), -chart["count"]))
     return charts_out
 
 
-def _charts_of(by_unit: dict[str, list[dict]], material: str, width: int, height: int) -> list[dict]:
+def _one(placing, kind: str):
+    """The rule of this kind that is on, or nothing. Each hook here asks for its own kind.
+
+    The rules are handed in, already chosen by whoever asked for the chart: this file draws, and
+    what an instance has turned on is not its business.
+    """
+    return next((rule for rule in placing if rule.kind == kind), None)
+
+
+def _charts_of(by_unit: dict[str, list[dict]], material: str, width: int, height: int, scale_rules=()) -> list[dict]:
     """The charts of one material: one per unit, after equivalent spellings are joined."""
     charts_out = []
     for items in _join_equivalent(by_unit).values():
+        if scale_rules:
+            items = _one_scale(items, scale_rules)
         spellings: dict[str, int] = {}
         for item in items:
             printed = (item.get("unit") or "").strip()
@@ -237,6 +284,7 @@ def _charts_of(by_unit: dict[str, list[dict]], material: str, width: int, height
                  "spellings": sorted(spellings, key=lambda name: -spellings[name]),
                  "as_printed": other, "points": [], "count": len(items),
                  "by_numbers": sum(1 for item in items if item.get("unit_by_numbers")),
+                 "scaled": sum(1 for item in items if item.get("scaled")),
                  "beside_the_result": sum(1 for item in items if not is_result(item)),
                  "undated": len(undated), "rows": items}  # fmt: skip
         if len(numeric) >= MIN_POINTS:
@@ -253,11 +301,8 @@ def _band_of(item: dict) -> tuple[float | None, float | None] | None:
     to the floor of the chart and stretched the axis around a value sitting in the middle of it.
     """
     band = printed_range(item.get("reference"))
-    moved = item.get("converted")
-    if band is None or not moved:
-        return band
-    factor = moved.get("factor") or 1.0
-    if factor == 1.0:
+    factor = ((item.get("converted") or {}).get("factor") or 1.0) * ((item.get("scaled") or {}).get("band_factor") or 1.0)
+    if band is None or factor == 1.0:
         return band
     return tuple(None if edge is None else edge * factor for edge in band)
 
@@ -321,12 +366,20 @@ def _bands(points: list[dict], x_of, first_day: int, last_day: int) -> list[dict
 
 
 def _y_ticks(lowest: float, highest: float, y_of) -> list[dict]:
+    """Five marks up the side, each one saying a different number.
+
+    A urine specific gravity runs from 1,004 to 1,025, and rounded the way an axis of whole
+    numbers is rounded, all five marks read "1". So the axis keeps as many places as it takes
+    for the marks to differ from one another.
+    """
     step = (highest - lowest) / 4
-    ticks = []
-    for index in range(5):
-        value = lowest + step * index
-        ticks.append({"y": y_of(value), "label": _label(value)})
-    return ticks
+    values = [lowest + step * index for index in range(5)]
+    labels = [_label(value) for value in values]
+    for places in range(2, 7):
+        if len(set(labels)) == len(labels):
+            break
+        labels = [f"{value:.{places}f}" for value in values]
+    return [{"y": y_of(value), "label": label} for value, label in zip(values, labels, strict=True)]
 
 
 def _x_ticks(items: list[dict], x_of) -> list[dict]:

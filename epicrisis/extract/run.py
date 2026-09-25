@@ -12,7 +12,6 @@ in the document's provenance so it runs only once.
 import json
 import os
 import re
-import shutil
 import tempfile
 from collections import Counter
 from collections.abc import Callable
@@ -20,6 +19,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.classify.backend import BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, document_payloads, page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
@@ -141,8 +141,8 @@ def extract_source(
     workers: int = DEFAULT_WORKERS,
 ) -> ExtractStats:
     output = source_output_dir(data_dir, source.id)
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
-    documents = document_refs(records, latest_pages(output / "classify.jsonl"))
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
+    documents = document_refs(records, latest_pages(output / layout.CLASSIFY))
     if years is not None:
         documents = [document for document in documents if document.record.get("folder_year_hint") in years]
     if files:
@@ -152,7 +152,7 @@ def extract_source(
         documents = [document for document in documents if done_by in ((_stored(output, document) or {}).get("provenance", {}).get("model") or "")]
     if sample:
         documents = sample_documents(documents)
-    done = done_keys(output / "ledger.jsonl", latest_pages(output / "classify.jsonl"))
+    done = done_keys(output / layout.LEDGER, latest_pages(output / layout.CLASSIFY))
     stats = ExtractStats(total=len(documents))
 
     lock = output / LOCK_NAME
@@ -214,7 +214,7 @@ def _document_page_refs(document: DocumentRef) -> list[PageRef]:
 
 
 def _stored(output: Path, document: DocumentRef) -> dict | None:
-    extracted = load_extracted(output / "extracted", document.file_sha256)
+    extracted = load_extracted(output / layout.EXTRACTED, document.file_sha256)
     documents = extracted["documents"] if extracted else []
     return next((item for item in documents if item["pages"] == list(document.pages)), None)
 
@@ -224,13 +224,11 @@ def _call_backend(document: DocumentRef, source: Source, backend, close_ups: boo
     size = MAX_CLOSE_UP_PAGES_PER_CALL if close_ups else MAX_PAGES_PER_CALL
     parts, sent_texts = [], {}
     for chunk in call_chunks(_document_page_refs(document), size):
-        workdir = Path(tempfile.mkdtemp(prefix="epicrisis-document-"))
-        try:
+        with tempfile.TemporaryDirectory(prefix="epicrisis-document-", ignore_cleanup_errors=True) as folder:
+            workdir = Path(folder)
             payloads = document_payloads(chunk, Path(source.path), workdir, zoom=close_ups, always_images=close_ups)
             sent_texts.update({ref.page: payload.text for ref, payload in zip(chunk, payloads, strict=True) if payload.text is not None})
             parts.append((chunk, backend.extract(payloads, workdir)))
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
     return parts, sent_texts
 
 
@@ -366,7 +364,7 @@ def _extract_document(document: DocumentRef, output: Path, source: Source, backe
             escalations.append({"model": stage.model, "problems": problems})
     except PageUnreadable as exc:
         with STATE_LOCK:
-            append_line(output / "ledger.jsonl", _ledger_line(document, backend, "unreadable", str(exc)))
+            append_line(output / layout.LEDGER, _ledger_line(document, backend, "unreadable", str(exc)))
             stats.unreadable += 1
         return True
     except UsageLimitReached:
@@ -375,7 +373,7 @@ def _extract_document(document: DocumentRef, output: Path, source: Source, backe
         return False
     except BackendError as exc:
         with STATE_LOCK:
-            append_line(output / "ledger.jsonl", _ledger_line(document, backend, "failed", str(exc)))
+            append_line(output / layout.LEDGER, _ledger_line(document, backend, "failed", str(exc)))
             stats.failed += 1
         return True
 
@@ -384,8 +382,8 @@ def _extract_document(document: DocumentRef, output: Path, source: Source, backe
     if problems:
         merged["provenance"]["check_problems"] = problems
     with STATE_LOCK:
-        write_document(output / "extracted", document.file_sha256, merged)
-        append_line(output / "ledger.jsonl", _ledger_line(document, backend, "done"))
+        write_document(output / layout.EXTRACTED, document.file_sha256, merged)
+        append_line(output / layout.LEDGER, _ledger_line(document, backend, "done"))
         stats.extracted += 1
         stats.escalated += bool(escalations)
     if needs_close_ups(document, _stored(output, document), force=force_close_ups):
@@ -405,7 +403,7 @@ def _close_up_pass(document: DocumentRef, output: Path, source: Source, backend,
         return False
     except (PageUnreadable, BackendError) as exc:
         current["provenance"]["close_up_pass"] = {"status": "failed", "reason": str(exc), "at": now()}
-        write_document(output / "extracted", document.file_sha256, current)
+        write_document(output / layout.EXTRACTED, document.file_sha256, current)
         return True
 
     second = merge_document(document, parts, backend)
@@ -418,7 +416,7 @@ def _close_up_pass(document: DocumentRef, output: Path, source: Source, backend,
         "at": now(),
     }
     with STATE_LOCK:
-        write_document(output / "extracted", document.file_sha256, kept)
+        write_document(output / layout.EXTRACTED, document.file_sha256, kept)
         stats.close_up_passes += 1
         stats.close_up_better += kept is second
     return True

@@ -14,12 +14,12 @@ import tempfile
 import sys
 from pathlib import Path
 
-from epicrisis.classify.backend import ClaudeCodeBackend, ModelLadder
+from epicrisis import layout
 from epicrisis.models import model_for
 from epicrisis.classify.run import classify_source
+from epicrisis import engines
 from epicrisis.consent import has_consent
-from epicrisis.datesearch import ClaudeCodeDateSearch, search_source
-from epicrisis.extract.backend import default_extract_backend
+from epicrisis.datesearch import search_source
 from epicrisis.extract.run import extract_source
 from epicrisis.index.build import build_index
 from epicrisis.inventory.run import write_inventory
@@ -41,22 +41,21 @@ def run_update(data_dir: Path, say=print) -> dict:
     try:
         for source in registry.list():
             output = source_output_dir(registry.data_dir, source.id)
-            summary = write_inventory(Path(source.path), output / "inventory.jsonl")
+            summary = write_inventory(Path(source.path), output / layout.INVENTORY)
             say(f"Source {source.id}: {summary.files} files")
-            backend = ModelLadder(ClaudeCodeBackend(model=model_for(registry.data_dir, "first")),
-                                  ClaudeCodeBackend(model=model_for(registry.data_dir, "strong")))  # fmt: skip
+            backend = engines.classifier(registry.data_dir)
             if not has_consent(registry.data_dir, backend.name):
                 say(f"Source {source.id}: model processing not confirmed, model steps skipped")
             else:
                 classified = classify_source(registry.data_dir, source, backend)
                 say(f"  classify: {classified.classified} new pages, {classified.failed} failed")
-                extracted = extract_source(registry.data_dir, source, default_extract_backend(registry.data_dir))
+                extracted = extract_source(registry.data_dir, source, engines.extractor(registry.data_dir))
                 say(f"  extract: {extracted.extracted} new documents, {extracted.escalated} by Opus after a check, {extracted.failed} failed")
                 if "usage_limit" in (classified.stopped, extracted.stopped):
                     say("  stopped at the subscription usage limit; run update again later")
                 else:
                     targets = _undated(source, output)
-                    searched = search_source(registry.data_dir, source, ClaudeCodeDateSearch(model=model_for(registry.data_dir, "strong")), targets)
+                    searched = search_source(registry.data_dir, source, engines.date_search(registry.data_dir), targets)
                     say(f"  date search: {searched.searched} documents searched, dates found in {searched.with_dates}")
                     read = _read_materials(registry.data_dir, output)
                     say(f"  materials: {read['decided']} tables settled, {read['values']} values, "
@@ -81,13 +80,13 @@ def _read_materials(data_dir: Path, output: Path) -> dict:
     from epicrisis.material_reading import MaterialBackend, read_materials
 
     documents = []
-    for record in read_records(output / "inventory.jsonl"):
+    for record in read_records(output / layout.INVENTORY):
         if "sha256" not in record:
             continue
-        extracted = load_extracted(output / "extracted", record["sha256"])
+        extracted = load_extracted(output / layout.EXTRACTED, record["sha256"])
         for document in (extracted or {"documents": []})["documents"]:
             documents.append({**document, "file_sha256": record["sha256"]})
-    return read_materials(output, documents, MaterialBackend(model=model_for(data_dir, "first")), output)
+    return read_materials(output, documents, MaterialBackend(model=model_for(data_dir, "first"), data_dir=data_dir), output)
 
 
 def start_in_background(data_dir: Path) -> None:
@@ -137,7 +136,7 @@ def _propose_new_names(data_dir: Path, say, source_id: str | None = None) -> int
     if not waiting:
         return 0
     with tempfile.TemporaryDirectory(prefix="epicrisis-indicators-") as workdir:
-        counts = propose_indicators(data_dir, printed[: MAX_NEW_NAMES], ProposalBackend(model=model_for(data_dir, "strong")), Path(workdir))
+        counts = propose_indicators(data_dir, printed[: MAX_NEW_NAMES], ProposalBackend(model=model_for(data_dir, "strong"), data_dir=data_dir), Path(workdir))
     say(
         f"  indicators: {len(waiting)} new spellings, proposed {counts['added_to_existing']} for existing indicators "
         f"and {counts['new_indicators']} new groups, waiting for you on the Indicators page"
@@ -148,7 +147,7 @@ def _propose_new_names(data_dir: Path, say, source_id: str | None = None) -> int
 def _undated(source, output: Path) -> list:
     from epicrisis.web.documents import source_documents
 
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
     view = source_documents(source, output) or {"years": []}
     return [
         (records[row["file"]["sha256"]], tuple(row["pages"]))
