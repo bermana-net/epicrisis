@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ card.summary.doc_type }} · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page card">
+{% extends "_page.html" %}
+{% set page_class = "card" %}
+{% block title %}{{ card.summary.doc_type }}{% endblock %}
+{% block page %}
 
   {% set current = "documents" %}
   {% include "_header.html" %}
@@ -166,6 +159,4 @@
   <p class="provenance caps muted">Transcribed by {{ document.provenance.model }} &middot; prompt {{ document.provenance.prompt_version }} &middot; {{ document.provenance.extracted_at }}{% if document.provenance.escalations %} &middot; after {{ document.provenance.escalations|map(attribute="model")|join(", ") }} did not pass the checks{% endif %}{% if document.provenance.close_up_pass and document.provenance.close_up_pass.status == "kept" %} &middot; read again from close-ups{% endif %}</p>
   {% endif %}
 
-</div>
-</body>
-</html>
+{% endblock %}

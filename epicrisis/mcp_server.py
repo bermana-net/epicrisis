@@ -110,9 +110,9 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
     on this machine are not affected.
     """
 
-    from epicrisis.sources import SourceRegistry
+    from epicrisis.sources import showing as showing_archive
 
-    opened = SourceRegistry(Path(data_dir)).active()
+    opened = showing_archive(data_dir)
     head = INSTRUCTIONS_HEAD.format(whose=opened.whose if opened else "someone whose name is not set")
     server = MCPServer(name="epicrisis", instructions=f"{head}\n\n{INSTRUCTIONS}", version="0.2")
     lock = mcp_lock.Lock(secret=mcp_lock.read_secret())
@@ -125,7 +125,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
         answered. The field names are loud on purpose: an answer of no data must never be mistaken
         for an answer of no results.
         """
-        from epicrisis.ask import mcp_lock_on, mcp_lock_scope
+        from epicrisis.settings import mcp_lock_on, mcp_lock_scope
 
         try:
             # The archive that is open right now, so that a pass given for another one closes
@@ -150,7 +150,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
     def unlock(
         code: Annotated[str, Field(description="The six digits the owner's authenticator is showing now")],
     ) -> dict[str, Any]:
-        from epicrisis.ask import mcp_lock_minutes, mcp_lock_scope
+        from epicrisis.settings import mcp_lock_minutes, mcp_lock_scope
 
         try:
             scope = mcp_lock_scope(data_dir)
@@ -183,9 +183,9 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
     def showing() -> tuple[str | None, str]:
         """The archive being served and whose it is. Every answer says the name, so that one
         person's records can never be read as another's."""
-        from epicrisis.sources import SourceRegistry
+        from epicrisis.sources import showing as the_archive
 
-        active = SourceRegistry(Path(data_dir)).active()
+        active = the_archive(data_dir)
         return (active.id, active.whose) if active else (None, "")
 
     @contextmanager
@@ -356,7 +356,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
         notice = guard(ticket)
         if notice is not None:
             return notice
-        from epicrisis.ask import answer_mode
+        from epicrisis.settings import answer_mode
 
         # Only the last mode, where the person has taken every limit off their own instance, lets
         # the application itself compare a value with a range. In the middle mode the model may

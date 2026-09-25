@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis import records
 from epicrisis.inventory.run import write_inventory
 from epicrisis.sources import OUTPUT_DIR_NAME, Source, source_output_dir
@@ -26,7 +27,7 @@ class InventoryJobs:
         self._mark_interrupted()
 
     def records_path(self, source_id: str) -> Path:
-        return source_output_dir(self.data_dir, source_id) / "inventory.jsonl"
+        return source_output_dir(self.data_dir, source_id) / layout.INVENTORY
 
     def status(self, source_id: str) -> dict | None:
         try:
@@ -92,7 +93,7 @@ class InventoryJobs:
                 self._write_status(status_path.parent.name, {**status, "state": "interrupted"})
 
     def _status_path(self, source_id: str) -> Path:
-        return source_output_dir(self.data_dir, source_id) / "inventory.status.json"
+        return source_output_dir(self.data_dir, source_id) / layout.INVENTORY_STATUS
 
     def _write_status(self, source_id: str, status: dict) -> None:
         path = self._status_path(source_id)

@@ -1,14 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page">
+{% extends "_page.html" %}
+{% block title %}Archive status{% endblock %}
+{% block page %}
 
   {% set current = "status" %}
   {% include "_header.html" %}
@@ -166,7 +158,9 @@
   {% if error %}<div class="error caps" role="alert">{{ error }}</div>{% endif %}
   <div class="footnote caps">Sources are read only. Nothing is copied, moved or renamed.</div>
 
-</div>
+{% endblock %}
+
+{% block after %}
 
 <dialog class="picker" id="picker" aria-labelledby="picker-title">
   <div class="picker-head">
@@ -329,5 +323,4 @@
     setInterval(refresh, 10000);
   })();
 </script>
-</body>
-</html>
+{% endblock %}

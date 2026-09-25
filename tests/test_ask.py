@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from epicrisis import ask as ask_module
+from epicrisis import settings as settings_module
 from epicrisis import query
 from epicrisis.corrections import set_document_date
 from epicrisis.extract.run import extract_source, load_extracted, write_document
@@ -87,7 +88,7 @@ def test_mcp_tools_are_read_only_and_answer(archive_index):
     # Comparing a value with its printed range is interpretation, and this instance shows as printed.
     refused = asyncio.run(server.call_tool("flagged_values", {"compare_with_printed_range": True}))
     assert "does not compare" in str(refused)
-    from epicrisis.ask import set_answer_mode
+    from epicrisis.settings import set_answer_mode
 
     # The middle mode lets the model read the values; the application still does not compare them.
     set_answer_mode(data_dir, "with_meaning")
@@ -127,7 +128,7 @@ def test_ask_page_is_off_until_turned_on(archive_index, monkeypatch):
     assert "Answering questions is turned off" in page
     assert client.post("/ask", data={"question": "hi"}).status_code == 403
 
-    ask_module.set_ask_enabled(data_dir, True)
+    settings_module.set_ask_enabled(data_dir, True)
     assert "Model processing is not confirmed" in client.get("/ask").text
     (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 2, "at": "now"}}))
     started = client.post("/ask", data={"question": "What is in the archive?"}, follow_redirects=False)
@@ -138,7 +139,8 @@ def test_ask_page_is_off_until_turned_on(archive_index, monkeypatch):
 
 
 def test_settings_switch_what_answers_may_contain(archive_index):
-    from epicrisis.ask import answer_mode, system_prompt
+    from epicrisis.ask import system_prompt
+    from epicrisis.settings import answer_mode
 
     data_dir, _, _ = archive_index
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
@@ -157,13 +159,15 @@ def test_settings_switch_what_answers_may_contain(archive_index):
     assert "Saved." in page and 'value="with_meaning" checked' in page.replace('" checked', '" checked')
     assert "not a medical device" in page
 
-    # Units on a chart are a separate switch, off unless asked for.
-    from epicrisis.ask import converts_units
+    # Bringing a test to one scale is a rule of its own, off unless asked for.
+    from epicrisis import rules
+    from epicrisis.settings import rule_on
 
-    assert converts_units(data_dir) is False
-    client.post("/settings", data={"ask_page": "on", "mode": "with_meaning", "scale": "on"})
-    assert converts_units(data_dir) is True
-    assert 'name="scale" value="on" checked' in client.get("/settings").text
+    to_scale = rules.load(data_dir).get("one_scale_for_a_test")
+    assert rule_on(data_dir, to_scale) is False
+    client.post("/settings", data={"ask_page": "on", "mode": "with_meaning", "rule_on": "one_scale_for_a_test"})
+    assert rule_on(data_dir, to_scale) is True
+    assert 'value="one_scale_for_a_test" checked' in client.get("/settings").text
 
     client.post("/settings", data={"ask_page": "on", "mode": "direct"})
     assert answer_mode(data_dir) == "direct" and 'value="direct" checked' in client.get("/settings").text
@@ -179,7 +183,7 @@ def test_answers_render_as_markdown_without_raw_html(archive_index, monkeypatch)
         yield {"kind": "answer", "text": "| Date | Value |\n|---|---|\n| 08.07.2019 | 0,85 |\n\n<script>alert(1)</script>"}
 
     monkeypatch.setattr(ask_module, "_stream", fake_stream)
-    ask_module.set_ask_enabled(data_dir, True)
+    settings_module.set_ask_enabled(data_dir, True)
     (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 2, "at": "now"}}))
     chat = ask_module.new_chat(data_dir)
     ask_module.ask(data_dir, chat["id"], "table please", run=lambda *args: None)
@@ -215,7 +219,7 @@ def test_a_question_carries_the_chat_only_when_the_box_is_ticked(archive_index, 
         raise AssertionError(f"the answer to {chat_id} never finished")
 
     monkeypatch.setattr(ask_module, "answer", finish)
-    ask_module.set_ask_enabled(data_dir, True)
+    settings_module.set_ask_enabled(data_dir, True)
     (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 2, "at": "now"}}))
     client = TestClient(create_app(data_dir), base_url="http://localhost:8050")
 
@@ -388,7 +392,7 @@ def test_a_question_that_cannot_reach_the_model_says_so(archive_index, monkeypat
     from epicrisis import ask as module
 
     data_dir, _, _ = archive_index
-    module.set_ask_enabled(data_dir, True)
+    settings_module.set_ask_enabled(data_dir, True)
 
     def refuse(*args, **kwargs):
         raise FileNotFoundError("claude")
@@ -408,7 +412,7 @@ def test_a_model_that_stops_halfway_leaves_the_answer_marked_failed(archive_inde
     from epicrisis import ask as module
 
     data_dir, _, _ = archive_index
-    module.set_ask_enabled(data_dir, True)
+    settings_module.set_ask_enabled(data_dir, True)
 
     def half(*args, **kwargs):
         yield {"kind": "tool", "step": {"tool": "value_history", "input": {}}}
@@ -470,7 +474,8 @@ def test_a_conversation_belongs_to_one_archive_and_opens_for_no_other(archive_in
     """
     from fastapi.testclient import TestClient
 
-    from epicrisis.ask import _save, load_chat, new_chat, set_ask_enabled
+    from epicrisis.ask import _save, load_chat, new_chat
+    from epicrisis.settings import set_ask_enabled
     from epicrisis.consent import record_consent
     from epicrisis.sources import SourceRegistry
     from epicrisis.web.app import create_app
@@ -515,7 +520,8 @@ def test_a_conversation_belongs_to_one_archive_and_opens_for_no_other(archive_in
 
 def test_a_chat_started_on_the_web_belongs_to_the_archive_it_was_asked_about(tmp_path, monkeypatch):
     """The route, not only the store: a chat created with no owner answered for every archive."""
-    from epicrisis.ask import list_chats, load_chat, set_ask_enabled
+    from epicrisis.ask import list_chats, load_chat
+    from epicrisis.settings import set_ask_enabled
     from epicrisis.consent import record_consent
     from epicrisis.sources import SourceRegistry
 

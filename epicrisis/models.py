@@ -53,7 +53,7 @@ KNOWN_MODELS = (
 
 def model_for(data_dir: Path, pass_name: str) -> str:
     """The model chosen for this pass, or the one this program ships with."""
-    from epicrisis.ask import chosen_models
+    from epicrisis.settings import chosen_models
 
     default = PASSES[pass_name]["default"]
     return (chosen_models(data_dir).get(pass_name) or default).strip() or default

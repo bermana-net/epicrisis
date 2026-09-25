@@ -14,6 +14,37 @@ Tests come with changes. `uv run pytest` runs them; nothing in them may contain 
 records, and nothing in an issue or a pull request should either — not a value, not a name, not a
 scan. If a bug needs data to reproduce, invent it, or use `epicrisis demo`.
 
+## Nothing of a real person goes into this repository
+
+Whoever works on this has a real archive open beside them. That is what makes the work
+possible and what makes this rule necessary.
+
+**Never, in code, comments, tests, documentation, rule files or commit messages:** the name of a
+person, a doctor's name, a date of birth, the name of an institution that treated somebody, the
+name or path of a file of somebody's scans, a hash of one, or any phrase copied out of a
+document. These identify. There is no wording that makes them safe.
+
+**Say it in general, not in figures.** A rule file explains what it looks at and how it can be
+wrong; neither needs a number out of anybody's archive, and a count of what a rule found on one
+real archive belongs in a report, not in a file that ships. Where a figure genuinely explains
+something, use the kind that belongs to forms rather than to people.
+
+**A printed reference range or the scale a form uses** — `53-115 µmol/L`, `1,001-1,040`,
+`19,0-37,0%` — is a property of laboratory forms and not of a person, and belongs here wherever
+it explains something. A single measured value out of a real archive identifies nobody either,
+but write an illustration rather than copy one: a habit of quoting real readings is how
+something with a date and an institution eventually arrives with them.
+
+`tools/nothing-of-yours.py` enforces the first paragraph before every push, over every tracked
+file **and over the whole history, commit messages included**. It gathers what identifies from a
+live data directory — the people, the institutions, the folders, the file names and their hashes
+— and says what kind of thing matched and where, never printing the phrase itself. It does not
+look for measured values; numbers are not phrases, and a check that shouts about every number is
+a check nobody runs twice.
+
+What it cannot see: a person's name that appears only inside the text of a document and nowhere
+in the index. Do not copy document text and that gap stays shut.
+
 ## The licence of what you send
 
 This project is under the [Business Source License 1.1](LICENSE): free for a person and their

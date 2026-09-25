@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.classify.pages import PageUnreadable, document_payloads, page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.corrections import load_corrections
@@ -19,9 +20,15 @@ from epicrisis.document_dates import document_date, provider_key, source_day_fir
 from epicrisis.extract.run import load_extracted, transcription_problems
 from epicrisis.records import read_records
 from epicrisis.printed_values import SIGNS, comparator_printed, fold, squeezed, number_matches, number_tokens
+from epicrisis.rules import load as load_rules
+from epicrisis.rules.kinds import VALIDATE
+from epicrisis.rules.subjects import Document, Found
+from epicrisis.settings import rules_on
+from epicrisis.sources import data_dir_of
 from epicrisis.runs import one_at_a_time, put_in_place, temporary_name
+from epicrisis.values import is_result
 
-FILE_NAME = "validation.json"
+FILE_NAME = layout.VALIDATION
 
 CHECKS = {
     "transcription_incomplete": ("document", "Parts of the document were not transcribed"),
@@ -80,34 +87,105 @@ COPY_MIN_SIZE_RATIO = 0.6  # a short form sharing a date with a long one is not 
 COPY_MIN_CONTAINED = 3  # a shorter document whose named results all appear in a longer one
 
 
-def value_findings(document: dict) -> Counter:
-    found: Counter = Counter()
-    seen = Counter()
+def _rows(item: dict) -> dict[tuple, list[dict]]:
     rows: dict[tuple, list[dict]] = defaultdict(list)
-    for item in document["observations"]:
-        printed = item["value_as_printed"] or ""
-        rows[(item["provenance"]["page"], squeezed(item["name_as_printed"]))].append(item)
-        # The same line transcribed twice; the same value printed in two places is fine.
-        seen[(item["provenance"]["page"], squeezed(item["name_as_printed"]), squeezed(printed), item.get("column_as_printed"), squeezed(item["provenance"]["snippet"]))] += 1
-        numbers = number_tokens(printed)
-        if item.get("value_numeric") is not None:
-            if not number_matches(printed, item["value_numeric"]):
-                found["number_differs"] += 1
-            # A comparator in words ("up to 5") counts as printed; a sign that is lost or invented does not.
-            if printed.lstrip().startswith(SIGNS) and not item.get("comparator"):
-                found["comparator_missing"] += 1
-            if item.get("comparator") and not comparator_printed(printed):
-                found["comparator_missing"] += 1
-        if item.get("value_kind") == "quantitative" and not numbers:
-            found["quantitative_without_number"] += 1
-        reference = RANGE.match(item.get("reference_as_printed") or "")
+    for value in item["observations"]:
+        rows[(value["provenance"]["page"], squeezed(value["name_as_printed"]))].append(value)
+    return rows
+
+
+def _found(document, value, line: str = "") -> Found:
+    return Found(document.file_sha256, value["provenance"]["page"], None, line)
+
+
+def number_differs(document, settings: dict) -> list[Found]:
+    """The number stored is not the number printed."""
+    return [_found(document, value) for value in document.item["observations"]
+            if value.get("value_numeric") is not None
+            and not number_matches(value["value_as_printed"] or "", value["value_numeric"])]  # fmt: skip
+
+
+def comparator_missing(document, settings: dict) -> list[Found]:
+    """A < or > printed and not stored, or stored and not printed.
+
+    A comparator in words ("up to 5") counts as printed; a sign that is lost or invented does not.
+    """
+    found = []
+    for value in document.item["observations"]:
+        printed = value["value_as_printed"] or ""
+        if value.get("value_numeric") is None:
+            continue
+        if printed.lstrip().startswith(SIGNS) and not value.get("comparator"):
+            found.append(_found(document, value))
+        if value.get("comparator") and not comparator_printed(printed):
+            found.append(_found(document, value))
+    return found
+
+
+def quantitative_without_number(document, settings: dict) -> list[Found]:
+    """A value counted as a number that holds none."""
+    return [_found(document, value) for value in document.item["observations"]
+            if value.get("value_kind") == "quantitative" and not number_tokens(value["value_as_printed"] or "")]  # fmt: skip
+
+
+def reference_reversed(document, settings: dict) -> list[Found]:
+    """A printed range whose lower bound is above its upper one."""
+    found = []
+    for value in document.item["observations"]:
+        reference = RANGE.match(value.get("reference_as_printed") or "")
         if reference and _number(reference.group(1)) > _number(reference.group(2)):
-            found["reference_reversed"] += 1
-    for items in rows.values():
-        if any(item.get("value_role") == "other" for item in items) and not any(item.get("value_role") == "result" for item in items):
-            found["row_without_result"] += 1
-    found["repeated_value"] += sum(count - 1 for count in seen.values() if count > 1)
-    return +found
+            found.append(_found(document, value))
+    return found
+
+
+def row_without_result(document, settings: dict) -> list[Found]:
+    """A row with a unit or a range but nothing that is the result of it."""
+    return [_found(document, values[0]) for values in _rows(document.item).values()
+            if values and not any(is_result(value) for value in values)]  # fmt: skip
+
+
+def repeated_value(document, settings: dict) -> list[Found]:
+    """One line transcribed twice. The same value printed in two places is not that."""
+    seen: Counter = Counter()
+    where: dict[tuple, dict] = {}
+    for value in document.item["observations"]:
+        key = (value["provenance"]["page"], squeezed(value["name_as_printed"]),
+               squeezed(value["value_as_printed"] or ""), value.get("column_as_printed"),
+               squeezed(value["provenance"]["snippet"]))  # fmt: skip
+        seen[key] += 1
+        where.setdefault(key, value)
+    return [_found(document, where[key]) for key, count in seen.items() for _ in range(count - 1) if count > 1]
+
+
+def lab_without_values(document, settings: dict) -> list[Found]:
+    """A laboratory panel that was transcribed and came back holding nothing."""
+    if not (document.item["doc_type"] == "lab_panel" and not document.item["observations"] and document.goes_to_extract):
+        return []
+    return [Found(document.file_sha256, document.pages[0] if document.pages else 0, None, "")]
+
+
+def unreadable_parts(document, settings: dict) -> list[Found]:
+    """Parts of the page the reading itself said it could not make out."""
+    return [Found(document.file_sha256, document.pages[0] if document.pages else 0, None, "")
+            for _ in document.item["unreadable"]]  # fmt: skip
+
+
+def date_to_check(document, settings: dict) -> list[Found]:
+    """A document whose date could not be settled. What could not be settled is decided in
+    document_dates.py; this only says that it is worth a person's eye."""
+    if not document.date_flags:
+        return []
+    return [Found(document.file_sha256, document.pages[0] if document.pages else 0, None, "")]
+
+
+def findings_for(document: Document, checked_by) -> Counter:
+    """What the rules find in one document, counted by the id of the rule that found it."""
+    found: Counter = Counter()
+    for rule in checked_by:
+        hits = rule.check.run(document, rule.settings)
+        if hits:
+            found[rule.id] += len(hits)
+    return found
 
 
 def validate_source(output: Path, archive_root: Path | None = None) -> dict:
@@ -117,8 +195,11 @@ def validate_source(output: Path, archive_root: Path | None = None) -> dict:
 
 
 def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
-    records = {record["sha256"]: record for record in read_records(output / "inventory.jsonl") if "sha256" in record}
-    pages = latest_pages(output / "classify.jsonl")
+    # Which of the checks this instance runs is its own answer, kept per rule; the way from an
+    # archive's folder back to the instance it belongs to is written once, in sources.py.
+    checked_by = rules_on(data_dir_of(output), load_rules(data_dir_of(output)), VALIDATE)
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
+    pages = latest_pages(output / layout.CLASSIFY)
     corrections = load_corrections(output)
     searches = load_search_results(output)
 
@@ -129,7 +210,7 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
         sha256, numbers = group[0]["file_sha256"], tuple(page["page"] for page in group)
         if sha256 not in records:
             continue
-        extracted = load_extracted(output / "extracted", sha256)
+        extracted = load_extracted(output / layout.EXTRACTED, sha256)
         item = next((doc for doc in (extracted or {"documents": []})["documents"] if tuple(doc["pages"]) == numbers), None)
         if not goes_to_extract(group[0]):
             item = None
@@ -137,13 +218,12 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
             item, group, correction=corrections.get((sha256, numbers, "document_date")), search=searches.get((sha256, numbers)),
             day_first=(sha256, numbers) in day_first_documents or provider_key(item, group) in day_first_providers,
         )
-        findings = Counter()
+        tabular = tuple(page["page"] for page in group if page.get("has_tabular_results"))
+        subject = Document(file_sha256=sha256, pages=numbers, item=item, tabular_pages=tabular,
+                           goes_to_extract=goes_to_extract(group[0]), date_flags=tuple(date["flags"]))  # fmt: skip
+        findings = findings_for(subject, checked_by)
         if item:
-            findings += value_findings(item)
-            if item["doc_type"] == "lab_panel" and not item["observations"] and goes_to_extract(group[0]):
-                findings["lab_without_values"] += 1
             # Checks run again with today's rules: the page text for text pages, the transcription otherwise.
-            tabular = tuple(page["page"] for page in group if page.get("has_tabular_results"))
             problems = transcription_problems(item, _sent_texts(records[sha256], numbers, archive_root), tabular)
             incomplete = {code: count for code, count in problems.items() if code in INCOMPLETE_CHECK_PROBLEMS}
             if incomplete:
@@ -154,10 +234,6 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
                      if code not in COVERED_CHECK_PROBLEMS | INCOMPLETE_CHECK_PROBLEMS | OWN_FINDING_PROBLEMS}  # fmt: skip
             if still:
                 findings["checks_still_failing"] += sum(still.values())
-            if item["unreadable"]:
-                findings["unreadable_parts"] += len(item["unreadable"])
-        if date["flags"]:
-            findings["date_to_check"] += 1
         documents.append({"file_sha256": sha256, "pages": list(numbers), "date": date["value"], "item": item, "findings": findings})
 
     _mark_possible_copies(documents)
@@ -181,8 +257,8 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
 
 def coverage(output: Path) -> dict:
     """Whether every file, page and due document went through the pipeline. Counts, and file ids for gaps."""
-    records = list(read_records(output / "inventory.jsonl"))
-    pages = latest_pages(output / "classify.jsonl")
+    records = list(read_records(output / layout.INVENTORY))
+    pages = latest_pages(output / layout.CLASSIFY)
     classified = {(page["file_sha256"], page["page"]) for page in pages}
     by_sha = {record["sha256"]: record for record in records if "sha256" in record}
     skipped = [record for record in records if not page_refs(record) and "sha256" in record]
@@ -190,7 +266,7 @@ def coverage(output: Path) -> dict:
     due = [group for group in group_documents(pages) if goes_to_extract(group[0]) and group[0]["file_sha256"] in by_sha]
     untranscribed = []
     for group in due:
-        extracted = load_extracted(output / "extracted", group[0]["file_sha256"])
+        extracted = load_extracted(output / layout.EXTRACTED, group[0]["file_sha256"])
         numbers = [page["page"] for page in group]
         if not any(doc["pages"] == numbers for doc in (extracted or {"documents": []})["documents"]):
             untranscribed.append((group[0]["file_sha256"], numbers))
@@ -209,7 +285,7 @@ def validation_state(output: Path) -> dict:
     result = load_validation(output)
     if result is None:
         return {"state": "not_started", "label": "", "title": "Validate: not run yet"}
-    inputs = [output / "classify.jsonl", output / "corrections.jsonl", output / "date_search.jsonl", output / "extracted"]
+    inputs = [output / layout.CLASSIFY, output / layout.CORRECTIONS, output / layout.DATE_SEARCH, output / layout.EXTRACTED]
     changed = max((path.stat().st_mtime for path in inputs if path.exists()), default=0)
     ran = (output / FILE_NAME).stat().st_mtime
     documents = len(result["documents"])
@@ -272,7 +348,7 @@ def _named_values(item: dict) -> set[tuple[str, str]]:
     return {
         (fold(observation["name_as_printed"]).strip(" :"), squeezed(observation["value_as_printed"]).replace(",", "."))
         for observation in item["observations"]
-        if observation.get("value_role", "result") == "result"
+        if is_result(observation)
     }
 
 

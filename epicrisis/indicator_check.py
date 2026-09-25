@@ -22,7 +22,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from epicrisis.classify.backend import STRONG_MODEL, BackendError, claude_command, run_claude
+from epicrisis.engines import engine_name
+from epicrisis.classify.backend import STRONG_MODEL, BackendError
 from epicrisis.printed_values import fold
 from epicrisis.records import append_line, now, read_records
 
@@ -84,14 +85,20 @@ PROMPT_VERSION = hashlib.sha256("\n".join([SYSTEM_PROMPT, json.dumps(SCHEMA, sor
 
 
 class CheckBackend:
-    name = "claude-code-subscription"
-
-    def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = TIMEOUT_SECONDS):
+    def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = TIMEOUT_SECONDS,
+                 data_dir=None):  # fmt: skip
         self.model, self.executable, self.timeout_seconds = model, executable, timeout_seconds
+        self.data_dir = data_dir
+        self.name = engine_name(data_dir)
+
+    def call(self):
+        """Something that can answer one question. What carries it there is chosen in engines."""
+        from epicrisis import engines
+
+        return engines.a_call(self.data_dir, model=self.model, timeout_seconds=self.timeout_seconds)
 
     def check(self, groups: str, workdir: Path) -> dict:
-        command = claude_command(self.executable, self.model, SYSTEM_PROMPT, SCHEMA, read_files=False)
-        fields, _ = run_claude(command, REQUEST.format(groups=groups), workdir, self.timeout_seconds)
+        fields, _ = self.call().ask(SYSTEM_PROMPT, SCHEMA, REQUEST.format(groups=groups), workdir)
         if not isinstance(fields.get("groups"), list):
             raise BackendError("no valid structured output")
         return fields

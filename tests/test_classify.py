@@ -48,7 +48,8 @@ class FakeBackend:
     name = "fake"
     model = "fake-model-1"
 
-    def __init__(self, fail_from: int | None = None, limit_from: int | None = None, model: str | None = None):
+    def __init__(self, fail_from: int | None = None, limit_from: int | None = None, model: str | None = None,
+                 **rest):  # a backend is handed the call its engine makes; this one carries its own
         if model:
             self.model = model
         self.calls = []

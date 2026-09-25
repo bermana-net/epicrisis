@@ -26,6 +26,8 @@ import hashlib
 import json
 import random
 import re
+
+from epicrisis import layout
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -689,17 +691,17 @@ def _write_life(life: Life, into: Path, data_dir: Path, seed: int, say) -> tuple
     if source is None:
         source = registry.add(str(archive), life.whose)
     output = source_output_dir(data_dir, source.id)
-    summary = write_inventory(archive, output / "inventory.jsonl")
+    summary = write_inventory(archive, output / layout.INVENTORY)
     # The dashboard reads the inventory's own status file, not the inventory: without it the
     # first step of a finished archive stands at "Queued" for ever.
-    (output / "inventory.status.json").write_text(json.dumps({
+    (output / layout.INVENTORY_STATUS).write_text(json.dumps({
         "state": "done", "scanned": summary.files, "total": summary.files,
         "started_at": now(), "finished_at": now(),
     }), encoding="utf-8")  # fmt: skip
 
     for path, item in drawn:
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        append_line(output / "classify.jsonl", {
+        append_line(output / layout.CLASSIFY, {
             "file_sha256": sha, "page": 1, "route": "vision", "doc_type": item["doc_type"],
             "page_role": "first", "language": item["language"],
             "date_on_page": None if item.get("date_unreadable") else item["date"].strftime("%d.%m.%Y"),
@@ -708,8 +710,8 @@ def _write_life(life: Life, into: Path, data_dir: Path, seed: int, say) -> tuple
             "model": "made up, no model was called", "prompt_version": "demo", "at": now(),
         })  # fmt: skip
         text = "\n".join(line[1] for line in item["lines"] if line[0] != "rule")
-        extracted_path(output / "extracted", sha).parent.mkdir(parents=True, exist_ok=True)
-        extracted_path(output / "extracted", sha).write_text(json.dumps({
+        extracted_path(output / layout.EXTRACTED, sha).parent.mkdir(parents=True, exist_ok=True)
+        extracted_path(output / layout.EXTRACTED, sha).write_text(json.dumps({
             "file_sha256": sha,
             "documents": [{
                 "doc_type": item["doc_type"], "language": item["language"], "pages": [1],
@@ -733,7 +735,7 @@ def _write_life(life: Life, into: Path, data_dir: Path, seed: int, say) -> tuple
         # The ledger is how the program knows a document has been read. Without it the status
         # page says the reading has not started, over an archive that is fully transcribed —
         # which is the first screen anybody following the README sees.
-        append_line(output / "ledger.jsonl", {
+        append_line(output / layout.LEDGER, {
             "step": "extract", "file_sha256": sha, "pages": [1],
             "model": "made up, no model was called", "prompt_version": PROMPT_VERSION,
             "status": "done", "at": now(),

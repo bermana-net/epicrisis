@@ -1,6 +1,17 @@
 """Suspicion checks. Synthetic values only; no model and no archive."""
 
-from epicrisis.suspects import find, provider_looks_like_a_person
+from epicrisis import rules
+from epicrisis.rules import kinds
+from epicrisis.suspects import find as _find
+from epicrisis.suspects import provider_looks_like_a_person
+
+# Every rule that finds one of these, as it ships: these are the rules' tests as much as the
+# search's, and a rule whose file said something else would fail them.
+FOUND_BY = rules.load().at(kinds.SUSPECTS)
+
+
+def find(rows, documents):
+    return _find(rows, documents, FOUND_BY)
 
 
 def value(name, number, unit, indicator="creatinine", sha="a" * 64, page=1, **rest):

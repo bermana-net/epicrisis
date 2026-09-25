@@ -263,7 +263,8 @@ The licence is the [Business Source License 1.1](LICENSE), which is source-avail
 open source, with one thing written into it: **every version becomes Apache 2.0 four years after
 it is published.**
 
-Sending a patch: [CONTRIBUTING.md](CONTRIBUTING.md).
+Sending a patch: [CONTRIBUTING.md](CONTRIBUTING.md). Where things live in the code, and where a
+new thing goes: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 **Your data, your machine, your call.**
 

@@ -123,8 +123,13 @@ def claude_command(executable: str, model: str, system_prompt: str, schema: dict
 
 def run_claude(command: list[str], request: str, workdir: Path, timeout_seconds: int) -> tuple[dict, str]:
     """Structured output and model name of one isolated Claude Code call."""
+    # A key in this server's environment would make Claude Code bill that key instead of the
+    # subscription it is signed in to, silently. Which engine answers is a choice on the settings
+    # page; it is not decided by a file appearing on the machine, so the names go out of here.
+    from epicrisis.engines import KEYS_THE_OTHER_ENGINE_USES
+
     environment = {
-        **os.environ,
+        **{name: value for name, value in os.environ.items() if name not in KEYS_THE_OTHER_ENGINE_USES},
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "DISABLE_TELEMETRY": "1",
         "DISABLE_ERROR_REPORTING": "1",
@@ -237,20 +242,41 @@ class ModelLadder:
 class ClaudeCodeBackend:
     name = "claude-code-subscription"
 
-    def __init__(self, model: str = SMALL_MODEL, executable: str = "claude", timeout_seconds: int = 300):
+    """One page, read once. What carries the request is given to it; see epicrisis/engines.py.
+
+    The name is the engine's, not the class's: consent is recorded against it and the ledger
+    stores it, and both have to say where a page actually went.
+    """
+
+    def __init__(self, model: str = SMALL_MODEL, executable: str = "claude", timeout_seconds: int = 300,
+                 call=None):  # fmt: skip
         self.model = model
         self.executable = executable
         self.timeout_seconds = timeout_seconds
+        self._call = call
+        if call is not None:
+            self.name = call.backend_name  # the instance says where its pages actually went
+
+    @property
+    def call(self):
+        if self._call is None:
+            from epicrisis.engines import ClaudeCodeCall
+
+            self._call = ClaudeCodeCall(model=self.model, executable=self.executable,
+                                        timeout_seconds=self.timeout_seconds)  # fmt: skip
+        return self._call
 
     def command(self, route: str) -> list[str]:
         return claude_command(self.executable, self.model, SYSTEM_PROMPT, OUTPUT_SCHEMA, read_files=route == "vision")
 
     def classify(self, payload: Payload, workdir: Path) -> Classification:
+        images: tuple[Path, ...] = ()
         if payload.image_path is not None:
-            route, request = "vision", IMAGE_REQUEST.format(name=payload.image_path.name)
+            request = IMAGE_REQUEST.format(name=payload.image_path.name)
+            images = (payload.image_path, *payload.close_ups)
         else:
-            route, request = "text", TEXT_REQUEST.format(text=payload.text or "")
-        fields, model = run_claude(self.command(route), request, workdir, self.timeout_seconds)
+            request = TEXT_REQUEST.format(text=payload.text or "")
+        fields, model = self.call.ask(SYSTEM_PROMPT, OUTPUT_SCHEMA, request, workdir, images)
         if fields.get("doc_type") not in DOC_TYPES:
             raise BackendError("no valid structured output")
         return Classification(fields=fields, model=model)

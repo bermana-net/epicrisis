@@ -15,21 +15,26 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from epicrisis.classify.backend import ClaudeCodeBackend, backend_installed
+from epicrisis import layout
+from epicrisis.classify.backend import backend_installed
 from epicrisis.classify.pages import PageUnreadable, original_png, page_refs
 from epicrisis.classify.report import latest_pages
 from epicrisis.classify.run import all_refs, is_running
 from epicrisis.extract.run import LOCK_NAME as EXTRACT_LOCK
 from epicrisis.extract.run import document_refs, done_keys
 from epicrisis.consent import has_consent, record_consent
-from epicrisis.corrections import set_document_date, set_primary_copy, set_value
+from epicrisis.corrections import CORRECTABLE, set_document_date, set_primary_copy, set_value
 from epicrisis import indicators as indicator_store
 from epicrisis.index.build import index_state
 from epicrisis.indicator_check import load_checks
 from epicrisis import mcp_access
 from epicrisis.mcp_lock import read_secret as read_lock_secret
+from epicrisis import engines
+from epicrisis.engines import set_engine
 from epicrisis.models import KNOWN_MODELS, PASSES, model_for
 from epicrisis import query as query_index
+from epicrisis import rules
+from epicrisis.rules import kinds
 from epicrisis import series
 from epicrisis.query import IndexMissing, open_index
 from epicrisis.inventory.report import Summary
@@ -37,14 +42,14 @@ from epicrisis.records import read_records
 from epicrisis.sources import Source, SourceError, SourceRegistry, source_output_dir
 from epicrisis.web.browse import BrowseError, list_folder
 from epicrisis.web.markdown import render_markdown
-from epicrisis.ask import (ANSWER_MODES, answer_mode, ask, ask_enabled, carried_questions, converts_units, delete_chat,
-                           places_unit_by_numbers, reads_unit_from_range, set_places_unit_by_numbers,
-                           set_reads_unit_from_range,
-                           list_chats, load_chat, mcp_lock_minutes, mcp_lock_on, mcp_lock_scope, new_chat,
-                           set_answer_mode, set_ask_enabled, set_converts_units, set_mcp_lock, set_mcp_lock_minutes,
-                           set_chosen_models, set_trusts_read_materials, trusts_read_materials,
-                           set_mcp_lock_scope)
+from epicrisis.ask import ask, carried_questions, delete_chat, list_chats, load_chat, new_chat
 from epicrisis.ask import running as chat_running
+from epicrisis.settings import (ANSWER_MODES, answer_mode, ask_enabled,
+                                mcp_lock_minutes, mcp_lock_on, mcp_lock_scope, rule_on, rules_on,
+                                set_answer_mode, set_ask_enabled, set_chosen_models,
+                                set_mcp_lock, set_mcp_lock_minutes, set_mcp_lock_scope,
+                                set_rule_on, set_trusts_read_materials,
+                                trusts_read_materials)  # fmt: skip
 from epicrisis.update import start_in_background as start_update
 from epicrisis.update import update_running
 from epicrisis.validate import validate_source, validation_state
@@ -85,6 +90,11 @@ def create_app(
     templates.env.filters["markdown"] = render_markdown
 
     # Every page shows whose archive it is, so the header asks for it as it renders.
+    # The stylesheet is asked for with its own last-changed time, so a change to it reaches a
+    # browser that already has the old one. Written by hand, that number is forgotten exactly
+    # when it matters: a page is edited, the style with it, and the person who asked for the
+    # change sees the old one and reports it as a bug.
+    templates.env.globals["style_version"] = lambda: int((Path(__file__).parent / "static" / "app.css").stat().st_mtime)
     templates.env.globals["owners"] = lambda: _owners()
     templates.env.globals["stage"] = lambda: _stage()
 
@@ -197,7 +207,7 @@ def create_app(
         # Whether the reading can be started from where a person is standing, and whether it is
         # already going: the one thing to do next should be doable without finding a page first.
         ready_to_start = {
-            "consented": has_consent(registry.data_dir, ClaudeCodeBackend.name),
+            "consented": has_consent(registry.data_dir, engines.engine_name(registry.data_dir)),
             "installed": backend_installed(),
             "running": update_running(registry.data_dir),
         }
@@ -219,7 +229,7 @@ def create_app(
         # scanned and then read, whose index is missing or out of date, is not being worked on
         # by anybody, and telling a person to wait for that is telling them to wait for ever.
         scanning = status.get("state") in ("running", "queued", None) and not status.get("finished_at")
-        transcribed = (jobs.records_path(active.id).parent / "extracted").is_dir()
+        transcribed = (jobs.records_path(active.id).parent / layout.EXTRACTED).is_dir()
         if scanning and not transcribed:
             return {"state": "scanning", "whose": active.whose, **ready_to_start}
         if transcribed:
@@ -244,7 +254,7 @@ def create_app(
             mcp={"last": mcp_access.last(registry.data_dir), "counts": mcp_access.counts(registry.data_dir),
                  "day": mcp_access.activity(registry.data_dir), "lock": mcp_lock_on(registry.data_dir),
                  "secret": bool(read_lock_secret())},
-            model_consent=has_consent(registry.data_dir, ClaudeCodeBackend.name),
+            model_consent=has_consent(registry.data_dir, engines.engine_name(registry.data_dir)),
             host=request.headers.get("host", ""),
             updated=datetime.now().astimezone().strftime("%H:%M %Z"),
             error=error,
@@ -401,7 +411,7 @@ def create_app(
             pages += len(refs)
             files += len({ref.file_sha256 for ref in refs})
         showing = registry.active()
-        consented = has_consent(registry.data_dir, ClaudeCodeBackend.name)
+        consented = has_consent(registry.data_dir, engines.engine_name(registry.data_dir))
         return {"consented": consented, "error": error, "pages": pages, "files": files,
                 "whose": showing.whose if showing else "", "archives": whose}  # fmt: skip
 
@@ -414,7 +424,7 @@ def create_app(
         if understood != "yes":
             context = consent_context(error="Tick the box to confirm.")
             return templates.TemplateResponse(request, "consent.html", context, status_code=400)
-        record_consent(registry.data_dir, ClaudeCodeBackend.name)
+        record_consent(registry.data_dir, engines.engine_name(registry.data_dir))
         return RedirectResponse("/", status_code=303)
 
     @app.get("/tests/{indicator_id}", response_class=HTMLResponse)
@@ -435,8 +445,7 @@ def create_app(
         with closing(connection):
             label = next((item["label"] for item in query_index.indicator_list(connection, status=None)
                           if item["id"] == indicator_id), indicator_id)  # fmt: skip
-            every = query_index.values(connection, indicator=indicator_id,
-                                       limit=query_index.MAX_SERIES, cap=query_index.MAX_SERIES)  # fmt: skip
+            every = query_index.whole_history(connection, indicator_id)
             counted: dict[str, int] = {}
             for item in every:
                 counted[item["material"] or "none"] = counted.get(item["material"] or "none", 0) + 1
@@ -456,8 +465,7 @@ def create_app(
                 )  # fmt: skip
             if material not in {item["key"] for item in materials}:
                 material = materials[0]["key"]
-            values = query_index.values(connection, indicator=indicator_id, material=material,
-                                        limit=query_index.MAX_SERIES, cap=query_index.MAX_SERIES)  # fmt: skip
+            values = query_index.whole_history(connection, indicator_id, material)
             # What the heading says about this history has to be true of the whole of it, not of
             # the part that fitted: how many values there are, and from when to when.
             total = query_index.count_values(connection, indicator=indicator_id, material=material)
@@ -465,17 +473,14 @@ def create_app(
             span = {"first": dated[0] if dated else None, "last": dated[-1] if dated else None,
                     "undated": sum(1 for item in values if not item.get("date")),
                     "total": total, "more": total > len(values)}  # fmt: skip
-        to_scale = converts_units(registry.data_dir)
-        from_range = reads_unit_from_range(registry.data_dir)
-        by_numbers = places_unit_by_numbers(registry.data_dir)
+        placing = rules_on(registry.data_dir, rules.load(registry.data_dir), kinds.CHARTS)
         context.update(
-            label=label, material=material, materials=materials, to_scale=to_scale, values=values, span=span,
+            label=label, material=material, materials=materials, values=values, span=span,
             material_label=next((item["label"] for item in materials if item["key"] == material), material),
             # Where the form printed no material, a model read the table; the page says which
             # values those are rather than showing a reading and a printed word as one thing.
             read_by_model=sum(1 for item in values if item.get("material_source") == "model"),
-            charts=series.charts(values, indicator=indicator_id, to_scale=to_scale,
-                                 from_range=from_range, by_numbers=by_numbers),
+            charts=series.charts(values, indicator=indicator_id, placing=placing),
         )  # fmt: skip
         return templates.TemplateResponse(request, "series.html", context)
 
@@ -484,7 +489,7 @@ def create_app(
         """One line over the whole archive: text, titles, institutions and the printed names of values."""
         # One cap, the one the index enforces, so that asking for five does not silently give ten
         # and asking for four hundred does not silently give two hundred.
-        limit = max(1, min(limit, query_index.MAX_LIMIT))
+        limit = query_index.within_limit(limit)
         context = {"current": "search", "query": q, "doc_type": doc_type, "limit": limit}
         try:
             connection = open_index(registry.data_dir, _showing(registry))
@@ -650,7 +655,13 @@ def create_app(
                                 status_code=303)  # fmt: skip
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, saved: bool = False, trouble: str = ""):
+    def settings_page(request: Request, saved: bool = False, trouble: str = "", tab: str = ""):
+        return _settings_page(request, saved, trouble, tab)
+
+    def _settings_page(request: Request, saved: bool = False, trouble: str = "", tab: str = "",
+                       waiting: dict | None = None):  # fmt: skip
+        """The page, drawn either for a visit or as the answer to a change held back for asking."""
+        waiting = waiting or {}
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -659,9 +670,18 @@ def create_app(
                 "enabled": ask_enabled(registry.data_dir),
                 "mode": answer_mode(registry.data_dir),
                 "model_ready": backend_installed(),
-                "scale": converts_units(registry.data_dir),
-                "unit_from_range": reads_unit_from_range(registry.data_dir),
-                "unit_by_numbers": places_unit_by_numbers(registry.data_dir),
+                "rules": [
+                    {"id": rule.id, "name": rule.name, "summary": rule.summary, "about": render_markdown(rule.about),
+                     "at": rule.at, "cost": rule.cost, "shipped": rule.shipped, "costly": rule.costly,
+                     "on": waiting.get(rule.id, rule_on(registry.data_dir, rule)),
+                     "waiting": rule.id in waiting, "turning_on": waiting.get(rule.id)}
+                    # By the step that runs them, in the order the program runs its steps: what
+                    # turning one on asks of a person is decided by its step, so rules that ask
+                    # the same thing stand together.
+                    for rule in sorted(rules.load(registry.data_dir),
+                                       key=lambda rule: (kinds.AT.index(rule.at), rule.name))  # fmt: skip
+                ],
+                "rule_problems": rules.load(registry.data_dir).problems,
                 "read_materials": trusts_read_materials(registry.data_dir),
                 "passes": [
                     {"key": key, "label": item["label"], "about": item["about"],
@@ -669,30 +689,56 @@ def create_app(
                     for key, item in PASSES.items()
                 ],
                 "known_models": KNOWN_MODELS,
+                "engines": [
+                    {"name": item.name, "label": item.label, "about": item.about,
+                     "ready": not engines.what_it_needs(item.name, registry.data_dir),
+                     "chosen": item.name == engines.chosen_engine(registry.data_dir),
+                     "needs_what": engines.what_it_needs(item.name, registry.data_dir)}
+                    for item in engines.ENGINES
+                ],  # fmt: skip
                 "known_names": [name for name, _about in KNOWN_MODELS],
                 "read_materials_known": _tables_read(),
                 "mcp_lock": mcp_lock_on(registry.data_dir),
                 "mcp_lock_scope": mcp_lock_scope(registry.data_dir),
                 "mcp_lock_minutes": mcp_lock_minutes(registry.data_dir),
                 "mcp_secret": bool(read_lock_secret()),
-                "confirmed": has_consent(registry.data_dir, ClaudeCodeBackend.name),
+                "confirmed": has_consent(registry.data_dir, engines.engine_name(registry.data_dir)),
                 "saved": saved,
+                "tab": tab,
+                "waiting": waiting,
                 "trouble": trouble,
             },
         )
 
     @app.post("/settings")
-    def save_settings(request: Request, ask_page: str = Form(""), mode: str = Form("as_printed"), scale: str = Form(""),
-                      unit_from_range: str = Form(""), unit_by_numbers: str = Form(""),
+    def save_settings(request: Request, ask_page: str = Form(""), mode: str = Form("as_printed"),
+                      engine: str = Form(""),
+                      rule_on_ids: list[str] = Form([], alias="rule_on"),
+                      confirmed_rules: list[str] = Form([], alias="confirm_rule"),
                       read_materials: str = Form(""),
                       model_first: str = Form(""), model_strong: str = Form(""),
                       model_second_reader: str = Form(""),
                       mcp_lock: str = Form(""), mcp_lock_scope_choice: str = Form("conversation", alias="mcp_lock_scope"),
-                      mcp_lock_minutes_choice: int = Form(240, alias="mcp_lock_minutes")):  # fmt: skip
+                      mcp_lock_minutes_choice: int = Form(240, alias="mcp_lock_minutes"),
+                      tab: str = Form("")):  # fmt: skip
         set_ask_enabled(registry.data_dir, ask_page == "on")
-        set_converts_units(registry.data_dir, scale == "on")
-        set_reads_unit_from_range(registry.data_dir, unit_from_range == "on")
-        set_places_unit_by_numbers(registry.data_dir, unit_by_numbers == "on")
+        # An engine that is not built, or not known, is simply not stored: the page offers it as a
+        # thing that is coming, and a form can always be made to say something the page did not.
+        with suppress(ValueError):
+            set_engine(registry.data_dir, engine)
+        # Checkboxes only say what is ticked, so what is not in the list is what was turned off.
+        # A rule whose step reads documents again is not stored on the strength of a click: it
+        # is held back, said out loud with what it will cost, and stored on the second answer.
+        waiting, changed = {}, set()
+        for rule in rules.load(registry.data_dir):
+            wanted = rule.id in rule_on_ids
+            if wanted == rule_on(registry.data_dir, rule):
+                continue
+            if rule.costly and rule.id not in confirmed_rules:
+                waiting[rule.id] = wanted
+                continue
+            set_rule_on(registry.data_dir, rule.id, wanted)
+            changed.add(rule.at)
         set_chosen_models(registry.data_dir, {
             "first": model_first, "strong": model_strong, "second_reader": model_second_reader,
         })  # fmt: skip
@@ -702,6 +748,11 @@ def create_app(
         if trusts_read_materials(registry.data_dir) != (read_materials == "on"):
             set_trusts_read_materials(registry.data_dir, read_materials == "on")
             trouble = _rebuild_index()
+        # A rule turned off has to stop counting now, not at the next run of the checks. The
+        # findings of an archive are a file on disk; leaving it as it was would show a person
+        # findings from a rule they have just switched off, with no way to tell why they persist.
+        if kinds.VALIDATE in changed:
+            trouble = _check_every_archive() or trouble
         set_mcp_lock(registry.data_dir, mcp_lock == "on" and bool(read_lock_secret()))
         with suppress(ValueError):
             set_mcp_lock_scope(registry.data_dir, mcp_lock_scope_choice)
@@ -709,9 +760,22 @@ def create_app(
             set_mcp_lock_minutes(registry.data_dir, mcp_lock_minutes_choice)
         if mode in ANSWER_MODES:
             set_answer_mode(registry.data_dir, mode)
+        if waiting:
+            # Everything else is already stored; only the held-back ones come back as a question,
+            # shown the way they were asked for so that answering yes is one step and not two.
+            return _settings_page(request, saved=True, trouble=trouble or "", tab="rules", waiting=waiting)
         if trouble:
-            return RedirectResponse(f"/settings?saved=true&trouble={quote(trouble)}", status_code=303)
-        return RedirectResponse("/settings?saved=true", status_code=303)
+            return RedirectResponse(f"/settings?saved=true&tab={quote(tab)}&trouble={quote(trouble)}", status_code=303)
+        return RedirectResponse(f"/settings?saved=true&tab={quote(tab)}", status_code=303)
+
+    def _check_every_archive() -> str:
+        """Every archive checked again with the rules as they now stand. No model, seconds."""
+        for source in registry.list():
+            try:
+                validate_source(source_output_dir(registry.data_dir, source.id), Path(source.path))
+            except Exception as exc:  # the type only: a message can quote a document
+                return f"The archive could not be checked again: {type(exc).__name__}. Run epicrisis validate."
+        return ""
 
     def _tables_read() -> int:
         """How many tables a model has already been asked about, across every archive here."""
@@ -749,14 +813,14 @@ def create_app(
                 "enabled": ask_enabled(registry.data_dir),
                 "mode": answer_mode(registry.data_dir),
                 "carried": carried_questions(chat) if chat else 0,
-                "confirmed": has_consent(registry.data_dir, ClaudeCodeBackend.name),
+                "confirmed": has_consent(registry.data_dir, engines.engine_name(registry.data_dir)),
             },
         )
 
     @app.post("/ask")
     @app.post("/ask/{chat_id}")
     def ask_question(request: Request, chat_id: str | None = None, question: str = Form(""), continue_chat: str = Form("", alias="continue")):
-        if not (ask_enabled(registry.data_dir) and has_consent(registry.data_dir, ClaudeCodeBackend.name)):
+        if not (ask_enabled(registry.data_dir) and has_consent(registry.data_dir, engines.engine_name(registry.data_dir))):
             return Response("Asking is turned off for this instance.", status_code=403)
         # Unchecked box: the question starts its own chat, so nothing said earlier reaches the model.
         open_archive = registry.active()
@@ -848,7 +912,7 @@ def create_app(
         # run for the archive that is open and for no other. See _the_open_archive.
         source = _the_open_archive(source_id)
         output = jobs.records_path(source_id).parent
-        if source is None or not (output / "classify.jsonl").exists():
+        if source is None or not (output / layout.CLASSIFY).exists():
             return Response("Unknown source.", status_code=404)
         validate_source(output, Path(source.path))
         return RedirectResponse("/review", status_code=303)
@@ -874,9 +938,11 @@ def create_app(
         elif action == "reset":
             set_value(output, sha256, pages, key, None)
         else:
+            # The fields a person may put right are named in corrections.py, so the form cannot
+            # come to write one the index does not read.
+            written = dict(zip(CORRECTABLE, (name, value, unit, reference, flag), strict=True))
             set_value(output, sha256, pages, key, {
-                "name_as_printed": name, "value_as_printed": value, "unit_as_printed": unit,
-                "reference_as_printed": reference, "flag_as_printed": flag,
+                **written,
                 **({"material": material} if material in MATERIALS_TO_CHOOSE else {}),
             })  # fmt: skip
         return RedirectResponse(f"/documents/{source_id}/{sha256}/{first_page}", status_code=303)
@@ -991,7 +1057,7 @@ def _classify_step(records: list[dict], output: Path) -> dict:
     wanted = {(ref.file_sha256, ref.page) for ref in all_refs(records)}
     if not wanted:
         return {"state": "not_started", "label": "", "title": "Classify: nothing to classify yet"}
-    done = sum(1 for page in latest_pages(output / "classify.jsonl") if (page["file_sha256"], page["page"]) in wanted)
+    done = sum(1 for page in latest_pages(output / layout.CLASSIFY) if (page["file_sha256"], page["page"]) in wanted)
     percent = int(done * 100 / len(wanted))
     title = f"Classify: {done} of {len(wanted)} pages"
     # A run holding the lock is running, whatever the counts say — pages classified again after a
@@ -1008,11 +1074,11 @@ def _classify_step(records: list[dict], output: Path) -> dict:
 
 def _extract_step(records: list[dict], output: Path) -> dict:
     by_file = {record["sha256"]: record for record in records if "sha256" in record}
-    classify_pages = latest_pages(output / "classify.jsonl")
+    classify_pages = latest_pages(output / layout.CLASSIFY)
     documents = document_refs(by_file, classify_pages)
     if not documents:
         return {"state": "not_started", "label": "", "title": "Extract: nothing to extract yet"}
-    finished = {key[:2] for key in done_keys(output / "ledger.jsonl", classify_pages)}
+    finished = {key[:2] for key in done_keys(output / layout.LEDGER, classify_pages)}
     done = sum(1 for document in documents if (document.file_sha256, document.pages) in finished)
     percent = int(done * 100 / len(documents))
     title = f"Extract: {done} of {len(documents)} documents classified so far"

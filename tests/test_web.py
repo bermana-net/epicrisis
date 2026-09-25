@@ -1001,15 +1001,42 @@ def test_an_address_with_a_number_that_is_not_one_answers_as_a_page(tmp_path):
 
 
 def test_the_unit_switches_are_kept_and_the_page_shows_them(client, data_dir):
-    """Reading a unit from the printed range is on to begin with; reading it from the numbers is not."""
-    from epicrisis.ask import places_unit_by_numbers, reads_unit_from_range
+    """They are rules now. Reading a unit from a printed range is on to begin with; from the
+    numbers is not; and each is turned on and off by its own file's id."""
+    from epicrisis import rules
+    from epicrisis.settings import rule_on
 
-    assert reads_unit_from_range(data_dir) is True and places_unit_by_numbers(data_dir) is False
+    loaded = rules.load(data_dir)
+    from_range, by_numbers = loaded.get("unit_from_range"), loaded.get("unit_by_numbers")
+    assert rule_on(data_dir, from_range) is True and rule_on(data_dir, by_numbers) is False
     page = client.get("/settings").text
     assert "Read the unit from the printed range" in page and "place them by their numbers" in page
 
-    client.post("/settings", data={"mode": "as_printed", "unit_by_numbers": "on"}, follow_redirects=False)
-    assert places_unit_by_numbers(data_dir) is True and reads_unit_from_range(data_dir) is False
+    client.post("/settings", data={"mode": "as_printed", "rule_on": "unit_by_numbers"}, follow_redirects=False)
+    assert rule_on(data_dir, by_numbers) is True and rule_on(data_dir, from_range) is False
 
-    client.post("/settings", data={"mode": "as_printed", "unit_from_range": "on"}, follow_redirects=False)
-    assert reads_unit_from_range(data_dir) is True and places_unit_by_numbers(data_dir) is False
+    client.post("/settings", data={"mode": "as_printed", "rule_on": "unit_from_range"}, follow_redirects=False)
+    assert rule_on(data_dir, from_range) is True and rule_on(data_dir, by_numbers) is False
+
+
+def test_the_settings_page_shows_how_the_model_is_reached(client, data_dir, monkeypatch, tmp_path):
+    """Both ways are listed. The one that cannot answer yet says what it is waiting for."""
+    from epicrisis import engines
+
+    monkeypatch.delenv(engines.KEY_NAME, raising=False)
+    monkeypatch.setattr(engines, "PROJECT_ROOT", tmp_path / "nowhere")  # the test machine may hold a key
+
+    page = client.get("/settings").text
+    assert "How this instance reaches the model" in page
+    assert "Claude Code on this machine" in page and "Anthropic API with a key of your own" in page
+    assert "Not ready:" in page and "disabled" in page
+
+    # A form can be made to say anything; an engine that cannot answer is still not stored.
+    client.post("/settings", data={"mode": "as_printed", "engine": "anthropic-api"}, follow_redirects=False)
+    assert engines.chosen_engine(data_dir) == "claude-code"
+
+    # With a key, the same page offers it plainly and the choice is kept.
+    monkeypatch.setenv(engines.KEY_NAME, "a-key-that-is-not-a-key")
+    assert "Not ready: ANTHROPIC_API_KEY" not in client.get("/settings").text
+    client.post("/settings", data={"mode": "as_printed", "engine": "anthropic-api"}, follow_redirects=False)
+    assert engines.chosen_engine(data_dir) == "anthropic-api"

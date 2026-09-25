@@ -1,14 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Not a page · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page">
+{% extends "_page.html" %}
+{% block title %}Not a page{% endblock %}
+{% block page %}
 
   {% include "_header.html" %}
 
@@ -18,6 +10,4 @@
     <p><a class="btn" href="/">The timeline</a></p>
   </section>
 
-</div>
-</body>
-</html>
+{% endblock %}

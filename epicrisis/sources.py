@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import threading
+from epicrisis import layout
 from epicrisis.runs import put_in_place, temporary_name
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -36,8 +37,8 @@ RUNTIME_FOLDERS = ("/proc", "/sys", "/dev", "/run")
 # corrections.jsonl is not here: a correction is the person's own, keyed to the file's whole
 # sha256 and to the line as printed, and it applies again to the next reading of the same file.
 READING_ARTEFACTS = (
-    "inventory.jsonl", "inventory.status.json", "classify.jsonl", "extracted", "rechecked",
-    "validation.json", "date_search.jsonl", "ledger.jsonl",
+    layout.INVENTORY, layout.INVENTORY_STATUS, layout.CLASSIFY, layout.EXTRACTED, layout.RECHECKED,
+    layout.VALIDATION, layout.DATE_SEARCH, layout.LEDGER,
 )
 
 
@@ -63,10 +64,19 @@ def source_output_dir(data_dir: Path, source_id: str) -> Path:
     return data_dir / OUTPUT_DIR_NAME / source_id
 
 
+def data_dir_of(output: Path) -> Path:
+    """The data directory an archive's output folder sits in: the inverse of source_output_dir.
+
+    A step given an output folder can find what this instance allows without being handed it
+    separately by every caller — and the way back is written once, here, beside the way there.
+    """
+    return output.parent.parent
+
+
 class SourceRegistry:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir.resolve()
-        self.file = self.data_dir / "sources.json"
+        self.file = self.data_dir / layout.SOURCES
         self._lock = threading.Lock()
 
     def list(self) -> list[Source]:
@@ -232,3 +242,14 @@ class SourceRegistry:
             encoding="utf-8",
         )
         put_in_place(temporary, self.file)
+
+
+def showing(data_dir) -> Source | None:
+    """The archive this instance is showing, for callers that hold no registry of their own.
+
+    Which archive is active is decided in one place — SourceRegistry.active — and this is how a
+    command line, an MCP call or a page asks it without each building a registry and each
+    handling "there is none yet" its own way. The registry is built fresh every time on purpose:
+    the archive can be switched on the dashboard while a server is running.
+    """
+    return SourceRegistry(Path(data_dir)).active()

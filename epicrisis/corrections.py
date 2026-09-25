@@ -12,11 +12,18 @@ import re
 from datetime import date
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis import records
 from epicrisis.records import read_records
 from epicrisis.printed_values import fold
 
-FILE_NAME = "corrections.jsonl"
+FILE_NAME = layout.CORRECTIONS
+
+
+# The fields of a printed value a person may put right, and the only ones the index takes from a
+# correction. What was measured is not here on purpose: material has its own order of precedence
+# — a person first, then the form, then a model — and index/build._material applies it.
+CORRECTABLE = ("name_as_printed", "value_as_printed", "unit_as_printed", "reference_as_printed", "flag_as_printed")
 
 
 def load_corrections(output: Path) -> dict[tuple, dict]:
@@ -55,7 +62,7 @@ def unmatched_values(output: Path) -> list[dict]:
 
     lost = []
     for (file_sha256, pages, key), line in load_value_corrections(output).items():
-        extracted = load_extracted(output / "extracted", file_sha256)
+        extracted = load_extracted(output / layout.EXTRACTED, file_sha256)
         document = next(
             (item for item in (extracted or {"documents": []})["documents"] if tuple(item["pages"]) == pages), None
         )  # fmt: skip

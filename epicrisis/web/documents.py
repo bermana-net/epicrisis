@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.classify.pages import page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.classify.run import is_running
@@ -19,6 +20,7 @@ from epicrisis.printed_values import fold
 from epicrisis.records import read_records
 from epicrisis.validate import ASKS, CHECKS, PRIORITY, load_validation, validation_state
 from epicrisis.sources import Source
+from epicrisis.values import is_result
 
 DOC_TYPE_LABELS = {
     "lab_panel": "Lab results",
@@ -104,11 +106,10 @@ def observation_tables(observations: list[dict]) -> list[dict]:
         if not tables or (tables[-1]["page"], tables[-1]["heading"]) != (page, heading):
             tables.append({"page": page, "heading": heading, "rows": []})
         rows = tables[-1]["rows"]
-        role = item.get("value_role", "result")
         same_row = rows and rows[-1]["main"]["name_as_printed"] == item["name_as_printed"]
-        if same_row and role == "other":
+        if same_row and not is_result(item):
             rows[-1]["others"].append(item)
-        elif same_row and rows[-1]["main"].get("value_role") == "other":
+        elif same_row and not is_result(rows[-1]["main"]):
             rows[-1]["others"].insert(0, rows[-1]["main"])
             rows[-1]["main"] = item
         else:
@@ -194,8 +195,8 @@ _VIEWS: dict[tuple, tuple[float, dict]] = {}
 
 def _last_change(output: Path) -> float:
     """When anything this view is built from last changed, so a built view can be kept."""
-    inputs = ("inventory.jsonl", "classify.jsonl", "corrections.jsonl", "date_search.jsonl",
-              "validation.json", "extracted")  # fmt: skip
+    inputs = (layout.INVENTORY, layout.CLASSIFY, layout.CORRECTIONS, layout.DATE_SEARCH,
+              layout.VALIDATION, layout.EXTRACTED)  # fmt: skip
     return max(((output / name).stat().st_mtime for name in inputs if (output / name).exists()), default=0.0)
 
 
@@ -212,7 +213,7 @@ def _keep(kind: str, source: Source, output: Path, view: dict | None) -> dict | 
 
 
 def source_documents(source: Source, output: Path) -> dict | None:
-    inventory = output / "inventory.jsonl"
+    inventory = output / layout.INVENTORY
     if not inventory.exists():
         return None
     kept = _kept("documents", source, output)
@@ -220,7 +221,7 @@ def source_documents(source: Source, output: Path) -> dict | None:
         return kept
     records = {record["sha256"]: record for record in read_records(inventory) if "sha256" in record}
     total_pages = sum(len(page_refs(record)) for record in records.values())
-    pages = latest_pages(output / "classify.jsonl")
+    pages = latest_pages(output / layout.CLASSIFY)
     documents = group_documents(pages)
 
     by_file: dict[str, list[list[dict]]] = defaultdict(list)
@@ -239,7 +240,7 @@ def source_documents(source: Source, output: Path) -> dict | None:
         record = records.get(sha256)
         if record is None:  # the file left the archive after classify
             continue
-        extracted = load_extracted(output / "extracted", sha256)
+        extracted = load_extracted(output / layout.EXTRACTED, sha256)
         transcribed = {tuple(item["pages"]): item for item in extracted["documents"]} if extracted else {}
         rows = [_document_row(document) for document in by_file.get(sha256, [])]
         file = {
@@ -262,7 +263,7 @@ def source_documents(source: Source, output: Path) -> dict | None:
             row = {
                 "doc_type": "Could not be read", "pages": numbers, "page_label": ", ".join(map(str, numbers)),
                 "provider": None, "language": None, "goes_to_extract": False, "illegible": True, "unreadable": True,
-                "extracted": False, "file": file, "date": {"value": None, "year": None, "label": None, "printed": None, "flags": [], "by_hand": False},
+                layout.EXTRACTED: False, "file": file, "date": {"value": None, "year": None, "label": None, "printed": None, "flags": [], "by_hand": False},
             }  # fmt: skip
             years[None].append(row)
 
@@ -283,7 +284,7 @@ def source_documents(source: Source, output: Path) -> dict | None:
                 "year": year,
                 "documents": sorted(rows, key=order, reverse=True),
                 "document_count": sum(1 for row in rows if not row.get("unreadable")),
-                "transcribed_count": sum(1 for row in rows if row["extracted"]),
+                "transcribed_count": sum(1 for row in rows if row[layout.EXTRACTED]),
                 "dates_to_check": sum(1 for row in rows if row["date"]["flags"]),
             }
             for year, rows in sorted(years.items(), key=lambda item: (item[0] is None, -(item[0] or 0)))
@@ -345,17 +346,17 @@ def document_findings(output: Path, file_sha256: str, pages: list[int]) -> list[
 
 def document_card(source: Source, output: Path, file_sha256: str, first_page: int) -> dict | None:
     """One document: what classify found, and what extract transcribed if it has run."""
-    inventory = output / "inventory.jsonl"
+    inventory = output / layout.INVENTORY
     if not inventory.exists():
         return None
     record = next((r for r in read_records(inventory) if r.get("sha256") == file_sha256), None)
     if record is None:
         return None
-    pages = [page for page in latest_pages(output / "classify.jsonl") if page["file_sha256"] == file_sha256]
+    pages = [page for page in latest_pages(output / layout.CLASSIFY) if page["file_sha256"] == file_sha256]
     classified = next((doc for doc in group_documents(pages) if doc[0]["page"] == first_page), None)
     if classified is None:
         return None
-    extracted = load_extracted(output / "extracted", file_sha256)
+    extracted = load_extracted(output / layout.EXTRACTED, file_sha256)
     document = next((d for d in extracted["documents"] if d["pages"][0] == first_page), None) if extracted else None
     if document and (document["pages"] != [page["page"] for page in classified] or not goes_to_extract(classified[0])):
         document = None
@@ -365,7 +366,7 @@ def document_card(source: Source, output: Path, file_sha256: str, first_page: in
     on_pages = tuple(page["page"] for page in classified)
     corrections = load_corrections(output)
     searches = load_search_results(output)
-    day_first_documents, day_first_providers = source_day_first(output, group_documents(latest_pages(output / "classify.jsonl")))
+    day_first_documents, day_first_providers = source_day_first(output, group_documents(latest_pages(output / layout.CLASSIFY)))
     writes_day_first = ((file_sha256, on_pages) in day_first_documents
                         or provider_key(document, classified) in day_first_providers)  # fmt: skip
     return {

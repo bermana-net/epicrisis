@@ -1,0 +1,26 @@
+{# The shell every page of this interface is drawn in.
+
+   Twelve templates each carried the same seven lines of head — the character set, the viewport,
+   the two stylesheets — and differed in two things only: the title and the class on the page.
+   An icon added to one of them reached one page, which is how this was noticed.
+
+   A page says what it is called, what class it wears, and what is inside it. Everything that is
+   true of all of them lives here. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{% endblock %} · Epicrisis Companion</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon.ico" sizes="any">
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/app.css?v={{ style_version() }}">
+</head>
+<body>
+<div class="page{{ ' ' ~ page_class if page_class is defined and page_class else '' }}">
+{% block page %}{% endblock %}
+</div>
+{% block after %}{% endblock %}
+</body>
+</html>

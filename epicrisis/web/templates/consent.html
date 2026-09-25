@@ -1,14 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Model processing · Epicrisis Companion</title>
-<link rel="stylesheet" href="/static/fonts/fonts.css">
-<link rel="stylesheet" href="/static/app.css?v=48">
-</head>
-<body>
-<div class="page consent">
+{% extends "_page.html" %}
+{% set page_class = "consent" %}
+{% block title %}Model processing{% endblock %}
+{% block page %}
 
   {% set current = "consent" %}
   {% include "_header.html" %}
@@ -43,6 +36,4 @@
     {% endif %}
   </section>
 
-</div>
-</body>
-</html>
+{% endblock %}

@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from epicrisis.classify.backend import SMALL_MODEL, STRONG_MODEL, BackendError, claude_command, run_claude
+from epicrisis.classify.backend import STRONG_MODEL, BackendError
 from epicrisis.classify.pages import Payload
 
 SYSTEM_PROMPT = """You transcribe one document from a person's own medical archive into structured fields. You receive its pages in order, numbered from 1. Copy what is printed. Never interpret, never comment on health or findings, never translate, never convert units, never normalise names, values or dates.
@@ -122,15 +122,32 @@ def build_request(payloads: list[Payload]) -> str:
 class ClaudeCodeExtractBackend:
     name = "claude-code-subscription"
 
-    def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = 900):
+    """The values of one document, read out of its pages. The carrying is the engine's business."""
+
+    MOST_TOKENS = 16384  # a long panel is a long answer; cut short, it is no answer at all
+
+    def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = 900,
+                 call=None):  # fmt: skip
         self.model = model
         self.executable = executable
         self.timeout_seconds = timeout_seconds
+        self._call = call
+        if call is not None:
+            self.name = call.backend_name  # the instance says where its pages actually went
+
+    @property
+    def call(self):
+        if self._call is None:
+            from epicrisis.engines import ClaudeCodeCall
+
+            self._call = ClaudeCodeCall(model=self.model, executable=self.executable,
+                                        timeout_seconds=self.timeout_seconds)  # fmt: skip
+        return self._call
 
     def extract(self, payloads: list[Payload], workdir: Path) -> Extraction:
-        read_files = any(payload.image_path is not None for payload in payloads)
-        command = claude_command(self.executable, self.model, SYSTEM_PROMPT, DOCUMENT_SCHEMA, read_files)
-        fields, model = run_claude(command, build_request(payloads), workdir, self.timeout_seconds)
+        images = tuple(path for payload in payloads
+                       for path in ([payload.image_path, *payload.close_ups] if payload.image_path else []))  # fmt: skip
+        fields, model = self.call.ask(SYSTEM_PROMPT, DOCUMENT_SCHEMA, build_request(payloads), workdir, images)
         if any(not isinstance(fields.get(name), list) for name in LIST_FIELDS):
             raise BackendError("no valid structured output")
         return Extraction(fields=fields, model=model)
@@ -150,9 +167,7 @@ class ExtractLadder:
 
 
 def default_extract_backend(data_dir=None) -> ExtractLadder:
-    """The two passes, as the person chose them; the ones this program ships with otherwise."""
-    from epicrisis.models import model_for
+    """The two passes, as the person chose them. Kept as a name; the choosing lives in engines."""
+    from epicrisis import engines
 
-    first = model_for(data_dir, "first") if data_dir else SMALL_MODEL
-    strong = model_for(data_dir, "strong") if data_dir else STRONG_MODEL
-    return ExtractLadder(ClaudeCodeExtractBackend(model=first), ClaudeCodeExtractBackend(model=strong))
+    return engines.extractor(data_dir)

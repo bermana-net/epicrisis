@@ -104,7 +104,7 @@ def test_what_a_model_read_reaches_the_index_marked_as_read(tmp_path):
     from epicrisis.records import append_line
     from test_extract import build_archive
 
-    from epicrisis.ask import set_trusts_read_materials
+    from epicrisis.settings import set_trusts_read_materials
     from epicrisis.extract.run import extract_source
     from test_extract import FakeExtractBackend
 
@@ -151,7 +151,7 @@ def test_a_reading_is_used_only_when_the_person_asked_for_it(tmp_path):
     """The setting decides, and a page says which way it is set. Off in the repository."""
     from fastapi.testclient import TestClient
 
-    from epicrisis.ask import trusts_read_materials
+    from epicrisis.settings import trusts_read_materials
     from epicrisis.web.app import create_app
 
     data_dir = tmp_path / "data"
@@ -175,7 +175,7 @@ def test_which_model_does_which_reading_is_chosen_and_used(tmp_path):
     """Three readings, three choices, and every step asks the settings rather than a constant."""
     from fastapi.testclient import TestClient
 
-    from epicrisis.ask import chosen_models
+    from epicrisis.settings import chosen_models
     from epicrisis.models import PASSES, model_for
     from epicrisis.web.app import create_app
 
