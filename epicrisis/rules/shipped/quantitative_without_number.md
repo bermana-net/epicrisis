@@ -4,6 +4,9 @@ name = "A value counted as a number that holds none"
 summary = """The transcription called this value quantitative and there is no number anywhere in \
 what was printed. Either the kind is wrong, or the value was not copied."""
 kind = "quantitative-without-number"
+attaches = "value"   # where a finding of it hangs: on a value, or on the document
+order = 4             # where it stands in the queue a person works through
+settles = """A value counted as a number has none. Read the line on the form and correct it, or mark it as not a value."""
 does = "marks"
 at = "validate"
 on_by_default = true
@@ -13,9 +16,6 @@ on_by_default = true
 
 Values marked as numbers whose printed text holds no digits at all.
 
-# What settles it
-
-Read the line on the form and correct it, or mark it as not a value.
 
 # How it can be wrong
 

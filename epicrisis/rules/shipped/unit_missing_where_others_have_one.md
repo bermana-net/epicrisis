@@ -5,6 +5,8 @@ summary = """A form that printed no unit for a value, on a test whose other form
 one. Either the unit column was missed when the page was read, or this laboratory left it \
 out — and which of the two it is can only be seen on the page."""
 kind = "unit-missing-where-others-have-one"
+attaches = "document"
+settles = """Look at the form. If it prints a unit, add it on the card; most old forms print none, and then there is nothing to do."""
 does = "marks"
 at = "suspects"
 on_by_default = true

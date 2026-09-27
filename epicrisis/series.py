@@ -17,7 +17,7 @@ import math
 from datetime import date
 from statistics import median
 
-from epicrisis import reference
+from epicrisis import reference, units
 from epicrisis.values import is_result
 from epicrisis.rules.subjects import Material, Series, Value
 from epicrisis.units import AGREEMENT, MIN_TO_JOIN, same_measure, says_its_power, unit_key
@@ -110,7 +110,7 @@ def place_by_the_numbers(by_unit: dict[str, list[dict]], settings: dict) -> dict
     return moved
 
 
-def _one_scale(items: list[dict], scale_rules) -> list[dict]:
+def _one_scale(items: list[dict], scale_rules, unit_of_the_chart: str = "") -> list[dict]:
     """One test printed at two scales, drawn on one, by whichever rules are on.
 
     The rules are handed in rather than read from disk here: this file draws, and what an
@@ -121,8 +121,16 @@ def _one_scale(items: list[dict], scale_rules) -> list[dict]:
     The printed value and its printed range stay exactly as they are in the rows beside the
     chart; only the point moves, and it carries what it was moved by.
     """
+    # The numbers here have already been brought to one unit; the ranges have to be brought with
+    # them before anything compares the two. Compared as printed, every converted value looked to
+    # this rule like a value printed at another scale than its own range — a hemoglobin of 15.07
+    # g/dL, drawn as 150.7 г/л, beside a range printed "13.5 - 18" — so the rule dutifully moved
+    # the band by a power of ten, and the band was then multiplied by the conversion as well. The
+    # values were right and the band was ten or a hundred times too high, which set the top of the
+    # axis: fifteen years of a person's results drawn as one flat line along the bottom of the
+    # chart, on thirty-five charts of this archive. Nothing was wrong with any of the numbers.
     series = Series(numbers=[number(item.get("value_numeric")) for item in items],
-                    bands=[printed_range(item.get("reference")) for item in items])  # fmt: skip
+                    bands=[_printed_band_brought_along(item) for item in items])  # fmt: skip
     powers = None
     for rule in scale_rules:
         moves = rule.check.run(series, rule.settings)
@@ -133,14 +141,38 @@ def _one_scale(items: list[dict], scale_rules) -> list[dict]:
         return items
     moved = []
     for item, (power, band_power) in zip(items, powers, strict=True):
+        if band_power and _the_band_says_its_own_unit(item, unit_of_the_chart):
+            # A range that names a unit has said its own scale, and where that unit is the one
+            # this chart is drawn in there is nothing to move it onto. A haematocrit printed
+            # "0,48" with no unit beside a range printed "0,2-1,0%" is a fraction and belongs at
+            # 48 per cent — the value moves, and it should. The range does not: it is already in
+            # per cent, it says so, and moved with the value it became a band from twenty to a
+            # hundred per cent over values between thirty-seven and forty-eight, which is not a
+            # range of anything and set the top of the axis.
+            band_power = 0
         if not power and not band_power:
             moved.append(item)
             continue
-        factor = 10.0**power
-        moved.append({**item, "value_numeric": (number(item.get("value_numeric")) or 0) * factor,
+        factor, standing = 10.0**power, number(item.get("value_numeric"))
+        # A row with no number keeps no number. "Not detected" printed where a number usually
+        # stands has a printed range beside it, so the range moves with the rest of the series —
+        # and the value used to move with it, out of nothing into a nought: `None or 0` times the
+        # factor is 0.0. That nought was then drawn as a point on the line, joined to the real
+        # values, and it left the list of what could not be drawn, which is the one place a
+        # person could have checked it against the form.
+        moved.append({**item,
+                      "value_numeric": None if standing is None else standing * factor,
                       "scaled": {"from_value": item.get("value"), "factor": factor,
                                  "band_factor": 10.0**band_power}})  # fmt: skip
     return moved
+
+
+def _the_band_says_its_own_unit(item: dict, unit_of_the_chart: str) -> bool:
+    """Whether the printed range names the unit this chart is drawn in, and so needs no moving."""
+    if not unit_of_the_chart:
+        return False
+    named = units.unit_from_reference(item.get("reference"))
+    return bool(named) and unit_key(named) == unit_key(unit_of_the_chart)
 
 
 def date_label(item: dict) -> str | None:
@@ -248,9 +280,9 @@ def _one(placing, kind: str):
 def _charts_of(by_unit: dict[str, list[dict]], material: str, width: int, height: int, scale_rules=()) -> list[dict]:
     """The charts of one material: one per unit, after equivalent spellings are joined."""
     charts_out = []
-    for items in _join_equivalent(by_unit).values():
+    for unit_of_these, items in _join_equivalent(by_unit).items():
         if scale_rules:
-            items = _one_scale(items, scale_rules)
+            items = _one_scale(items, scale_rules, unit_of_these)
         spellings: dict[str, int] = {}
         for item in items:
             printed = (item.get("unit") or "").strip()
@@ -293,15 +325,32 @@ def _charts_of(by_unit: dict[str, list[dict]], material: str, width: int, height
     return charts_out
 
 
+def _printed_band_brought_along(item: dict) -> tuple[float | None, float | None] | None:
+    """The printed range, brought to the unit the chart is drawn in and nothing more.
+
+    The range a form prints beside a value is in the unit that form used, the same as the value,
+    so it converts exactly as the value did. This is the honest half of moving a band, and it is
+    exact: a real conversion factor, not a power of ten.
+    """
+    band = printed_range(item.get("reference"))
+    factor = (item.get("converted") or {}).get("factor") or 1.0
+    if band is None or factor == 1.0:
+        return band
+    return tuple(None if edge is None else edge * factor for edge in band)
+
+
 def _band_of(item: dict) -> tuple[float | None, float | None] | None:
     """The printed range of a value, on the scale that value is drawn on.
 
-    Where the chart converts, the range printed beside the value is in the unit the form used,
-    so it moves with the value or it is not drawn at all. Left where it was, it pinned the band
-    to the floor of the chart and stretched the axis around a value sitting in the middle of it.
+    Two things can move it, and they are not the same thing. The unit conversion moves it exactly,
+    because the range is printed in the unit of the value beside it. The scale rule moves it by a
+    power of ten, for the other case: a form that prints the range at a different scale from the
+    result it stands beside. They used to be multiplied together over values where only the first
+    had happened, because the rule was comparing converted numbers against unconverted ranges and
+    saw a mismatch that the conversion had already explained.
     """
-    band = printed_range(item.get("reference"))
-    factor = ((item.get("converted") or {}).get("factor") or 1.0) * ((item.get("scaled") or {}).get("band_factor") or 1.0)
+    band = _printed_band_brought_along(item)
+    factor = (item.get("scaled") or {}).get("band_factor") or 1.0
     if band is None or factor == 1.0:
         return band
     return tuple(None if edge is None else edge * factor for edge in band)
@@ -351,17 +400,35 @@ def _geometry(items: list[dict], width: int, height: int) -> dict:
 
 
 def _bands(points: list[dict], x_of, first_day: int, last_day: int) -> list[dict]:
-    """The printed range, held from one form to the next: a step, not a smooth line."""
+    """The printed range, around the value it was printed beside.
+
+    Each band reaches half way to the point before it and half way to the point after, so the
+    value it belongs to stands inside it. It used to run forward only — from its own point to the
+    next — which put every value on the left edge of its own band and left it sitting against the
+    band of the form before it, often another laboratory's. The newest value, the one a chart is
+    usually opened for, had no band at all: two pixels at the right-hand edge, and it read as a
+    value that had left the shaded area.
+
+    A form that printed no range leaves a gap, and the gap is the truth: the range of the form
+    before it says nothing about a value printed without one.
+    """
     bands = []
     for index, point in enumerate(points):
         if not point["has_band"]:
             continue
-        start = point["x"] if index else x_of(first_day)
-        following = points[index + 1] if index + 1 < len(points) else None
-        end = following["x"] if following else x_of(last_day)
-        if following is None or end > start:
-            bands.append({"x": start, "width": max(end - start, 2), "y": point["band_top"],
-                          "height": max(point["band_bottom"] - point["band_top"], 1)})  # fmt: skip
+        # At the two ends there is only one neighbour, so the half-width of the side that exists
+        # is mirrored onto the side that does not. Without that the oldest and the newest value
+        # each stand on the edge of their own band, and the newest is the one a person looks at.
+        before = points[index - 1]["x"] if index else None
+        after = points[index + 1]["x"] if index + 1 < len(points) else None
+        reaches_back = (point["x"] - before) / 2 if before is not None else None
+        reaches_on = (after - point["x"]) / 2 if after is not None else None
+        reaches_back = reaches_back if reaches_back is not None else (reaches_on or 6)
+        reaches_on = reaches_on if reaches_on is not None else reaches_back
+        start = max(point["x"] - reaches_back, x_of(first_day))
+        end = min(point["x"] + reaches_on, x_of(last_day))
+        bands.append({"x": start, "width": max(end - start, 2), "y": point["band_top"],
+                      "height": max(point["band_bottom"] - point["band_top"], 1)})  # fmt: skip
     return bands
 
 

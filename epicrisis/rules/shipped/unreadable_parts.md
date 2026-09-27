@@ -4,6 +4,9 @@ name = "Parts of a page that could not be read"
 summary = """The reading itself said it could not make something out: a signature, a stamp, a \
 handwritten note in the margin, a line under a fold."""
 kind = "unreadable-parts"
+attaches = "document"   # where a finding of it hangs: on a value, or on the document
+order = 12             # where it stands in the queue a person works through
+settles = """Mostly nothing to do: a signature, a stamp, a handwritten margin. Read what could not be read, and open only what touches a value."""
 does = "marks"
 at = "validate"
 on_by_default = true
@@ -13,10 +16,6 @@ on_by_default = true
 
 What the transcription of a document listed as unreadable, counted.
 
-# What settles it
-
-Mostly nothing. Read what could not be read, and open only the ones that touch a value: a
-signature nobody can make out costs nothing, a number nobody can make out is a missing result.
 
 # How it can be wrong
 

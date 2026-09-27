@@ -17,7 +17,7 @@
         <span class="mono">{{ card.date.label or "–" }}</span>{% if card.date.by_hand %} <span class="caps muted">set by hand</span>{% endif %}
         {% for flag in card.date.flags %}<span class="caps date-flag">{{ flag.label }}</span>{% endfor %}
         <form class="date-form" method="post" action="/documents/{{ card.source_id }}/{{ card.sha256 }}/{{ card.summary.pages[0] }}/date">
-          <input type="date" name="value" value="{{ card.date.value.isoformat() if card.date.by_hand else '' }}" aria-label="Set the document date">
+          <input type="date" name="value" value="{{ card.date.value.isoformat() if card.date.by_hand else '' }}" min="{{ date_limits().first }}" max="{{ date_limits().last }}" aria-label="Set the document date">
           <button class="btn" type="submit">Set</button>{% if card.date.by_hand %} <button class="btn" type="submit" name="value" value="">Clear</button>{% endif %}
         </form>
       </dd></div>
@@ -27,7 +27,7 @@
       <div><dt class="caps">Institution as printed</dt><dd>{{ (document and document.provider_as_printed) or card.summary.provider or "–" }}</dd></div>
       <div><dt class="caps">Department as printed</dt><dd>{{ (document and document.department_as_printed) or "–" }}</dd></div>
       <div><dt class="caps">Language</dt><dd>{{ card.language or card.summary.language or "–" }}</dd></div>
-      <div><dt class="caps">Original pages</dt><dd class="page-links">{% for number in card.summary.pages %}<a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ number }}" target="_blank" rel="noopener">p{{ number }}</a>{% endfor %}</dd></div>
+      <div><dt class="caps">Original pages</dt><dd class="page-links">{% for number in card.summary.pages %}<a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ number }}">p{{ number }}</a>{% endfor %}</dd></div>
     </dl>
     {% if card.findings %}
     <div class="card-findings">
@@ -63,7 +63,7 @@
         <span>{{ item.reference_as_printed or "–" }}</span>
         {% for heading in table.other_headings %}<span class="other-value">{% for other in row.by_column[heading] %}<span>{{ other.value_as_printed }} {{ other.unit_as_printed or "" }}{% if other.reference_as_printed %} <span class="column">({{ other.reference_as_printed }})</span>{% endif %}{% if other.flag_as_printed %} {{ other.flag_as_printed }}{% endif %}</span>{% else %}–{% endfor %}</span>{% endfor %}
         <span>{{ item.flag_as_printed or "" }}</span>
-        <span class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ item.provenance.page }}" target="_blank" rel="noopener">p{{ item.provenance.page }}</a></span>
+        <span class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ item.provenance.page }}">p{{ item.provenance.page }}</a></span>
       </div>
       <details class="fix-row">
         <summary class="caps">Correct this line</summary>
@@ -108,7 +108,7 @@
     <div class="card-text">
       {% if section.heading_as_printed %}<h3>{{ section.heading_as_printed }}</h3>{% endif %}
       <p>{{ section.text }}</p>
-      <div class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ section.page }}" target="_blank" rel="noopener">p{{ section.page }}</a></div>
+      <div class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ section.page }}">p{{ section.page }}</a></div>
     </div>
     {% endfor %}
   </section>
@@ -116,7 +116,8 @@
   {% endmacro %}
 
   {% if not document %}
-  <div class="empty">Not transcribed yet. This document has only been classified.</div>
+  <div class="empty">Not transcribed yet. This document has only been classified.{% if card.earlier_readings %} An earlier reading of it is kept, from {{ card.earlier_readings.when }}: see below.{% endif %}</div>
+  <p class="caps muted">Reading this one document is one call of a model: <span class="mono">{{ cli }} extract --files {{ card.file_id }} --redo --data-dir {{ data_dir }}</span>. Nothing else in the archive is touched by it.</p>
   {% else %}
   <div class="notice caps unchecked"><span>Model transcription, not yet checked by a person.</span><span>Open a page above, compare, and correct a line where it is wrong.</span></div>
 
@@ -157,6 +158,18 @@
   </section>
 
   <p class="provenance caps muted">Transcribed by {{ document.provenance.model }} &middot; prompt {{ document.provenance.prompt_version }} &middot; {{ document.provenance.extracted_at }}{% if document.provenance.escalations %} &middot; after {{ document.provenance.escalations|map(attribute="model")|join(", ") }} did not pass the checks{% endif %}{% if document.provenance.close_up_pass and document.provenance.close_up_pass.status == "kept" %} &middot; read again from close-ups{% endif %}</p>
+  {% endif %}
+
+
+  {# A reading that a later reading displaced. Kept since the folder existed and shown nowhere,
+     which made the keeping pointless: the case it was written for is a person who changed the
+     model, had the archive read again, and finds the new reading worse. The old values are not
+     drawn beside the new ones on purpose — two readings of one page on one screen, with nothing
+     to say which is which, is how a person comes to trust the wrong one. #}
+  {% if card.earlier_readings %}
+  <section class="card-section">
+    <p class="caps muted">{{ card.earlier_readings.count }} earlier reading{% if card.earlier_readings.count > 1 %}s{% endif %} of this document {% if card.earlier_readings.count > 1 %}are{% else %}is{% endif %} kept, the most recent displaced on {{ card.earlier_readings.when }}{% if card.earlier_readings.by %} by {{ card.earlier_readings.by }}{% endif %}.{% if card.earlier_readings.regrouped %} {% if card.earlier_readings.regrouped | length > 1 %}Some of them read{% else %}One of them read{% endif %} these pages as part of a document grouped differently &mdash; pages {{ card.earlier_readings.regrouped | join(", then ") }} &mdash; which is usually what puts a reading there.{% endif %} Nothing overwrote {% if card.earlier_readings.count > 1 %}them{% else %}it{% endif %}: the values are in <code>{{ card.earlier_readings.file }}</code>, inside the data folder of this instance rather than in the folder of scans, one reading per line, with the day and the model that displaced it. Nothing rebuilds {% if card.earlier_readings.count > 1 %}those readings{% else %}that reading{% endif %} &mdash; a model reads differently every time &mdash; so <span class="mono">{{ cli }} backup --data-dir {{ data_dir }}</span> carries {% if card.earlier_readings.count > 1 %}them{% else %}it{% endif %} too.</p>
+  </section>
   {% endif %}
 
 {% endblock %}

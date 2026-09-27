@@ -745,6 +745,9 @@ def _write_life(life: Life, into: Path, data_dir: Path, seed: int, say) -> tuple
     return source, archive
 
 
+DEMO_MARKER = "this-archive-is-invented.json"
+
+
 def build(into: Path, seed: int = 7, say=lambda text: None) -> dict:
     """Write the whole instance: the scans of three lives, their transcription, checks and index."""
     from epicrisis.index.build import build_index
@@ -755,6 +758,13 @@ def build(into: Path, seed: int = 7, say=lambda text: None) -> dict:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     written = [_write_life(life, into, data_dir, seed, say) for life in LIVES]
+    # A data directory that says, on disk, that nobody in it is real. Pictures for the site are
+    # taken from an instance, and an instance looks the same whichever archive it holds: the one
+    # thing that must never be published is a page of somebody's own records, and it is the one
+    # thing a check on text cannot see. Whatever works from a data directory can now ask.
+    (data_dir / DEMO_MARKER).write_text(json.dumps({
+        "invented": True, "lives": [life.whose for life in LIVES], "seed": seed,
+    }, indent=2) + "\n", encoding="utf-8")  # fmt: skip
     registry = SourceRegistry(data_dir)
     registry.set_active(written[0][0].id)
     _name_the_tests(data_dir, say)

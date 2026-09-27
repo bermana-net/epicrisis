@@ -113,7 +113,19 @@ def materialize(ref: PageRef, archive_root: Path, workdir: Path) -> Payload:
 
 
 def _file_bytes(record: dict, archive_root: Path) -> bytes:
-    data = (archive_root / record["path"]).read_bytes()
+    try:
+        data = (archive_root / record["path"]).read_bytes()
+    except FileNotFoundError as gone:
+        # Not a damaged document: the archive folder is not where it was. A disk that did not
+        # mount, a folder carried elsewhere. Raised bare, this reached the dashboard as the words
+        # Internal Server Error inside the <img> of a page a person had clicked through to see
+        # their own scan — the one thing this program promises is always one click away. The name
+        # of the file is left out on purpose: in an archive like this it carries a surname and
+        # often the reason for the visit, and the page already says which document it is.
+        raise PageUnreadable(
+            "the archive folder is not where it was, so this page cannot be read from disk; "
+            "check whether the disk it is on is mounted"
+        ) from gone
     if hashlib.sha256(data).hexdigest() != record["sha256"]:
         raise PageUnreadable("file changed since inventory")
     wrapper = record.get("wrapper")
@@ -166,6 +178,26 @@ def _clean_image(image: Image.Image) -> Image.Image:
     clean = Image.new(image.mode, image.size)
     clean.paste(image)
     return clean
+
+
+def cannot_be_read(ref: PageRef, archive_root: Path) -> str:
+    """Why this page cannot be read from disk, in this program's own words, or nothing where it can.
+
+    The page of a scan is one request and its image is another, so the first has to be able to say
+    what the second is going to fail at. It asked one question only — is the folder there — and
+    answered a sentence for that and a broken image for everything else. The likelier trouble is one
+    file changing under the archive: rescanned, resaved by a photo application, damaged. Then the
+    page drew an <img> at an address that answers 409, and the reason, which this program knew
+    exactly, went only into a header nobody reads.
+
+    The file is read and hashed, as reading it for the image would, and the image is not drawn: a
+    page that cannot be drawn at all is rarer, and the request for the image says that itself.
+    """
+    try:
+        _file_bytes(ref.record, archive_root)
+    except PageUnreadable as why:
+        return str(why)
+    return ""
 
 
 def original_png(ref: PageRef, archive_root: Path) -> bytes:

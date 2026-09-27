@@ -38,9 +38,11 @@ class Engine:
     needs: str
 
 
+CLAUDE_CODE, ANTHROPIC_API = "claude-code", "anthropic-api"
+
 ENGINES = (
     Engine(
-        name="claude-code",
+        name=CLAUDE_CODE,
         label="Claude Code on this machine",
         about="The program is installed on this server and answers under whatever account it is "
               "signed in to. Nothing else is configured, no key is stored, and a page never "
@@ -49,7 +51,7 @@ ENGINES = (
         needs="the `claude` command installed for the account this server runs as",
     ),
     Engine(
-        name="anthropic-api",
+        name=ANTHROPIC_API,
         label="Anthropic API with a key of your own",
         about="The same models, reached directly with an API key that belongs to whoever runs "
               "this instance: its own account, its own bill, its own agreement with the provider. "
@@ -105,12 +107,19 @@ def what_it_needs(name: str, data_dir: Path | None = None) -> str | None:
         return ("the program that talks to the model is not on this server, or not on the PATH "
                 "of the account it runs as")  # fmt: skip
     if engine.name == "anthropic-api" and not key_for(data_dir):
-        return "ANTHROPIC_API_KEY, in .env beside the data directory or in this server's environment"
+        return ("ANTHROPIC_API_KEY, in .env in the data directory or beside it, "
+                "or in this server's environment")  # fmt: skip
     return None
 
 
 KEY_NAME = "ANTHROPIC_API_KEY"
-# Where a key is looked for, after the environment: beside the archive, then beside the program.
+# Where a key is looked for, after the environment: in the data directory, beside it, then beside
+# the program. "Beside the data directory" is what the settings page has always said, and it was
+# the one place not read: on a checkout, where the data directory sits inside the program's own
+# folder, the last of the three happens to be that folder and nobody noticed. An organisation
+# keeps the data somewhere of its own — /srv/epicrisis/data, a mounted volume — and there the
+# .env a person put where the page told them to was read by nothing, with the engine reported as
+# not ready and no word about which file had been looked at.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Names that make Claude Code bill an API key instead of the subscription it is signed in to.
 # They are taken out of its environment, always: which engine answers is a choice on the settings
@@ -142,7 +151,8 @@ def key_for(data_dir: Path | None) -> str | None:
     from_environment = os.environ.get(KEY_NAME, "").strip()
     if from_environment:
         return from_environment
-    for candidate in ([Path(data_dir) / ".env"] if data_dir else []) + [PROJECT_ROOT / ".env"]:
+    beside_the_archive = [Path(data_dir) / ".env", Path(data_dir).parent / ".env"] if data_dir else []
+    for candidate in beside_the_archive + [PROJECT_ROOT / ".env"]:
         value = env_file_values(candidate).get(KEY_NAME, "").strip()
         if value:
             return value
@@ -208,10 +218,6 @@ class AnthropicApiCall:
 
     def ask(self, system_prompt: str, schema: dict, request: str, workdir: Path,
             images: tuple[Path, ...] = ()) -> tuple[dict, str]:  # fmt: skip
-        import httpx
-
-        from epicrisis.classify.backend import BackendError, UsageLimitReached
-
         content = [self._picture(Path(path)) for path in images] + [{"type": "text", "text": request}]
         body = {
             "model": self.model,
@@ -222,20 +228,7 @@ class AnthropicApiCall:
                        "input_schema": schema}],  # fmt: skip
             "tool_choice": {"type": "tool", "name": self.ANSWER},
         }
-        headers = {"x-api-key": self.key, "anthropic-version": self.VERSION, "content-type": "application/json"}
-        try:
-            answer = httpx.post(self.ADDRESS, json=body, headers=headers, timeout=self.timeout_seconds)
-        except httpx.TimeoutException as slow:
-            raise BackendError("timeout") from slow
-        except httpx.HTTPError as trouble:
-            raise BackendError(f"the provider could not be reached: {type(trouble).__name__}") from trouble
-        if answer.status_code == 429:
-            raise UsageLimitReached("the key has run into its rate or spend limit")
-        if answer.status_code == 401:
-            raise BackendError("the key was refused by the provider")
-        if answer.status_code >= 400:
-            raise BackendError(f"the provider answered {answer.status_code}")
-        return self._fields(answer.json())
+        return self._fields(carried(self, body))
 
     def _fields(self, said: dict) -> tuple[dict, str]:
         from epicrisis.classify.backend import BackendError
@@ -248,6 +241,33 @@ class AnthropicApiCall:
         if said.get("stop_reason") == "max_tokens":
             raise BackendError("the answer was cut off before it was complete")
         raise BackendError("no valid structured output")
+
+
+def carried(call, body: dict) -> dict:
+    """One request to the provider, and what each way of failing means. Said once, here.
+
+    Every caller wants the same four answers out of a status code: too much asked of the key,
+    a key the provider will not take, something else wrong at their end, and nothing reached at
+    all. Written twice they drift, and the one that drifts is the one nobody reads.
+    """
+    import httpx
+
+    from epicrisis.classify.backend import BackendError, UsageLimitReached
+
+    headers = {"x-api-key": call.key, "anthropic-version": call.VERSION, "content-type": "application/json"}
+    try:
+        answer = httpx.post(call.ADDRESS, json=body, headers=headers, timeout=call.timeout_seconds)
+    except httpx.TimeoutException as slow:
+        raise BackendError("timeout") from slow
+    except httpx.HTTPError as trouble:
+        raise BackendError(f"the provider could not be reached: {type(trouble).__name__}") from trouble
+    if answer.status_code == 429:
+        raise UsageLimitReached("the key has run into its rate or spend limit")
+    if answer.status_code == 401:
+        raise BackendError("the key was refused by the provider")
+    if answer.status_code >= 400:
+        raise BackendError(f"the provider answered {answer.status_code}")
+    return answer.json()
 
 
 class BackendErrorFromEngine(Exception):

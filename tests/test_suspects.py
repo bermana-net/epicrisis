@@ -10,8 +10,8 @@ from epicrisis.suspects import provider_looks_like_a_person
 FOUND_BY = rules.load().at(kinds.SUSPECTS)
 
 
-def find(rows, documents):
-    return _find(rows, documents, FOUND_BY)
+def find(rows, documents, spellings=None):
+    return _find(rows, documents, spellings or {}, FOUND_BY)
 
 
 def value(name, number, unit, indicator="creatinine", sha="a" * 64, page=1, **rest):
@@ -66,3 +66,45 @@ def test_an_institution_read_as_a_person_and_a_lab_form_with_no_title():
     assert not provider_looks_like_a_person("Optivue Systems")
     assert not provider_looks_like_a_person("NORDLENS Technology Sp. z o.o.")
     assert not provider_looks_like_a_person("Клініка VITAMED", "Біохімія крові")
+
+
+def test_a_unit_nobody_else_on_this_test_prints_is_marked():
+    """A count standing among percentages, or a unit whose letters were misread."""
+    rows = [value("Lymphocytes", 30 + n, "%", sha=f"{n}" * 64) for n in range(12)]
+    rows.append(value("Lymphocytes", 1.61, "Г/л", sha="a" * 64))
+    found = {item.file_id: item for item in find(rows, [document(sha=f"{n}" * 64) for n in range(12)])}
+    assert "aaaaaaaa" in found and found["aaaaaaaa"].codes["unit_alone_in_a_series"] == 1
+    assert all("unit_alone_in_a_series" not in item.codes for key, item in found.items() if key != "aaaaaaaa")
+
+
+def test_one_unit_written_two_ways_is_not_a_stray():
+    """«ммоль/л» and mmol/L are one unit, and a Ukrainian form among Greek ones is not a finding."""
+    rows = [value("Potassium", 3.8 + n / 10, "mmol/L", sha=f"{n}" * 64) for n in range(12)]
+    rows.append(value("Potassium", 4.1, "ммоль/л", sha="a" * 64))
+    found = {item.file_id: item for item in find(rows, [document(sha=f"{n}" * 64) for n in range(12)])}
+    assert all("unit_alone_in_a_series" not in item.codes for item in found.values())
+
+
+def test_a_test_whose_forms_print_no_unit_at_all_says_nothing():
+    """A form with no unit column is not evidence about the one form that has one."""
+    rows = [value("Colour index", 0.9, "", sha=f"{n}" * 64) for n in range(12)]
+    rows.append(value("Colour index", 0.85, "units", sha="a" * 64))
+    found = {item.file_id: item for item in find(rows, [document(sha=f"{n}" * 64) for n in range(12)])}
+    assert all("unit_alone_in_a_series" not in item.codes for item in found.values())
+
+
+def test_a_value_that_names_another_test_is_marked_only_when_asked():
+    from epicrisis import rules
+    from epicrisis.suspects import find as run
+
+    rows = [{**value("Glucose", 5.1, "%", indicator="glucose", sha="a" * 64), "value": "glycated haemoglobin 5,1%"}]
+    spellings = {"glycated haemoglobin": "hba1c", "glucose": "glucose"}
+    every = rules.load().at("suspects")
+    assert run(rows, [document(sha="a" * 64)], spellings, every)[0].codes["value_names_another_test"] == 1
+    # The row's own test named inside its own cell is not another test.
+    assert not any("value_names_another_test" in item.codes
+                   for item in run(rows, [document(sha="a" * 64)], {"glycated haemoglobin": "glucose"}, every))  # fmt: skip
+    # A spelling shorter than the limit is an ordinary word, and ordinary words match everything.
+    ordinary = [{**value("Glucose", 5.1, "%", indicator="glucose", sha="a" * 64), "value": "sugar 5,1%"}]
+    assert not any("value_names_another_test" in item.codes
+                   for item in run(ordinary, [document(sha="a" * 64)], {"sugar": "hba1c"}, every))  # fmt: skip

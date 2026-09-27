@@ -14,7 +14,9 @@ import os
 import secrets
 import threading
 from epicrisis import layout
-from epicrisis.runs import put_in_place, temporary_name
+from epicrisis.invocation import run
+from epicrisis.runs import copy_whole, write_whole
+from epicrisis.state import Unreadable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,9 +29,18 @@ OUTPUT_DIR_NAME = "sources"
 # as /usr. "/" is refused as itself, but not as everyone's parent.
 SYSTEM_FOLDERS = {"/etc", "/bin", "/sbin", "/lib", "/lib64", "/usr", "/var", "/boot", "/opt", "/srv", "/root"}
 # Where archives may be kept. The dashboard has no login because it listens on this machine only,
-# so what it can be made to read is worth keeping to the places a person keeps documents: their
-# home, and the folder this instance already works in. EPICRISIS_ARCHIVE_ROOT adds another, for
-# an instance whose scans sit on a mounted disk.
+# so what a page can be made to read is worth keeping to the places a person keeps documents: their
+# home, and the folder this instance already works in. EPICRISIS_ARCHIVE_ROOT adds more, for an
+# instance whose scans sit on mounted disks — several of them, separated the way PATH is, because
+# one person can keep their mother's archive on the machine and their father's on a stick.
+#
+# This bound is on the picker, not on the person. A folder typed at the command line is taken as it
+# is: typing it out is exactly the consent a page cannot obtain, and somebody with a shell on this
+# machine can read the disk anyway. The refusal used to name only the variable, which means stopping
+# the server, setting an environment variable and starting it again — a wall, for somebody who came
+# with a box of paper — and the way that works in one line was not mentioned at all. Half of those
+# people close the tab; the other half copy tens of gigabytes of scans into their home folder, which
+# is the one thing this program promises never to do to somebody's archive.
 ARCHIVE_ROOT_VARIABLE = "EPICRISIS_ARCHIVE_ROOT"
 RUNTIME_FOLDERS = ("/proc", "/sys", "/dev", "/run")
 
@@ -38,7 +49,7 @@ RUNTIME_FOLDERS = ("/proc", "/sys", "/dev", "/run")
 # sha256 and to the line as printed, and it applies again to the next reading of the same file.
 READING_ARTEFACTS = (
     layout.INVENTORY, layout.INVENTORY_STATUS, layout.CLASSIFY, layout.EXTRACTED, layout.RECHECKED,
-    layout.VALIDATION, layout.DATE_SEARCH, layout.LEDGER,
+    layout.REPLACED, layout.VALIDATION, layout.DATE_SEARCH, layout.LEDGER,
 )
 
 
@@ -58,6 +69,19 @@ class Source:
     @property
     def whose(self) -> str:
         return self.owner or self.name
+
+
+def belongs_to_the_server(path: Path) -> bool:
+    """Whether this folder is the server's own rather than a person's, and so never an archive.
+
+    Written once because it was written three times — in validate(), in roots(), and nowhere at all
+    in the folder picker, which then told somebody to add /root as an archive in the same sentence
+    that refused to show it to them. Any reader of this question that does not ask it here can
+    disagree with the two that do, and a person meeting two rules that disagree cannot tell which
+    one is the program.
+    """
+    path = Path(path)
+    return str(path) == "/" or any(path.is_relative_to(folder) for folder in SYSTEM_FOLDERS | set(RUNTIME_FOLDERS))
 
 
 def source_output_dir(data_dir: Path, source_id: str) -> Path:
@@ -80,16 +104,63 @@ class SourceRegistry:
         self._lock = threading.Lock()
 
     def list(self) -> list[Source]:
+        """The archives on the list, or none at all when there is no list yet.
+
+        A file that is there and will not parse is a third thing, and it used to be neither:
+        json.loads raised, and because every page and every command begins by asking this
+        question, the whole dashboard answered with the words Internal Server Error and every
+        command with a traceback — over a file that is four fields per archive and easy to put
+        right, whose name was never said. It is also the file a person is likeliest to edit by
+        hand, because until now that was the only way to point an archive at a moved folder.
+        """
         if not self.file.exists():
             return []
-        return [Source(**entry) for entry in json.loads(self.file.read_text(encoding="utf-8"))]
+        try:
+            entries = json.loads(self.file.read_text(encoding="utf-8"))
+            return [Source(**entry) for entry in entries]
+        except (ValueError, TypeError, OSError) as broken:
+            raise Unreadable(
+                layout.SOURCES,
+                "No archive has been touched: everything read from each one is under "
+                f"{OUTPUT_DIR_NAME}/<id>/ beside it, and the folders themselves were never written to.",
+                # The one action that puts it right, written out. The sentence used to say "repair
+                # that file, or move it aside and add the folders again", which is a description and
+                # not an action, and it offered the costliest step in the program beside the
+                # cheapest as though they were alternatives: adding the folders again gives them new
+                # ids, makes a second archive of the same person, and reads every document with a
+                # model from nothing. The page about a missing index names its command and is an
+                # action because of it.
+                #
+                # And what that copy is, which this sentence used to leave out. It is the version
+                # before the last change, not the list as it stood a moment ago: somebody who had
+                # just added an archive, or pointed one at the folder it had moved to, put back a
+                # list without that change in it. The archive then went off the list while its
+                # folder of work stayed on disk under an id nothing named any more — `sources list`
+                # showed one archive fewer, `backup` stopped carrying that folder, and no page said
+                # a word about it. What they had been promised, on the way in, was that everything
+                # was there again. The file of the indicators calls its own copy the version before
+                # the last change; this one now does too, and says where the rest of it is.
+                f"The copy beside it is the version before the last change. Put it back — "
+                f"mv {layout.SOURCES}.previous {layout.SOURCES} — and every archive that was on the "
+                f"list then, everything read from it and every correction on it is there again. What "
+                f"that copy does not hold is the last change itself: an archive added, or pointed at "
+                f"another folder, since then is not on it. So compare the list that comes back with "
+                f"the folders under {OUTPUT_DIR_NAME}/, which "
+                f"'{run('sources list', self.data_dir)}' does for you and names what it finds. A "
+                f"folder there whose id is not on the list is the work of an archive that has to be "
+                f"added again, and what was read from it and the corrections on it are then carried "
+                f"into the folder of its new id by hand. Adding the folders again instead of putting "
+                f"the copy back is the last resort: they would get new ids, the same person would "
+                f"have a second archive, and every document would be read by a model from "
+                f"nothing.",
+            ) from broken
 
     def get(self, source_id: str) -> Source | None:
         return next((source for source in self.list() if source.id == source_id), None)
 
-    def add(self, raw_path: str, owner: str = "") -> Source:
+    def add(self, raw_path: str, owner: str = "", typed: bool = False) -> Source:
         with self._lock:
-            path = self.validate(raw_path)
+            path = self.validate(raw_path, typed=typed)
             sources = self.list()
             taken = {source.id for source in sources}
             source_id = secrets.token_hex(4)
@@ -126,6 +197,33 @@ class SourceRegistry:
                 for source in self.list()
             ]
             self._save(sources)
+
+    def set_path(self, source_id: str, raw_path: str, typed: bool = False) -> Source | None:
+        """Point an archive already on the list at the folder it has moved to.
+
+        A folder moves: a disk is remounted somewhere else, the scans are carried to a bigger
+        drive, a machine is rebuilt. Until this existed there was nothing to do about it. Adding
+        the folder again made a second archive of the same person, with a new random id, and
+        everything read from the first one — hours of a model's reading, the classification, the
+        transcriptions, the checks, the index, and the corrections the person typed themselves —
+        stayed under the old id where the new archive could not see it. The list then held two
+        entries with one name, one of them pointing at nothing and still drawn as healthy.
+
+        Nothing about a reading is tied to where the folder is: a file is identified by the sha256
+        of its contents, and its place is stored inside the inventory relative to the root of the
+        archive. So this is all that moving one costs, and everything read stays read.
+        """
+        with self._lock:
+            sources = self.list()
+            if not any(source.id == source_id for source in sources):
+                return None
+            path = self.validate(raw_path, moving=source_id, typed=typed)
+            self._save([
+                Source(**{**asdict(source), "path": str(path), "name": path.name or str(path)})
+                if source.id == source_id else source
+                for source in sources
+            ])  # fmt: skip
+        return self.get(source_id)
 
     def remove(self, source_id: str) -> Source | None:
         """Take an archive off the list. What was read from it stays on disk.
@@ -185,20 +283,38 @@ class SourceRegistry:
         """
         here = [Path.home(), self.data_dir.parent, self.data_dir.parent.parent]
         named = os.environ.get(ARCHIVE_ROOT_VARIABLE, "").strip()
-        if named:
-            here.append(Path(named).expanduser())
+        # A list, like PATH. It held one folder, so a person with their mother's archive on this
+        # machine and their father's on a stick could not reach both through the picker however
+        # they set it.
+        here += [Path(one).expanduser() for one in named.split(os.pathsep) if one.strip()]
         out: list[Path] = []
         for folder in here:
             try:
                 resolved = folder.resolve()
             except OSError:
                 continue
+            # A folder that could never be added is not a folder to offer for browsing. /root is
+            # both the home of whoever runs this and a system folder of the server, so it stood in
+            # this list and was refused by validate() at the same time: one rule saying two things.
+            if belongs_to_the_server(resolved):
+                continue
             if resolved not in out:
                 out.append(resolved)
         return out
 
-    def validate(self, raw_path: str) -> Path:
-        """The resolved folder path if it can be added; raises SourceError otherwise."""
+    def validate(self, raw_path: str, moving: str = "", typed: bool = False) -> Path:
+        """The resolved folder path if it can be added; raises SourceError otherwise.
+
+        `moving` is the archive being pointed at a new folder, which is then not compared with
+        itself: an archive re-pointed at its own folder, or at one inside the old one, is a person
+        saying where their documents are now and not a second archive overlapping the first.
+
+        `typed` says the path came from somebody typing it at the command line rather than from a
+        page of this dashboard. Every other check here still applies — a system folder is still a
+        system folder, and two archives still may not contain one another — but the list of folders
+        a picker may wander in does not: see ARCHIVE_ROOT_VARIABLE above for why that list guards
+        the picker and not the person.
+        """
         raw_path = raw_path.strip()
         if not raw_path:
             raise SourceError("Enter a folder path.")
@@ -215,6 +331,8 @@ class SourceRegistry:
         if path.is_relative_to(self.data_dir / OUTPUT_DIR_NAME):
             raise SourceError("This is Epicrisis's own output folder.")
         for source in self.list():
+            if source.id == moving:
+                continue
             other = Path(source.path)
             if other == path:
                 raise SourceError("This folder is already added.")
@@ -224,24 +342,52 @@ class SourceRegistry:
                     f"This folder and the archive of {source.whose} contain one another. "
                     "Each archive needs a folder of its own, beside the others rather than inside them."
                 )
-        if str(path) == "/" or any(path.is_relative_to(folder) for folder in SYSTEM_FOLDERS | set(RUNTIME_FOLDERS)):
+        if belongs_to_the_server(path):
             raise SourceError("This is a system folder of the server, not a folder of documents.")
         allowed = self.roots()
-        if not any(path.is_relative_to(root) for root in allowed):
+        if not typed and not allowed:
+            # Nothing on this machine may be added from a page, because there is nowhere this
+            # instance would offer: the home of the account it runs as and both folders around its
+            # data folder are the server's own. Said as its own sentence, because the one below it
+            # reads "Archives are added from ." over an empty list — an instruction with the place
+            # missing out of it, given to somebody who has just been refused.
+            raise SourceError(
+                "No folder of this server can be added from a page: the places this instance would "
+                "offer — the home of the account it runs as, and the folders around its data folder "
+                "— all belong to the server itself. A folder of documents is added by typing it out: "
+                + run('sources add "<the folder of documents>" --owner "<whose records these are>"', self.data_dir)
+                + f". It is only ever read. To have this page offer a folder instead, set "
+                  f"{ARCHIVE_ROOT_VARIABLE} to it before starting the server; several folders are "
+                  f'separated by "{os.pathsep}".'
+            )  # fmt: skip
+        if not typed and not any(path.is_relative_to(root) for root in allowed):
+            # With --data-dir: the line is typed in a shell standing anywhere, and without it
+            # "data" means a folder beside the person, which is some other instance or none at
+            # all — the archive would be added where no server of theirs reads it.
+            by_typing_it = run(f'sources add "{path}" --owner "<whose records these are>"', self.data_dir)
             raise SourceError(
                 "Archives are added from " + " or ".join(str(root) for root in allowed)
-                + f". Set {ARCHIVE_ROOT_VARIABLE} to add one from somewhere else."
+                + f'. A folder anywhere else — a disk of scans of its own — is added by typing it: '
+                  f'{by_typing_it}. '
+                  f'It is only ever read, there as here. To have this page offer that disk too, set '
+                  f'{ARCHIVE_ROOT_VARIABLE} to it before starting the server; several folders are '
+                  f'separated by "{os.pathsep}".'
             )
         return path
 
     def _save(self, sources: list[Source]) -> None:
+        """Written whole and renamed into place, with the one it replaces kept beside it.
+
+        This file is the only thing that ties a person's folders to everything read from them:
+        the id in it is what names the output folder and the index. Four fields per archive, and
+        losing them costs the hours of reading behind those folders — so the last version that
+        was whole stays as sources.json.previous, and a person whose file was cut off mid-write
+        has something to copy back rather than a list to reconstruct from folder names.
+        """
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        temporary = temporary_name(self.file)
-        temporary.write_text(
-            json.dumps([asdict(source) for source in sources], ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        put_in_place(temporary, self.file)
+        if self.file.exists():
+            copy_whole(self.file, self.file.with_name(self.file.name + ".previous"))
+        write_whole(self.file, json.dumps([asdict(source) for source in sources], ensure_ascii=False, indent=2) + "\n")
 
 
 def showing(data_dir) -> Source | None:

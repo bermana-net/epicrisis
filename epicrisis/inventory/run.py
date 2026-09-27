@@ -13,6 +13,16 @@ class OutputInsideArchive(ValueError):
     pass
 
 
+class NothingWhereTheArchiveWas(RuntimeError):
+    """The folder walked empty where it used to hold files. Refused rather than written."""
+
+
+def _found_something_last_time(out: Path) -> bool:
+    """Whether the scan already on disk holds a record. A file of blank lines holds none."""
+    with out.open(encoding="utf-8") as written:
+        return any(line.strip() for line in written)
+
+
 def write_inventory(
     archive: Path, out: Path, progress: Callable[[int, int], None] | None = None
 ) -> Summary:
@@ -33,6 +43,17 @@ def write_inventory(
                 summary.add(record)
                 if progress:
                     progress(count, total)
+        # A folder that has stopped being there walks as a folder with nothing in it: os.walk over
+        # a path that does not exist yields nothing and raises nothing. Put in place, that empty
+        # scan became the archive — every page saying nought documents, the index rebuilt from it
+        # — for the ordinary reason that a disk did not mount or a folder was renamed. The
+        # transcriptions survive it, but a person looking at an empty medical archive does not
+        # know that. So an empty scan never replaces a scan that found something.
+        if not summary.files and out.exists() and _found_something_last_time(out):
+            raise NothingWhereTheArchiveWas(
+                "the folder held no files this time, and the last scan of it did; "
+                "nothing was changed. Check that the archive is where it was."
+            )  # fmt: skip
         put_in_place(partial, out)
     except BaseException:
         partial.unlink(missing_ok=True)

@@ -163,11 +163,12 @@ def test_a_reading_is_used_only_when_the_person_asked_for_it(tmp_path):
     assert "Let a model say what a form did not" in page
     assert 'name="read_materials" value="on"' in page and "checked" not in page.split('name="read_materials"')[1][:40]
 
-    client.post("/settings", data={"read_materials": "on"}, follow_redirects=False)
+    client.post("/settings", data={"read_materials": "on", "shown": "read_materials"}, follow_redirects=False)
     assert trusts_read_materials(data_dir) is True
     assert "checked" in client.get("/settings").text.split('name="read_materials"')[1][:40]
 
-    client.post("/settings", data={}, follow_redirects=False)
+    # Saying which switches the page drew is what turns one off; an empty form turns off nothing.
+    client.post("/settings", data={"shown": "read_materials"}, follow_redirects=False)
     assert trusts_read_materials(data_dir) is False
 
 
@@ -192,7 +193,14 @@ def test_which_model_does_which_reading_is_chosen_and_used(tmp_path):
         assert item["label"] in page
     assert 'name="model_first"' in page and 'name="model_second_reader"' in page
 
-    client.post("/settings", data={"model_first": "claude-sonnet-5", "model_strong": "claude-opus-5",
+    # A form that did not draw the models does not decide them: without this, any save posted to
+    # this page put all three back to what the program ships with.
+    was = model_for(data_dir, "first")
+    client.post("/settings", data={"model_first": "claude-sonnet-5"}, follow_redirects=False)
+    assert model_for(data_dir, "first") == was
+
+    client.post("/settings", data={"shown": "models", "model_first": "claude-sonnet-5",
+                                   "model_strong": "claude-opus-5",
                                    "model_second_reader": "claude-fable-5-1"}, follow_redirects=False)  # fmt: skip
     assert model_for(data_dir, "first") == "claude-sonnet-5"
     assert chosen_models(data_dir)["first"] == "claude-sonnet-5"

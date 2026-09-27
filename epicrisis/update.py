@@ -22,11 +22,12 @@ from epicrisis.consent import has_consent
 from epicrisis.datesearch import search_source
 from epicrisis.extract.run import extract_source
 from epicrisis.index.build import build_index
-from epicrisis.inventory.run import write_inventory
+from epicrisis.inventory.run import NothingWhereTheArchiveWas, write_inventory
 from epicrisis.records import now, read_records
-from epicrisis.runs import belongs_to_the_folder
+from epicrisis.runs import belongs_to_the_folder, holder, one_at_a_time
 from epicrisis.sources import SourceRegistry, source_output_dir
 from epicrisis.validate import validate_source
+from epicrisis.invocation import CLI
 
 LOCK_NAME = "update.lock"
 MAX_NEW_NAMES = 120  # new spellings offered to indicators in one update
@@ -35,17 +36,29 @@ LOG_NAME = "update.log"
 
 def run_update(data_dir: Path, say=print) -> dict:
     registry = SourceRegistry(data_dir)
-    lock = registry.data_dir / LOCK_NAME
-    lock.write_text(json.dumps({"pid": os.getpid(), "started_at": now()}), encoding="utf-8")
     totals = {}
-    try:
+    with one_at_a_time(registry.data_dir / LOCK_NAME, "An update"):
         for source in registry.list():
             output = source_output_dir(registry.data_dir, source.id)
-            summary = write_inventory(Path(source.path), output / layout.INVENTORY)
+            try:
+                summary = write_inventory(Path(source.path), output / layout.INVENTORY)
+            except NothingWhereTheArchiveWas as gone:
+                # One archive whose folder is not where it was does not stop the others being
+                # brought up to date, and the refusal is said rather than raised: it names no
+                # path, and it is the whole of what a person needs to know.
+                say(f"Source {source.id}: {gone}")
+                continue
             say(f"Source {source.id}: {summary.files} files")
             backend = engines.classifier(registry.data_dir)
             if not has_consent(registry.data_dir, backend.name):
-                say(f"Source {source.id}: model processing not confirmed, model steps skipped")
+                # Not a line in a progress log. This is the difference between an archive that has
+                # been read and one that has not, and the run goes on to finish with a zero exit —
+                # so a person following the README sees no failure, and then a dashboard with
+                # nothing read in it, and no idea that one press on one page is all that is
+                # missing. The same sentence the other commands give, and where to go.
+                say(f"Source {source.id}: nothing was read, and nothing was sent.")
+                say("  Model processing is not confirmed for this engine. Confirm it once, on the")
+                say(f"  page that says exactly what would go and where: {CLI} serve, then /consent.")
             else:
                 classified = classify_source(registry.data_dir, source, backend)
                 say(f"  classify: {classified.classified} new pages, {classified.failed} failed")
@@ -67,10 +80,14 @@ def run_update(data_dir: Path, say=print) -> dict:
             built = build_index(registry.data_dir, [source])
             totals = {name: totals.get(name, 0) + value for name, value in built.items() if isinstance(value, int)}
             say(f"Index for {source.whose}: {built['documents']} documents, {built['observations']} values")
-            if _propose_new_names(registry.data_dir, say, source.id):
-                build_index(registry.data_dir, [source])
-    finally:
-        lock.unlink(missing_ok=True)
+            # This asks a model too, and so stands behind the same consent as every other step
+            # that does. It stood outside it: the steps above were skipped, the person was told
+            # so, and this one went to the provider anyway — which is the whole of what a consent
+            # screen is for. What it sends is narrow (printed names and units, no values and no
+            # dates), but that is an argument about the harm, not about the permission.
+            if has_consent(registry.data_dir, engines.classifier(registry.data_dir).name):
+                if _propose_new_names(registry.data_dir, say, source.id):
+                    build_index(registry.data_dir, [source])
     return totals
 
 
@@ -109,14 +126,8 @@ def start_in_background(data_dir: Path) -> None:
 
 
 def update_running(data_dir: Path) -> bool:
-    try:
-        pid = json.loads((data_dir / LOCK_NAME).read_text(encoding="utf-8"))["pid"]
-        os.kill(pid, 0)
-    except (FileNotFoundError, ValueError, KeyError, ProcessLookupError):
-        return False
-    except PermissionError:
-        return True
-    return True
+    """Through runs.holder, the one reader of a lock file. See classify.run.is_running."""
+    return holder(data_dir / LOCK_NAME) is not None
 
 
 def _propose_new_names(data_dir: Path, say, source_id: str | None = None) -> int:

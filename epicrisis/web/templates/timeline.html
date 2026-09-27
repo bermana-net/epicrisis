@@ -7,32 +7,77 @@
   {% set current = "timeline" %}
   {% include "_header.html" %}
 
-  {% if missing %}
+  {# One address for every link that narrows the archive: the axis that is being changed, over the
+   ones a person already chose. Written once because every one of these links used to drop
+   whatever it did not name — clicking a year in the paperwork view put you back among the
+   records, and choosing a type forgot the year. #}
+{%- macro filters(over={}) -%}
+{%- set base = {"view": "" if view == "feed" else view, "year": year or "", "doc_type": doc_type,
+                "material": material, "paperwork": "1" if paperwork else "",
+                "undated": "1" if undated else "", "all_tests": "1" if all_tests else "",
+                "test": test, "skip": ""} -%}
+{%- set parts = [] -%}
+{%- for key in ["view", "year", "doc_type", "material", "test", "paperwork", "undated", "all_tests", "skip"] -%}
+{%- set value = over[key] if key in over else base[key] -%}
+{%- if value %}{% set _ = parts.append(key ~ "=" ~ (value | string | urlencode)) %}{% endif -%}
+{%- endfor -%}
+/{% if parts %}?{{ parts | join("&") }}{% endif %}
+{%- endmacro -%}
+
+{% if missing %}
   {{ nothing("Timeline") }}
   {% else %}
 
   <section class="rule" style="padding-top: 16px;">
     <div class="timeline-head">
       <h1>Timeline</h1>
-      <p class="caps muted">{{ overview.documents }} documents &middot; {{ overview.first_date }} – {{ overview.last_date }}<br>by the date printed in the document</p>
+      <p class="caps muted">{{ overview.documents }} document{{ "s" if overview.documents != 1 }} &middot; {{ overview.first_date }} – {{ overview.last_date }}<br>by the date printed in the document</p>
     </div>
     {% include "_searchline.html" %}
     <nav class="views caps" aria-label="Views">
       {% for key, label, hint in [("feed", "By year", "the strip of years, and the documents under it"), ("lanes", "By type", "what kind of care, and when"), ("indicators", "By test", "when each test was taken, and its last value")] %}
-      <a href="/?view={{ key }}{% if doc_type %}&doc_type={{ doc_type }}{% endif %}"{% if view == key %} aria-current="page"{% endif %} title="{{ hint }}">{{ label }}</a>
+      <a href="{{ filters({"view": key}) }}"{% if view == key %} aria-current="page"{% endif %} title="{{ hint }}">{{ label }}</a>
       {% endfor %}
     </nav>
   </section>
 
+  {# What is narrowing this page, in the views that have no row of tabs to show it on. A type and a
+     year are carried from view to view on purpose — a person moving between them keeps what they
+     chose — and in these two views nothing said so and nothing could take it off again. #}
+  {% if view == "lanes" and (doc_type or year) %}
+  <section class="card-section" style="padding-top: 0;">
+    <p class="caps chosen-year">
+      {% if doc_type %}{{ doc_type }} only &middot; <a href="{{ filters({"doc_type": ""}) }}">every type</a>{% endif %}
+      {% if doc_type and year %} &middot; {% endif %}
+      {% if year %}{{ year }} &middot; <a href="{{ filters({"year": ""}) }}">every year</a>{% endif %}
+    </p>
+  </section>
+  {% elif view == "indicators" and (doc_type or year) %}
+  {# Said, not claimed. A type and a year are carried from view to view on purpose, and this view
+     applies neither: its series are every value of a test, whatever document it came from. The
+     line that names a filter in force was drawn here as well, so the page announced a narrowing
+     that nothing behind it performed — the same list of tests with the filter and without. #}
+  <section class="card-section" style="padding-top: 0;">
+    <p class="caps muted">Tests are drawn from every document of this archive: the
+      {% if doc_type and year %}type and year carried from the other views are{% else %}{{ "type" if doc_type else "year" }} carried from the other views is{% endif %}
+      not applied here. <a href="{{ filters({"doc_type": "", "year": ""}) }}">Drop {{ "them" if doc_type and year else "it" }}</a>
+      &middot; <a href="{{ filters({"view": "feed"}) }}">see the documents {{ "they" if doc_type and year else "it" }} narrow</a></p>
+  </section>
+  {% endif %}
+
   {% if view == "feed" %}
   <section class="card-section" style="padding-top: 0;">
     <div class="types caps">
-      <a href="/"{% if not doc_type and not paperwork %} aria-current="page"{% endif %}>Records</a>
-      {% for name, count in overview.types.items() %}
-      <a href="/?doc_type={{ name }}"{% if doc_type == name %} aria-current="page"{% endif %}>{{ name }} <span class="muted">{{ count }}</span></a>
+      {# Every tab here means "click and see this many" — so the one that adds the paperwork to
+         the records rather than showing the paperwork alone says so with a plus, and Records
+         carries its own number, which is what makes the row add up to the archive. #}
+      <a href="{{ filters({"doc_type": "", "paperwork": ""}) }}"{% if not doc_type and not paperwork %} aria-current="page"{% endif %}>Records <span class="muted">{{ records_count }}</span></a>
+      {# Counted with the year in force, not over the whole archive: see type_counts in app.py. #}
+      {% for name, count in (type_counts or overview.types).items() %}
+      <a href="{{ filters({"doc_type": name, "paperwork": ""}) }}"{% if doc_type == name %} aria-current="page"{% endif %}>{{ name }} <span class="muted">{{ count }}</span></a>
       {% endfor %}
       {% if paperwork_count %}
-      <a href="/?paperwork=1"{% if paperwork and not doc_type %} aria-current="page"{% endif %} title="Appointment slips, insurance letters and the like: kept, but they hold no results">and the paperwork <span class="muted">{{ paperwork_count }}</span></a>
+      <a href="{{ filters({"doc_type": "", "paperwork": "1"}) }}"{% if paperwork and not doc_type %} aria-current="page"{% endif %} title="Appointment slips, insurance letters and the like: kept, but they hold no results. This adds them to the records rather than showing them on their own.">with the paperwork <span class="muted">+{{ paperwork_count }}</span></a>
       {% endif %}
     </div>
   </section>
@@ -40,14 +85,14 @@
   <section class="card-section">
     <div class="yearstrip" role="list">
       {% for item in years %}
-      <a class="year{% if year == item.year %} chosen{% endif %}" role="listitem" href="/?view={{ view }}{% if year != item.year %}&year={{ item.year }}{% endif %}{% if doc_type %}&doc_type={{ doc_type }}{% endif %}" title="{{ item.documents }} documents in {{ item.year }}">
+      <a class="year{% if year == item.year %} chosen{% endif %}" role="listitem" href="{{ filters({"year": "" if year == item.year else item.year}) }}" title="{{ item.documents }} documents in {{ item.year }}">
         <span class="count caps">{{ item.documents }}</span>
         <span class="bar" style="height: {{ (6 + 128 * item.documents / top) | round | int }}px"></span>
         <span class="label caps">{{ "%02d" | format(item.year % 100) if item.year >= 2000 else item.year }}</span>
       </a>
       {% endfor %}
     </div>
-    {% if year %}<p class="caps chosen-year">{{ year }} &middot; <a href="/?view={{ view }}">show every year</a></p>{% endif %}
+    {% if year %}<p class="caps chosen-year">{{ year }} &middot; <a href="{{ filters({"year": ""}) }}">show every year</a></p>{% endif %}
   </section>
   {% endif %}
 
@@ -64,33 +109,46 @@
       <a class="feed-row" href="{{ item.card_url }}">
         <span class="mono when">{{ item.date[5:] if item.date else "–" }}</span>
         <span class="what"><b>{{ item.title or item.doc_type }}</b><span class="caps muted">{{ item.doc_type }}{% if item.provider %} &middot; {{ item.provider }}{% endif %}{% if not item.transcribed %} &middot; <span class="signal">not transcribed</span>{% endif %}</span></span>
-        <span class="caps muted how-many">{% if item.value_count %}{{ item.value_count }} values &middot; {% endif %}p. {{ item.pages | join(", ") }}</span>
+        <span class="caps muted how-many">{% if item.value_count %}{{ item.value_count }} value{{ "s" if item.value_count != 1 }} &middot; {% endif %}p. {{ item.pages | join(", ") }}</span>
         <span class="mono file-id-plain">{{ item.file_id }}</span>
       </a>
       {% else %}
+      {# An empty page reached through the address is not an empty archive, and a person who typed
+         a year or a kind deserves to be told which of the two this is. #}
+      {% if year or doc_type or undated or skip %}
+      <p class="empty">Nothing in this archive answers that address{% if doc_type %}: no documents of the kind <span class="mono">{{ doc_type }}</span>{% if year %} dated {{ year }}{% endif %}{% elif year %}: no documents dated {{ year }}{% elif skip %}: the page asked for is past the end of the list{% endif %}. Nothing was looked for beyond that, so this says nothing about what the archive holds.</p>
+      <p><a class="btn" href="{{ filters({"year": "", "doc_type": "", "undated": "", "skip": ""}) }}">The whole timeline</a></p>
+      {% else %}
       <p class="empty">Nothing here.</p>
+      {% endif %}
       {% endfor %}
     </div>
     <div class="feed-foot">
-      <span class="caps muted">Showing {{ documents | length }} of {{ total }}{% if undated %} documents with no date{% elif year %} in {{ year }}{% endif %}</span>
+      {# What the number counts, because three counts stood on this page and each was of a
+         different set: the archive, the records, and the records with the paperwork added. #}
+      <span class="caps muted">Showing {{ documents | length }} of {{ total }} {% if undated %}documents with no date{% elif doc_type %}{{ doc_type }}{% elif paperwork %}records and paperwork{% else %}records{% endif %}{% if year and not undated %} in {{ year }}{% endif %}</span>
       <span class="feed-more">
-        {% if skip %}<a class="caps" href="/?{% if year %}year={{ year }}&{% endif %}{% if undated %}undated=1&{% endif %}{% if paperwork %}paperwork=1&{% endif %}{% if doc_type %}doc_type={{ doc_type }}&{% endif %}skip={{ [skip - 120, 0] | max }}">&larr; earlier page</a>{% endif %}
-        {% if skip + (documents | length) < total %}<a class="caps" href="/?{% if year %}year={{ year }}&{% endif %}{% if undated %}undated=1&{% endif %}{% if paperwork %}paperwork=1&{% endif %}{% if doc_type %}doc_type={{ doc_type }}&{% endif %}skip={{ skip + 120 }}">next 120 &rarr;</a>{% endif %}
-        {% if undated %}<a class="caps" href="/">back to the dated documents</a>
-        {% elif undated_count %}<a class="caps signal" href="/?undated=1">{{ undated_count }} documents carry no date at all</a>{% endif %}
+        {% if skip %}<a class="caps" href="{{ filters({"skip": [skip - 120, 0] | max}) }}">&larr; earlier page</a>{% endif %}
+        {% if skip + (documents | length) < total %}<a class="caps" href="{{ filters({"skip": skip + 120}) }}">next 120 &rarr;</a>{% endif %}
+        {% if undated %}<a class="caps" href="{{ filters({"undated": "", "skip": ""}) }}">back to the dated documents</a>
+        {% elif undated_count %}<a class="caps signal" href="{{ filters({"undated": "1", "year": "", "skip": ""}) }}">{{ undated_count }} document{{ "s" if undated_count != 1 }} {{ "carry" if undated_count != 1 else "carries" }} no date at all</a>{% endif %}
       </span>
     </div>
   </section>
   {% endif %}
 
   {% if view == "lanes" %}
-  {% set first = years[0].year if years else 1989 %}
-  {% set last = (years[-1].year + 1) if years else 2026 %}
+  {# The axis is the span of the documents drawn under it, and the ticks are of that same span. It
+     used to be built from the years of whichever type was chosen in another view, while every
+     type was drawn on it: points landed from -31% to 107% of the width, ten of forty off the left
+     of a phone's screen and the rest standing on a year that was not theirs. #}
+  {% set first = axis.first if axis else 1989 %}
+  {% set last = axis.last if axis else 2026 %}
   <section class="card-section">
     <div class="lanes">
       <div class="lane head">
         <span class="caps muted">Type</span>
-        <span class="track">{% for item in years %}{% if item.year % 5 == 0 %}<span class="tick caps" style="left: {{ ((item.year - first) / (last - first) * 100) | round(2) }}%">{{ item.year }}</span>{% endif %}{% endfor %}</span>
+        <span class="track">{% for one in ticks or [] %}<span class="tick caps" style="left: {{ ((one - first) / (last - first) * 100) | round(2) }}%">{{ one }}</span>{% endfor %}</span>
         <span class="caps muted count">All</span>
       </div>
       {% for lane in lanes %}
@@ -103,6 +161,18 @@
         </span>
         <span class="mono count">{{ lane.count }}</span>
       </div>
+      {% else %}
+      {# The feed and the By test view each say what did not match; this one said nothing at all —
+         the bare header strip "Type … All" over empty space, which reads as a page that did not
+         finish drawing. And it is reached with the mouse alone: a year in the strip, a type that
+         holds nothing in that year — the tabs promised otherwise until the counts above were
+         narrowed by the year too — and then this view. #}
+      {% if year or doc_type %}
+      <p class="empty">Nothing in this archive answers that address{% if doc_type %}: no documents of the kind <span class="mono">{{ doc_type }}</span>{% if year %} dated {{ year }}{% endif %}{% elif year %}: no documents dated {{ year }}{% endif %}. Nothing was looked for beyond that, so this says nothing about what the archive holds.</p>
+      <p><a class="btn" href="{{ filters({"view": "lanes", "year": "", "doc_type": ""}) }}">The whole timeline</a></p>
+      {% else %}
+      <p class="empty">Nothing here.</p>
+      {% endif %}
       {% endfor %}
     </div>
   </section>
@@ -114,8 +184,20 @@
   <section class="card-section">
     <div class="materials caps">
       {% for item in materials %}
-      <a href="/?view=indicators&material={{ item.key }}"{% if material == item.key %} aria-current="page"{% endif %}>{{ item.label }} <span class="muted">{{ item.count }}</span></a>
+      <a href="{{ filters({"view": "indicators", "material": item.key}) }}"{% if material == item.key %} aria-current="page"{% endif %}>{{ item.label }} <span class="muted">{{ item.count }}</span></a>
       {% endfor %}
+      {# A person comes here with a question about one test, and the list is hundreds of lines
+         sorted by how many values each has. The Find box existed on the Indicators page, which
+         the menu calls "Printed names grouped by test" — a name that reads as work on the
+         vocabulary, not as the way to one's own results. #}
+      <form method="get" action="/" class="find">
+        <input type="hidden" name="view" value="indicators">
+        {% if material %}<input type="hidden" name="material" value="{{ material }}">{% endif %}
+        {% if all_tests %}<input type="hidden" name="all_tests" value="1">{% endif %}
+        <input name="test" value="{{ test }}" placeholder="Find a test" autocomplete="off">
+        <button class="btn small" type="submit">Show</button>
+        {% if test %}<a class="caps" href="{{ filters({"view": "indicators", "test": ""}) }}">every test</a>{% endif %}
+      </form>
     </div>
     <div class="lanes">
       <div class="lane head">
@@ -131,13 +213,32 @@
           <a class="dot{% if loop.last %} last{% endif %}" style="left: {{ ((point.date[:4] | int) - first + ((point.date[5:7] | int) - 1) / 12) / (last - first) * 100 }}%" href="/documents/{{ point.source_id }}/{{ point.file_sha256 }}/{{ point.first_page }}" title="{{ point.date }} · {{ point.value }} {{ point.unit or '' }}"></a>
           {% endfor %}
         </span>
-        <span class="last-value"><b class="mono">{% if item.last_comparator and not item.last_value.startswith(item.last_comparator) %}{{ item.last_comparator }}{% endif %}{{ item.last_value }}</b><small class="caps muted">{{ item.last_unit or "" }}</small></span>
+        {# No last value where one printed name covers two specimens: see indicator_timeline. #}
+        <span class="last-value">{% if item.last_value %}<b class="mono">{% if item.last_comparator and not item.last_value.startswith(item.last_comparator) %}{{ item.last_comparator }}{% endif %}{{ item.last_value }}</b><small class="caps muted">{{ item.last_unit or "" }}</small>{% else %}<small class="caps muted">two specimens</small>{% endif %}</span>
       </div>
+      {% else %}
+      {# Nought results here reads as "this archive has no such test", and it is not that: the
+         words are matched against the label and against every printed spelling, folded, so what
+         this says is that no group is named that way. The tab beside this one got a sentence
+         like it in the same commit; this one was left saying nothing at all. #}
+      <p class="empty">No test of this archive is named that way, in any of its spellings. That is
+        about the word, not about the archive: a test may be printed here under a name you have
+        not tried. The search for one line over every document looks at more.</p>
+      {# Posted, not linked. This was the one control left in the interface that carried a word a
+         person typed into an address — the very thing the search page was moved off GET to avoid,
+         and it was added in the commit that moved it. The word is in the body here as it is
+         everywhere else. #}
+      <p class="buttons-in-a-row"><a class="btn" href="{{ filters({"view": "indicators", "test": ""}) }}">Every test</a>
+        <form method="post" action="/search" class="as-a-button">
+          <input type="hidden" name="q" value="{{ test }}">
+          <button class="btn" type="submit">Search the documents</button>
+        </form>
+      </p>
       {% endfor %}
     </div>
     <div class="feed-foot">
       <span class="caps muted">Showing {{ series | length }} of {{ series_total }} tests{% if material %} in this material{% endif %} &middot; most values first</span>
-      {% if series | length < series_total %}<a class="caps" href="/?view=indicators{% if material %}&material={{ material }}{% endif %}&all_tests=1">show every test &rarr;</a>{% endif %}
+      {% if series | length < series_total %}<a class="caps" href="{{ filters({"view": "indicators", "all_tests": "1"}) }}">show every test &rarr;</a>{% endif %}
     </div>
     <p class="caps muted">Values exactly as the form printed them. Nothing here is converted or compared.</p>
   </section>

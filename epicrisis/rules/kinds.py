@@ -58,6 +58,9 @@ class Kind:
     looks_at: str
     about: str
     settings: dict = field(default_factory=dict)  # name -> default, and the type is the default's
+    # What each setting means, in words a person can act on. A threshold nobody can explain is a
+    # threshold nobody will ever change, and one changed without understanding is worse.
+    means: dict = field(default_factory=dict)
     run: Callable | None = None
 
     @property
@@ -68,17 +71,47 @@ class Kind:
 KINDS: dict[str, Kind] = {}
 
 
-def kind(name: str, does: str, at: str, about: str, looks_at: str = A_SERIES, settings: dict | None = None):
+# Which subject each step actually builds and hands to a rule. A kind declaring a pair nobody
+# serves used to be accepted and then skipped in silence by every loop of that step: no error, no
+# line anywhere, the rule switched on in the settings and finding nothing for ever. Refused here,
+# at the moment the kind is written, rather than discovered by somebody wondering why a rule they
+# turned on never fires. Adding a subject to a step means teaching that step to build it first,
+# and then adding it to this table — in that order.
+SERVED = {
+    EXTRACT: set(),
+    VALIDATE: {ONE_DOCUMENT, THE_ARCHIVE},
+    INDEX: set(),
+    CHARTS: {A_SERIES, ONE_VALUE, ONE_MATERIAL},
+    SUSPECTS: {THE_ARCHIVE},
+}
+
+
+def kind(name: str, does: str, at: str, about: str, looks_at: str = A_SERIES,
+         settings: dict | None = None, means: dict | None = None):  # fmt: skip
     """Register a kind of check. The function it decorates is what the rules of that kind do."""
     if does not in DOES or at not in AT or looks_at not in LOOKS_AT:
         raise ValueError(f"{name}: does={does!r} at={at!r} looks_at={looks_at!r} is not a kind of check that exists")
+    if looks_at not in SERVED[at]:
+        raise ValueError(
+            f"{name}: nothing at the {at} step hands a rule {looks_at!r}. A kind whose subject that step "
+            f"does not assemble is not refused anywhere and finds nothing for ever, which looks exactly "
+            f"like a rule that is working. What {at} hands out: {', '.join(sorted(SERVED[at]))}."
+        )
+    # Every threshold says what it means, or it cannot be offered to anybody to change.
+    if set(settings or {}) != set(means or {}):
+        raise ValueError(f"{name}: every setting needs a line saying what it means, and only those")
 
     def keep(run: Callable) -> Callable:
         KINDS[name] = Kind(name=name, does=does, at=at, looks_at=looks_at, about=about,
-                           settings=settings or {}, run=run)  # fmt: skip
+                           settings=settings or {}, means=means or {}, run=run)  # fmt: skip
         return run
 
     return keep
+
+
+# Said once and shared, because the same threshold means the same thing wherever it appears.
+WEIGHT = "How much the list should care when this one fires. The heaviest signals lift a document to the top of it."
+LEAST_HISTORY = "How many readings of a test there must be before its habits mean anything at all."
 
 
 @kind(
@@ -89,6 +122,9 @@ def kind(name: str, does: str, at: str, about: str, looks_at: str = A_SERIES, se
     about="Compares the numbers of one test with the reference ranges printed beside them, to say "
           "which of them are written at another scale.",
     settings={"same_band": 0.15, "bands_to_see_a_scale": 2},
+    means={"same_band": "How far from a whole power of ten two printed ranges may sit and still count as one range "
+                        "at two scales. 0.15 is about forty per cent either way.",
+           "bands_to_see_a_scale": "How many printed ranges it takes before a test can be said to have two scales at all."},
 )
 def _against_its_printed_range(series, settings: dict) -> list[tuple[int, int]]:
     """The arithmetic is in units.py, which owns what scale a number is on; this only names it."""
@@ -106,6 +142,7 @@ def _against_its_printed_range(series, settings: dict) -> list[tuple[int, int]]:
     "unit-missing-where-others-have-one", does=MARKS, at=SUSPECTS, looks_at=THE_ARCHIVE,
     about="A value with no unit, on a test whose other forms all print one.",
     settings={"weight": 1, "least_history": 4},
+    means={"weight": WEIGHT, "least_history": LEAST_HISTORY},
 )  # fmt: skip
 def _unit_missing(archive, settings: dict):
     from epicrisis.suspects import unit_missing_where_others_have_one
@@ -118,6 +155,9 @@ def _unit_missing(archive, settings: dict):
     about="A number many times away from every other reading of the same test, in the same unit "
           "and the same specimen.",
     settings={"weight": 3, "least_history": 4, "times_away": 10},
+    means={"weight": WEIGHT, "least_history": LEAST_HISTORY,
+           "times_away": "How many times away from the middle of a test a number has to be before it looks "
+                         "like a misplaced decimal point rather than a reading."},
 )  # fmt: skip
 def _number_far(archive, settings: dict):
     from epicrisis.suspects import number_far_from_the_others
@@ -130,6 +170,7 @@ def _number_far(archive, settings: dict):
     about="An institution recorded as somebody's name or initials: the doctor under the stamp "
           "read as the laboratory.",
     settings={"weight": 3},
+    means={"weight": WEIGHT},
 )  # fmt: skip
 def _institution_is_a_person(archive, settings: dict):
     from epicrisis.suspects import institution_looks_like_a_name
@@ -141,6 +182,7 @@ def _institution_is_a_person(archive, settings: dict):
     "lab-form-without-a-title", does=MARKS, at=SUSPECTS, looks_at=THE_ARCHIVE,
     about="A laboratory form transcribed with no title at all.",
     settings={"weight": 1},
+    means={"weight": WEIGHT},
 )  # fmt: skip
 def _lab_form_without_a_title(archive, settings: dict):
     from epicrisis.suspects import lab_form_without_a_title
@@ -178,6 +220,59 @@ def _over_one_document(name: str, about: str, does_what: str):
 
 for _name, (_about, _what) in _OVER_ONE_DOCUMENT.items():
     _over_one_document(_name, _about, _what)
+
+
+@kind(
+    "range-read-two-ways", does=MARKS, at=VALIDATE, looks_at=ONE_DOCUMENT,
+    about="The two readings of one printed range disagree: the numbers the model read off the page, "
+          "and the numbers this program reads out of the same printed text.",
+    settings={"apart_by": 0.0},
+    means={
+        "apart_by": "How far the two readings of one printed range may differ before it is reported, as a "
+                    "share of the larger number. Nought reports any difference at all; a bound one reading "
+                    "has and the other has not is reported whatever this is.",
+    },
+)  # fmt: skip
+def _range_read_two_ways(document, settings: dict):
+    """A second opinion on the one thing here that is read by hand.
+
+    The band under a chart comes from a parser: no model, repeatable, and therefore measurable —
+    which is why it is a parser. But one reader alone is never wrong out loud, and this one has been
+    wrong four times in a day over shapes the archive did not hold yet. The model that transcribed
+    the page is asked for the same range as two numbers, which is what it is already asked for the
+    value itself, and the two answers are compared. Nothing is chosen by this and no band moves.
+    """
+    from epicrisis import validate
+
+    return [] if document.item is None else validate.range_read_two_ways(document, settings)
+
+
+@kind(
+    "possible-copy", does=MARKS, at=VALIDATE, looks_at=THE_ARCHIVE,
+    about="Two files of the same day printing the same results: an export, an excerpt, a letter "
+          "quoting a form. One of a group answers, and a person chooses which.",
+    settings={"results_shared": 0.8, "results_at_least": 5, "similar_in_size": 0.6, "results_in_common": 3},
+    means={
+        "results_shared": "How much of the smaller document's named results the two have to share before "
+                          "they are held to be the same result, where both are long enough to compare.",
+        "results_at_least": "How many results a document needs before sharing them means anything. Two short "
+                            "forms of one day print the same handful of small numbers and are not copies.",
+        "similar_in_size": "How close in length two documents have to be to be compared this way at all.",
+        "results_in_common": "How many named results a shorter document needs, all of them found in a longer "
+                             "one, to be taken for an excerpt of it.",
+    },
+)  # fmt: skip
+def _possible_copy(archive, settings: dict):
+    """Four numbers that decided what a copy is, and that nobody could see, move or measure.
+
+    They were constants in validate.py. Whether two files are the same result is a judgement — a
+    urinalysis and a coprogram of one day share a handful of small numbers and are not copies —
+    and a judgement is what the registry is for: switchable, countable, and answerable by the
+    person whose archive it is rather than by whoever last edited a constant.
+    """
+    from epicrisis import validate
+
+    return validate.possible_copies(archive.documents, settings)
 
 
 @kind(
@@ -225,8 +320,39 @@ def _one_scale_for_a_test(value, settings: dict):
     about="Values whose form printed no unit anywhere, put on the scale their own numbers agree "
           "with. The one reading in this program taken from numbers rather than from a page.",
     settings={"agreement": 2.0, "least_to_join": 2},
+    means={"agreement": "How close two middles have to be, as a factor, to count as the same scale. 2.0 means within twice or half.",
+           "least_to_join": "How many values a scale must already have before anything is allowed to join it."},
 )  # fmt: skip
 def _unit_by_the_numbers(material, settings: dict) -> dict:
     from epicrisis.series import place_by_the_numbers
 
     return place_by_the_numbers(material.by_unit, settings)
+
+
+@kind(
+    "unit-alone-in-a-series", does=MARKS, at=SUSPECTS, looks_at=THE_ARCHIVE,
+    about="A unit used once on a test whose other forms all print another one. Knows nothing "
+          "about the names of tests, so it does not go stale on the next form.",
+    settings={"weight": 2, "alone_at_most": 1, "others_at_least": 10},
+    means={"weight": WEIGHT,
+           "alone_at_most": "How many times a unit may appear on a test before it stops counting as alone.",
+           "others_at_least": "How many values carrying some other printed unit there must be before \"the others\" means anything."},
+)  # fmt: skip
+def _unit_alone(archive, settings: dict):
+    from epicrisis.suspects import unit_alone_in_a_series
+
+    return unit_alone_in_a_series(archive, settings)
+
+
+@kind(
+    "value-names-another-test", does=MARKS, at=SUSPECTS, looks_at=THE_ARCHIVE,
+    about="The text of a value names a different test than the row it stands in: a table of "
+          "targets printing one name in the row and another inside the cell.",
+    settings={"weight": 2, "shortest_spelling": 8},
+    means={"weight": WEIGHT,
+           "shortest_spelling": "Letters. Below this a spelling is an ordinary word and matches half an archive."},
+)  # fmt: skip
+def _value_names_another_test(archive, settings: dict):
+    from epicrisis.suspects import value_names_another_test
+
+    return value_names_another_test(archive, settings)

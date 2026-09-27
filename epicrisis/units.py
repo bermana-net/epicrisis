@@ -45,15 +45,52 @@ from epicrisis.printed_values import fold
 # because "г/л" in small letters is grams and not giga. Everything else keeps its own chart:
 # per litre and per microlitre are not joined, and a spelling that looks like a misreading
 # ("10¹²/1") is left alone rather than guessed at.
-PREFIXES = ((r"Т\s*/\s*л", "10^12/л"), (r"Г\s*/\s*л", "10^9/л"), (r"T\s*/\s*L", "10^12/l"))
+# Each of these was written in when somebody met it, and its Latin or Cyrillic twin was left for
+# later: the Cyrillic giga was here and the Latin one was not, so "G/L" on an English form became
+# grams per litre and the same count of cells drew a second chart of its own, a thousand million
+# away from the first.
+PREFIXES = ((r"Т\s*/\s*л", "10^12/л"), (r"Г\s*/\s*л", "10^9/л"),
+            (r"T\s*/\s*L", "10^12/l"), (r"G\s*/\s*L", "10^9/l"))  # fmt: skip
 SUPERSCRIPT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
-LETTERS = str.maketrans({"µ": "u", "μ": "u", " ": "", "·": "", "*": "", "х": "x"})
-WORDS = [("мкмоль", "umol"), ("ммоль", "mmol"), ("моль", "mol"), ("мкг", "ug"), ("мг", "mg"), ("нг", "ng"),
-         ("пг", "pg"), ("мл", "ml"), ("дл", "dl"), ("мкл", "ul"), ("ед", "u"), ("г", "g"), ("л", "l")]  # fmt: skip
-CELL_WORDS = ("клітин", "клеток", "клетки", "cells", "cell", "ery", "кл.", "лейко", "эритро", "еритро", "wbc", "rbc")
+LETTERS = str.maketrans({" ": "", "·": "", "*": "", "х": "x"})
+# The micro sign and the Greek mu mean "millionth" before a unit — and are the first letter of an
+# ordinary Greek word before Greek letters. Translated wherever they stood, "μονάδες/L" came out as
+# "uονάδεσ/l": a key of its own, a chart of its own, for a test already held under other spellings.
+MICRO = re.compile(r"[µμ](?![\u0370-\u03ff\u1f00-\u1fff])")
+# Every word a unit is written with in this archive's languages, longest first so that "мкмоль"
+# is read before "моль". A word left out does not fail loudly: it stays in the key, half
+# translated, and the key comes out in two alphabets at once — "нmol/l" beside "nmol/l" — so one
+# test printed on a Ukrainian form, a Russian one and an English one drew two or three separate
+# charts. On this archive 50 keys of 152 were mixed that way, carrying 15% of every value that
+# had a unit at all.
+# Replaced in order, so the list is kept longest first: "мкмоль" has to be read before "моль",
+# and "год" before "од", or an hour comes out as a unit. Sorted here rather than trusted to the
+# eye, because the one time it was trusted "мм/год" folded to "мм/gu".
+WORDS = sorted(
+    [("мкмоль", "umol"), ("ммоль", "mmol"), ("нмоль", "nmol"), ("пмоль", "pmol"), ("моль", "mol"),
+     ("мкг", "ug"), ("мг", "mg"), ("нг", "ng"), ("пг", "pg"), ("мл", "ml"), ("дл", "dl"),
+     ("мкл", "ul"), ("мкм", "umol"), ("мм", "mm"), ("ед", "u"), ("од", "u"), ("ме", "iu"),
+     ("мо", "iu"), ("мин", "min"), ("хв", "min"), ("xв", "min"), ("час", "h"), ("год", "h"), ("ч", "h"), ("hours", "h"), ("hour", "h"), ("hrs", "h"), ("hr", "h"),
+     ("г", "g"), ("л", "l"),
+     # Both spellings of the final sigma: this list runs after a casefold, which turns ς into σ,
+     # so the word as a form prints it would never meet itself here.
+     ("μονάδες", "u"), ("μονάδεσ", "u"), ("μοναδες", "u"), ("μοναδεσ", "u"), ("μον.", "u"), ("λίτρο", "l"), ("λιτρο", "l"),
+     ("ώρα", "h"), ("ωρα", "h"), ("λεπτά", "min"), ("λεπτα", "min")],
+    key=lambda pair: -len(pair[0]),
+)  # fmt: skip
+# "кл." with its full stop was here and "кл" without one was not, so the commonest abbreviation of
+# all left a Cyrillic letter in the key and drew its own chart beside the one it belongs to.
+CELL_WORDS = ("клітин", "клеток", "клетки", "cells", "cell", "ery", "кл.", "кл", "лейко", "эритро",
+              "еритро", "wbc", "rbc", "κύτταρα", "κυττάρα", "κύτταρο", "ερυθρά", "λευκά")  # fmt: skip
+# Taken out where the word begins, and not in the middle of another: "кл" is inside "мкл", the
+# microlitre, so taking it wherever it stood turned every count of cells per microlitre into a
+# count per "м". Longest first, so "кл." goes before "кл" and "клітин" before both.
+CELLS = re.compile(r"(?<![^\W\d_])(?:" + "|".join(re.escape(word) for word in
+                   sorted(CELL_WORDS, key=len, reverse=True)) + r")")  # fmt: skip
 # Counting under a microscope is written a dozen ways in four languages and means one thing:
 # what one field of view holds. The words differ, the measure does not.
-FIELD = ("вполізору", "вполезрения", "вполязрения", "вп/зр", "вп./зр", "вп/з", "п/з", "п/зр", "полезрения", "полізору")
+FIELD = ("вполізору", "вполезрения", "вполязрения", "вп/зр", "вп./зр", "вп/з", "п/з", "п/зр", "полезрения", "полізору",
+         "οπτικόπεδίο", "οπτικοπεδιο", "κ.ο.π.", "κ.ο.π", "κοπ")  # fmt: skip
 EXPONENT = re.compile(r"10\^?e?(3|6|9|12)(?![0-9])", re.IGNORECASE)
 
 
@@ -62,14 +99,21 @@ def unit_key(unit: str | None) -> str:
     text = (unit or "").strip()
     for pattern, plain in PREFIXES:
         text = re.sub(rf"(?<![A-Za-zА-Яа-яЁё]){pattern}(?![A-Za-zА-Яа-яЁё])", plain, text)
-    text = text.translate(SUPERSCRIPT).casefold().translate(LETTERS)
-    for word in CELL_WORDS:
-        text = text.replace(word, "")
+    text = MICRO.sub("u", text.translate(SUPERSCRIPT).casefold()).translate(LETTERS)
+    text = CELLS.sub("", text)
     text = text.replace("гр", "г")
     if "hpf" in text or text.strip("/.") in FIELD:
         return "hpf"
     for cyrillic, latin in WORDS:
         text = text.replace(cyrillic, latin)
+    # What is left after the words: the square metre of a filtration rate written with a Cyrillic
+    # м, and the decimal comma inside "1,73". Done here rather than in LETTERS, which runs before
+    # the words and would turn "мкмоль" into "mкmоль".
+    # A lone Cyrillic "е" standing for units, and only where a unit stands: before the slash and
+    # after the words, so that "МЕ/л" has already become "iu/l" and is not touched. As a letter in
+    # the table it would have eaten the е of every other word.
+    text = re.sub(r"(?<![^\W\d_])е(?=\s*/)", "u", text)
+    text = text.replace("м2", "m2").replace("м²", "m2").replace(",", ".")
     text = text.replace("mm3", "ul").replace("mm³", "ul").replace("gr/", "g/").strip("().,;")
     if text in ("мм/l", "mm/l"):
         return "mmol/l"  # millimolar written as mM is millimoles per litre
@@ -165,9 +209,31 @@ REFERENCE_UNITS = (
     ("ng/ml", ("нг/мл", "ng/ml")),
     ("pg/ml", ("пг/мл", "pg/ml")),
     ("ug/dl", ("мкг/дл", "ug/dl", "µg/dl")),
-    ("mg/dl", ("мг/дл", "mg/dl", "мг%")),
     ("u/l", ("ед/л", "од/л", "е/л", "u/l", "iu/l")),
+    # Hormones and vitamin D are printed in these and in nothing else, and neither half of this
+    # file knew them: a value whose form printed no unit column got no unit from anywhere.
+    ("nmol/l", ("нмоль/л", "nmol/l")),
+    ("pmol/l", ("пмоль/л", "pmol/l")),
 )
+
+# Units whose capital letter is the unit. "Г/л" is giga per litre — a count of cells, thousands of
+# millions of them — and "г/л" is grams per litre. One letter apart, and a thousand million times
+# apart. Everything else here is read with the case dropped, which is right for мг/дл and MG/DL;
+# for these two it put a platelet count of 180-320 Г/л on a scale of grams, beside the proteins.
+# Read before the folded table, and only where the form printed the capital itself.
+CASE_IS_THE_UNIT = (
+    ("10^9/l", ("Г/л", "Г/Л", "G/L", "G/l")),
+)
+
+
+def _stands_alone(spelling: str, text: str) -> bool:
+    """Whether this spelling is the unit here, rather than the tail of a longer one.
+
+    Looked for as a substring, "Г/Л" is inside "МГ/Л" and "МКГ/Л" and "MG/L", so a range printed
+    in milligrams or micrograms per litre was read as a count of cells — the very mistake the
+    capital was added to prevent, in the other direction and over more values.
+    """
+    return bool(re.search(rf"(?<![^\W\d_]){re.escape(spelling)}", text))
 
 
 # The printed name has to say the analyte too. The factor depends on a molar mass, so it hangs on
@@ -263,6 +329,9 @@ def unit_from_reference(reference: str | None) -> str | None:
     text = fold(reference or "")
     if not text or not re.search(r"\d", text):
         return None
+    for key, spellings in CASE_IS_THE_UNIT:
+        if any(_stands_alone(spelling, reference or "") for spelling in spellings):
+            return key
     found = [(len(spelling), key) for key, spellings in REFERENCE_UNITS
              for spelling in spellings if fold(spelling) in text]  # fmt: skip
     if found:
@@ -282,8 +351,8 @@ def unit_from_reference(reference: str | None) -> str | None:
 # of the values are printed at becomes the scale of the chart.
 #
 # What keeps this honest: nothing moves unless the printed bands themselves say this test is
-# printed at two scales. One value far outside its own band is an abnormal result, and an
-# abnormal result is never quietly divided by ten. Where a single band does not fit the others
+# printed at two scales. A value far outside the band printed beside it is one a person has to
+# see as the form printed it, and it is never quietly divided by ten. Where a single band does not fit the others
 # as a whole power of ten, the test has bands that are simply different, and nothing moves at
 # all. Nothing converted is stored: the value, its range and its unit stay as printed beside
 # the chart, and every moved point says what it was moved by.

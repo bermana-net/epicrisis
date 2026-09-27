@@ -11,9 +11,11 @@ A picture of a 404 that reports success is worse than no picture.
 """
 
 import argparse
+import hashlib
+import json
 import pathlib
 import sys
-from contextlib import closing
+from contextlib import closing, suppress
 
 REVIEW_STATE = ("open",)
 
@@ -116,6 +118,10 @@ CLEAN_CUT = """(wanted) => {
 }"""
 
 
+DEMO_MARKER = "this-archive-is-invented.json"
+TAKEN_FILE = "taken-from-the-demo.json"
+
+
 def take(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", type=pathlib.Path, default=pathlib.Path("/tmp/demo/data"))
@@ -126,12 +132,20 @@ def take(argv: list[str] | None = None) -> int:
 
     from playwright.sync_api import sync_playwright
 
+    # These pictures are published. A picture of a page is the whole page — a name at the top, an
+    # institution, a date, a table of results — and it is the one kind of leak no check on text can
+    # see. So this refuses to photograph an instance whose people are real, rather than trusting
+    # that whoever runs it remembered to point --data-dir at the demo.
+    if not (args.data_dir / DEMO_MARKER).exists():
+        print(f"{args.data_dir} is not a demo. These pictures are published, so they are only ever "
+              f"taken of invented people: epicrisis demo --into {args.data_dir.parent}", file=sys.stderr)  # fmt: skip
+        return 2
     found = find_documents(args.data_dir)
     if not found["sources"]:
         print(f"No archive in {args.data_dir}. Build one: epicrisis demo --into {args.data_dir.parent}", file=sys.stderr)
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
-    missed = []
+    missed, shot = [], []
 
     with sync_playwright() as play:
         browser = play.chromium.launch(**({"executable_path": args.chrome} if args.chrome else {}))
@@ -155,11 +169,45 @@ def take(argv: list[str] | None = None) -> int:
             page.wait_for_timeout(350)
             cut = height if "/pages/" in path else page.evaluate(CLEAN_CUT, height)
             page.screenshot(path=str(args.out / f"{name}.png"), clip={"x": 0, "y": 0, "width": 1340, "height": cut})
+            shot.append(f"{name}.png")
             print(f"{name}: {cut}px · {page.title()}")
         browser.close()
 
     for line in missed:
         print(f"not taken — {line}", file=sys.stderr)
+    # What this run took, and of whom. The guard before a push reads this and refuses any picture
+    # the repository publishes that is not in it, so a page photographed from a real instance by
+    # hand cannot travel with the rest.
+    #
+    # Only the files this run photographed. Written from whatever happened to be in the folder,
+    # the manifest blessed it: a page of somebody's own archive put there beforehand came out
+    # stamped as taken from the demo, by the very check that exists to catch it.
+    taken = {name: hashlib.sha256((args.out / name).read_bytes()).hexdigest() for name in sorted(shot)}
+    standing = {}
+    if (args.out / TAKEN_FILE).exists():
+        with suppress(ValueError, OSError):
+            standing = json.loads((args.out / TAKEN_FILE).read_text(encoding="utf-8"))
+    over = {name for name in args.out.glob("*.png")} - {args.out / name for name in taken}
+    if over:
+        print(f"{len(over)} png in {args.out} this run did not take; they are not in the manifest "
+              "and the guard before a push will refuse them.", file=sys.stderr)  # fmt: skip
+    # A picture taken again does not replace the one it displaces: the bytes of the older version
+    # stay in the history, in every clone of this repository, under the same name. The guard before
+    # a push checks every version it finds there, so the hash this run displaces is written down
+    # here as it happens — and whoever takes the screenshots again has nothing to remember.
+    earlier = {name: list(hashes) for name, hashes in standing.get("earlier", {}).items()}
+    for name, was in standing.get("pictures", {}).items():
+        if name in taken and taken[name] != was and was not in earlier.get(name, []):
+            earlier.setdefault(name, []).append(was)
+    (args.out / TAKEN_FILE).write_text(json.dumps({
+        # What is not a picture of a page — the mark, the icon — is declared once and kept
+        # across runs, because no run of this script ever takes it. The versions earlier runs left
+        # in the history are kept for the same reason: nothing else remembers them.
+        **{key: value for key, value in standing.items() if key.startswith(("not_of_a_page", "earlier"))},
+        "of": json.loads((args.data_dir / DEMO_MARKER).read_text(encoding="utf-8")),
+        "pictures": taken,
+        "earlier": earlier,
+    }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")  # fmt: skip
     return 1 if missed else 0
 
 

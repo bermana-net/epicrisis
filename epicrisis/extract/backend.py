@@ -13,7 +13,7 @@ from pathlib import Path
 from epicrisis.classify.backend import STRONG_MODEL, BackendError
 from epicrisis.classify.pages import Payload
 
-SYSTEM_PROMPT = """You transcribe one document from a person's own medical archive into structured fields. You receive its pages in order, numbered from 1. Copy what is printed. Never interpret, never comment on health or findings, never translate, never convert units, never normalise names, values or dates.
+WHAT_THE_VERSION_WAS_TAKEN_FROM = """You transcribe one document from a person's own medical archive into structured fields. You receive its pages in order, numbered from 1. Copy what is printed. Never interpret, never comment on health or findings, never translate, never convert units, never normalise names, values or dates.
 
 Rules:
 - Every field ending in _as_printed is copied exactly as printed: the same characters, decimal commas, abbreviations, spelling and language. Use null when the document does not print it.
@@ -30,6 +30,24 @@ Rules:
 - unreadable: everything you cannot read reliably, with the page, what it is and why. Leave it out of the other fields rather than guess.
 - Do not assess trends, do not choose age norms, do not summarise the person's condition."""
 
+# A second reading of the printed range, by the one reader that has the page in front of it.
+#
+# Everything after the reading is done without a model, and the printed range is read by a parser
+# in reference.py: a hand-written thing that has to know a decimal comma from a thousands
+# separator, a unit carrying a power, a word of direction in five languages, a label before the
+# range and a titer that only looks like one. It is wrong sometimes, and when it is wrong there is
+# nothing to disagree with it, so the band is simply missing or simply wrong and no page says so.
+#
+# This asks for the same characters as two numbers, which is what value_numeric and comparator
+# already are: transcription, not interpretation. Nothing about the person, no judgement of the
+# value, no norm chosen — the range the form printed, written as numbers. What it buys is a second
+# opinion: where the two readings disagree, that is a finding a person can look at, instead of
+# silence. Which of the two draws the band is not decided here and is not decided by this: see the
+# rule range_read_two_ways, which only reports the disagreement.
+THE_RANGE_AS_NUMBERS = """- reference_low and reference_high: the reference range printed beside this value, as two numbers, in the unit it is printed in. Copy the numbers, do not convert them. "3,5 - 5,5" is 3.5 and 5.5. "< 5,0" is null and 5.0; "> 60" is 60 and null. Both null where the form prints no range beside this value, or prints something that is not one range for this person: a table of ranges by age or sex, a ratio such as 1:80, a share of another measurement, or words. Never choose a range yourself, never pick the line of a table that seems to fit, and never take a range printed for another row."""
+
+SYSTEM_PROMPT = WHAT_THE_VERSION_WAS_TAKEN_FROM + "\n" + THE_RANGE_AS_NUMBERS
+
 NULLABLE_STRING = {"type": ["string", "null"]}
 PAGE = {"type": "integer", "minimum": 1}
 
@@ -38,7 +56,10 @@ def _object(properties: dict) -> dict:
     return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
 
 
-OBSERVATION = _object(
+def _observation(read_twice: bool) -> dict:
+    """The fields of one printed value. Without the second reading of the range, this is the shape
+    the prompt version was taken from, and it must stay that shape: see PROMPT_VERSION below."""
+    return _object(
     {
         "name_as_printed": {"type": "string"},
         "value_as_printed": {"type": "string"},
@@ -55,10 +76,17 @@ OBSERVATION = _object(
         "method_as_printed": NULLABLE_STRING,
         "page": PAGE,
         "snippet": {"type": "string"},
+        **({"reference_low": {"type": ["number", "null"]},
+            "reference_high": {"type": ["number", "null"]}} if read_twice else {}),  # fmt: skip
     }
 )
 
-DOCUMENT_SCHEMA = _object(
+
+OBSERVATION = _observation(read_twice=True)
+
+
+def _document(read_twice: bool) -> dict:
+    return _object(
     {
         "title_as_printed": NULLABLE_STRING,
         "date_of_study_as_printed": NULLABLE_STRING,
@@ -66,7 +94,7 @@ DOCUMENT_SCHEMA = _object(
         "provider_as_printed": NULLABLE_STRING,
         "department_as_printed": NULLABLE_STRING,
         "language": {"type": "string", "pattern": "^[a-z]{2}$"},
-        "observations": {"type": "array", "items": OBSERVATION},
+        "observations": {"type": "array", "items": _observation(read_twice)},
         "sections": {
             "type": "array",
             "items": _object({"heading_as_printed": NULLABLE_STRING, "text": {"type": "string"}, "page": PAGE}),
@@ -81,6 +109,9 @@ DOCUMENT_SCHEMA = _object(
     }
 )
 
+
+DOCUMENT_SCHEMA = _document(read_twice=True)
+
 REQUEST_HEAD = "Transcribe this document. It has {count} pages. Read every page before answering."
 IMAGE_LINE = "Page {number}: the image file {name} in the current directory."
 TEXT_LINE = "Page {number}: the text between the markers.\n<<<PAGE {number}\n{text}\nPAGE {number}>>>"
@@ -93,8 +124,16 @@ CLOSE_UP_LINE = (
     "and transcribe every part once."
 )
 
+# What decides whether a document already read has to be read again: the model, and this. So a
+# change to the prompt that asks for something *beside* what was already transcribed is left out of
+# it, for the same reason the close-up line above is. A document read without the range as numbers
+# is not wrongly read; marking four hundred of them out of date would send the whole archive through
+# a model again — hours and money — and whether to spend that is the owner's decision, not the side
+# effect of a field being added. Until they choose it, the two numbers are null on everything read
+# before, and the rule that compares the two readings says nothing where one of them is missing.
 PROMPT_VERSION = hashlib.sha256(
-    "\n".join([SYSTEM_PROMPT, json.dumps(DOCUMENT_SCHEMA, sort_keys=True), REQUEST_HEAD, IMAGE_LINE, TEXT_LINE]).encode()
+    "\n".join([WHAT_THE_VERSION_WAS_TAKEN_FROM, json.dumps(_document(read_twice=False), sort_keys=True),
+                REQUEST_HEAD, IMAGE_LINE, TEXT_LINE]).encode()  # fmt: skip
 ).hexdigest()[:12]
 
 LIST_FIELDS = ("observations", "sections", "page_texts", "medications_as_printed", "diagnoses_as_printed", "unreadable")

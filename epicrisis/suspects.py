@@ -9,12 +9,15 @@ The suspicion is about the transcription. Whether a value is high or low, and wh
 is never asked and never stored.
 """
 
+import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from statistics import median
 
+from epicrisis.printed_values import fold
 from epicrisis.rules.subjects import Archive, Found
+from epicrisis.units import unit_key
 from epicrisis.values import only_results
 
 # How much each signal says, how many readings it takes before a test has habits, and how far a
@@ -166,15 +169,78 @@ def lab_form_without_a_title(archive, settings: dict) -> list[Found]:
     ]
 
 
-def find(rows: list[dict], documents: list[dict], found_by) -> list[Suspect]:
+def unit_alone_in_a_series(archive, settings: dict) -> list[Found]:
+    """One unit standing alone in a test whose other forms all print another.
+
+    Knows nothing about the names of tests, so it does not go stale on the next form: it asks
+    only whether this line's unit is the one nobody else on this test uses.
+    """
+    # By the unit's key and not its spelling: «ммоль/л» and "mmol/L" are one unit written in two
+    # alphabets, and counting them apart would mark every Ukrainian form in a Greek archive.
+    counted: dict[tuple, Counter] = defaultdict(Counter)
+    printed: dict[tuple, str] = {}
+    for row in archive.rows:
+        key = unit_key(row["unit"])
+        counted[(row["indicator_id"] or "", (row.get("material") or "").strip())][key] += 1
+        printed.setdefault(key, (row["unit"] or "").strip())
+    found = []
+    for row in archive.rows:
+        units = counted[(row["indicator_id"] or "", (row.get("material") or "").strip())]
+        key = unit_key(row["unit"])
+        # Only against units somebody actually printed. A test whose other forms printed no unit
+        # at all says nothing about this one: that is a form with no unit column, not a stray.
+        others = sum(count for other, count in units.items() if other and other != key)
+        usual = max((other for other in units if other and other != key), key=lambda other: units[other], default="")
+        if row["indicator_id"] and key and units[key] <= settings["alone_at_most"] and others >= settings["others_at_least"]:
+            found.append(Found(row["file_sha256"], row["first_page"], row.get("date"),
+                               f'{row["name"]}: {row["value"]} in {(row["unit"] or "").strip()}, where the others print {printed.get(usual, usual)}'))  # fmt: skip
+    return found
+
+
+def _spellings_at_least(spellings: dict[str, str], shortest: int):
+    """One expression over every spelling long enough to mean something. Compiled once.
+
+    Compiled once and not once per value: a regular expression per spelling per row is a
+    thousand times the work and turns a check that should take a second into a minute.
+    """
+    wanted = sorted((spelling for spelling in spellings if len(spelling) >= shortest), key=len, reverse=True)
+    if not wanted:
+        return None
+    return re.compile(r"(?<![^\W_])(" + "|".join(re.escape(spelling) for spelling in wanted) + r")(?![^\W_])")
+
+
+def value_names_another_test(archive, settings: dict) -> list[Found]:
+    """The text of a value names a different test than the row it stands in.
+
+    A table of targets prints one test's name in the row and another's inside the cell, and the
+    grouping into indicators only ever reads the row. Matched on whole words and never on short
+    ones: an indicator whose spelling is an ordinary word matches everything otherwise.
+    """
+    spellings = archive.spellings or {}
+    named = _spellings_at_least(spellings, settings["shortest_spelling"])
+    if named is None:
+        return []
+    found = []
+    for row in archive.rows:
+        text = fold(row.get("value") or "")
+        if not row["indicator_id"] or not text:
+            continue
+        others = {spellings[match] for match in named.findall(text)} - {row["indicator_id"]}
+        if others:
+            found.append(Found(row["file_sha256"], row["first_page"], row.get("date"),
+                               f'{row["name"]}: the value text names another test'))  # fmt: skip
+    return found
+
+
+def find(rows: list[dict], documents: list[dict], spellings: dict, found_by) -> list[Suspect]:
     """Rows are values with their indicator, unit, number and document; documents carry the header.
 
     The rules are handed in, already chosen, the way the charts are handed theirs: this module
     gathers what they find into one document at a time and weighs it. Which rules exist, and
     which of them this archive runs, is not its business.
     """
-    archive = Archive(rows=rows, documents=documents,
-                      habits=unit_habits(rows), numbers=numbers_by_indicator(rows))  # fmt: skip
+    archive = Archive(rows=rows, documents=documents, habits=unit_habits(rows),
+                      numbers=numbers_by_indicator(rows), spellings=spellings)  # fmt: skip
     suspects: dict[tuple, Suspect] = {}
     weights: dict[str, int] = {}
     for rule in found_by:
@@ -188,7 +254,16 @@ def find(rows: list[dict], documents: list[dict], found_by) -> list[Suspect]:
     return sorted(suspects.values(), key=lambda item: (-item.weight, item.file_id))
 
 
-def rows_from_index(connection) -> tuple[list[dict], list[dict]]:
+def spellings_from_index(connection) -> dict[str, str]:
+    """Every approved spelling of every test, folded, and the indicator it belongs to."""
+    found: dict[str, str] = {}
+    for row in connection.execute("SELECT id, names FROM indicators WHERE status = 'approved'"):
+        for name in json.loads(row[1] or "[]"):
+            found[fold(name)] = row[0]
+    return found
+
+
+def rows_from_index(connection) -> tuple[list[dict], list[dict], dict[str, str]]:
     values = [
         dict(row)
         for row in connection.execute(
@@ -203,4 +278,4 @@ def rows_from_index(connection) -> tuple[list[dict], list[dict]]:
             "SELECT file_sha256, first_page, date, doc_type, title, provider, transcribed FROM documents"
         )
     ]
-    return values, documents
+    return values, documents, spellings_from_index(connection)

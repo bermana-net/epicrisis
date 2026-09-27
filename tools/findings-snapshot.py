@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from epicrisis import rules  # noqa: E402
 from epicrisis import suspects  # noqa: E402
 from epicrisis.rules import kinds  # noqa: E402
-from epicrisis.index.build import index_path  # noqa: E402
+from epicrisis.index.build import build_index, index_path  # noqa: E402
 from epicrisis.sources import SourceRegistry, source_output_dir  # noqa: E402
 from epicrisis.validate import validate_source  # noqa: E402
 
@@ -57,10 +57,10 @@ def suspect_lines(data_dir: Path, source) -> list[str]:
     lines = []
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
-        rows, documents = suspects.rows_from_index(connection)
+        rows, documents, spellings = suspects.rows_from_index(connection)
         # Every rule that could find one of these, whatever this instance has turned on: the
         # ruler measures the checks, not the switches.
-        for found in suspects.find(rows, documents, rules.load(data_dir).at(kinds.SUSPECTS)):
+        for found in suspects.find(rows, documents, spellings, rules.load(data_dir).at(kinds.SUSPECTS)):
             where = f"{found.file_id[:16]} p{found.first_page}"
             for code, times in sorted(found.codes.items()):
                 lines.append(f"suspects {source.id} {where} {code} {times}")
@@ -76,7 +76,15 @@ def main() -> None:
 
     lines: list[str] = []
     for source in SourceRegistry(data_dir).list():
+        # In the order the program itself runs them: the checks write validation.json, the index is
+        # built from that and from the transcriptions, and the search for rows that look misread is
+        # read out of the index. Half of this snapshot came from an index somebody had built at some
+        # earlier time — twice it was one from before the very change being measured, and the
+        # snapshot then said "identical to the byte" about a comparison of two old readings. The
+        # numbers happened to be right both times, and the sentence was stronger than the
+        # measurement, which is the failure this file exists to prevent in the code it measures.
         lines += validation_lines(data_dir, source)
+        build_index(data_dir, [source])
         lines += suspect_lines(data_dir, source)
     # Sorted, because neither the order documents are read in nor the order a Counter hands its
     # keys back is part of what the checks decide, and a diff should not say it is.

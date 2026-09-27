@@ -9,7 +9,7 @@ How it works here. `unlock` takes a code and gives back a pass, good for as long
 says (four hours to begin with). Every other
 tool wants that pass and refuses without it. The pass is a random string that lives in the
 conversation; a stranger who knows the path and sits inside the right network still does not have
-it. `lock` throws a pass away early — worth doing when a conversation ends, because the pass
+it. `lock_archive` throws a pass away early — worth doing when a conversation ends, because the pass
 stays written in it.
 
 Why a pass and not "the server is open": requests here carry no session, so an open server would
@@ -25,6 +25,7 @@ once into the authenticator, and never passed through a conversation.
 import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import struct
@@ -32,10 +33,24 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from epicrisis.runs import belongs_to_the_folder
+
 SECRET_FILE = Path("/etc/epicrisis/mcp-totp")
 STEP_SECONDS = 30
 DIGITS = 6
 DRIFT_STEPS = 1  # one step either way: a phone's clock is never exactly a server's
+# How far out a refused code is looked for, to tell a person their clock has drifted rather than
+# that their code is wrong. Nothing within this window is accepted — only recognised, and named.
+#
+# Two hours and not twelve. Recognising a code is answering a question nobody asked — "are these
+# six digits a real code of this secret?" — and a blind guess gets a yes once in every 10^6 divided
+# by the number of moments looked at. Twelve hours is 2881 moments and a yes about three times in a
+# thousand; two hours is 481 and once in two thousand. Nothing is opened either way, and the
+# guesser learns only that this server's clock is not theirs. What is bought by the smaller window
+# is that they learn it less often; what is given up is naming the drift of a machine that has
+# stood switched off for half a day — and for that, `epicrisis mcp-lock status` prints this
+# server's own time, which is the honest way to find out.
+HOURS_OF_DRIFT_LOOKED_FOR = 2
 PASS_MINUTES = 240  # four hours: enough for an evening, gone by morning
 SCOPES = ("conversation", "server")
 WRONG_CODES = 5  # attempts before the lock starts making whoever is guessing wait
@@ -46,6 +61,7 @@ WRONG_CODES = 5  # attempts before the lock starts making whoever is guessing wa
 # server with `epicrisis mcp-lock clear`.
 WAITS_MINUTES = (1, 5, 15)
 SECRET_BYTES = 20  # the size RFC 4226 recommends for the shared secret
+WRONG_CODES_FILE = "mcp-lock-wrong-codes.json"  # the run of wrong codes, kept across a restart
 
 
 class Locked(Exception):
@@ -86,11 +102,28 @@ def read_secret(path: Path | None = None) -> str | None:
 
 
 def write_secret(secret: str, path: Path | None = None) -> Path:
-    """Write the secret where only root and the group running the server can read it."""
+    """Write the secret where only root and the group running the server can read it.
+
+    Created with that mode rather than corrected to it afterwards. Written and then chmod-ed, the
+    file stands at 0644 for an instant in a directory anyone may enter, and this is the one secret
+    where a single silent read is permanent: codes made from it look exactly like the owner's, for
+    ever, and nothing would ever show that somebody else has them.
+    """
     file = Path(path or SECRET_FILE)
     file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text(secret + "\n", encoding="utf-8")
-    os.chmod(file, 0o640)
+    file.unlink(missing_ok=True)  # O_EXCL below: a new secret replaces the old one deliberately
+    # Created shut, widened to the group while it is still empty, and only then written. The mode
+    # given to os.open is cut down by the umask — and the command that writes this sets the umask
+    # to 0o077 on purpose — so the group the server runs as would lose the file it has to read.
+    # fchmod is not cut down by anything, and at the moment it runs there is no secret in the file.
+    opened = os.open(file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.fchmod(opened, 0o640)
+    except BaseException:
+        os.close(opened)
+        raise
+    with os.fdopen(opened, "w", encoding="utf-8") as writing:
+        writing.write(secret + "\n")
     return file
 
 
@@ -107,6 +140,63 @@ class Lock:
     passes: dict[str, tuple[float, str]] = field(default_factory=dict)
     used: set[tuple[str, int]] = field(default_factory=set)  # a code counts once
     wrong: list[float] = field(default_factory=list)
+    # Where the run of wrong codes is kept, so that it survives the server being restarted. Held
+    # only in memory, the wait was undone by a restart — and the way the owner was told to end a
+    # wait that somebody else had put them into was to restart the server, which is to say: the
+    # documented way out for the owner was also the way out for whoever was guessing.
+    remembers: Path | None = None
+    # Whether that file is still being kept up to date. A file that can be read and not written
+    # empties the wait altogether, because every attempt is read back from a file that never grew.
+    writes: bool = True
+
+    def _recall_wrong(self, now: float) -> None:
+        """The run of wrong codes as the file has it. The file is the truth, not this process.
+
+        It used to be the union of the file and what this process remembered, which made the
+        owner's way out impossible: `mcp-lock clear` takes the file away, and the union put the
+        wait straight back from memory. A running server has to be able to forget.
+
+        And only times that could be a wrong code are read. Anything outside the window the wait
+        can last is a broken file or a clock that moved — a timestamp in the future made the wait
+        last as long as the jump, and the message politely offered to try again in ten years. A
+        server whose clock is corrected, a snapshot restored, a machine migrated: all ordinary.
+        """
+        if self.remembers is None or not self.writes:
+            return  # the file is not being kept up to date, so this process's own count is the truth
+        try:
+            kept = json.loads(self.remembers.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            self.wrong = []
+            return
+        except (OSError, ValueError, TypeError):
+            return
+        earliest = now - WAITS_MINUTES[-1] * 60
+        try:
+            self.wrong = sorted(when for when in map(float, kept) if earliest <= when <= now)[-len(WAITS_MINUTES) * WRONG_CODES:]
+        except (TypeError, ValueError):
+            self.wrong = []
+
+    def _keep_wrong(self) -> None:
+        """Write down the run of wrong codes, and stop trusting the file if it cannot be written.
+
+        The file is the truth and this process reads it back on every attempt — which is right,
+        and which means that a file that can be read and not written empties the wait entirely:
+        each wrong code is written nowhere and then read back as nothing, so the count never
+        reaches five and the delay never comes. A disk with no room left, a data directory mounted
+        read-only, a copy restored with somebody else's ownership — and the lock quietly stops
+        slowing anybody down, while every page goes on saying it does.
+
+        So a write that fails is remembered. From then on this process keeps its own count, which
+        is weaker than a file across restarts and far better than nothing at all.
+        """
+        if self.remembers is None or not self.writes:
+            return
+        try:
+            self.remembers.parent.mkdir(parents=True, exist_ok=True)
+            self.remembers.write_text(json.dumps(self.wrong), encoding="utf-8")
+            belongs_to_the_folder(self.remembers)
+        except OSError:
+            self.writes = False
 
     def unlock(self, code: str, now: float | None = None, minutes: int | None = None,
                scope: str = "conversation", archive: str = "") -> dict:  # fmt: skip
@@ -123,6 +213,7 @@ class Lock:
             self.secret = read_secret()
         if not self.secret:
             raise Locked("This archive has no lock set up; a code cannot be checked.")
+        self._recall_wrong(now)
         self._forget_old(now)
         waiting = self._wait_over(now)
         if waiting > 0:
@@ -138,6 +229,7 @@ class Lock:
             if hmac.compare_digest(code_at(self.secret, at), digits) and (digits, step + drift) not in self.used:
                 self.used.add((digits, step + drift))
                 self.wrong = []  # a code that fits ends the run of wrong ones
+                self._keep_wrong()
                 ticket = secrets.token_urlsafe(18)
                 until = now + minutes * 60
                 self.passes[ticket] = (until, archive)
@@ -147,8 +239,42 @@ class Lock:
                     self.open_until = max(self.open_until, until)
                     self.opened_for = archive
                 return {"pass": ticket, "open_for_minutes": minutes, "until": _clock(until)}
+        # A code that is right for this secret and wrong only for this clock is not a guess, so it
+        # does not spend one of the owner's five tries. Counted, the five honest attempts of
+        # somebody whose server has drifted ran out, and the sixth answered "Too many wrong codes"
+        # with no word about the clock — which is precisely the state the message was written to
+        # get them out of. Nothing is opened by this: the code is refused either way, and a code
+        # that fits no moment in the window counts as before.
+        drifted = self._drift_of_the_clock(digits, step)
+        if drifted:
+            raise Locked(
+                f"That code is a right code, but about {drifted} out of step with this server's "
+                "clock, so it cannot be accepted. The clock of this machine is what needs putting "
+                "right — check its time, and its time service."
+            )
+        # A wrong code, and only now is it counted as one: the message about the clock above is
+        # written for somebody whose code is real, and a real code refused by this server is the
+        # server's fault, not a guess at the door.
         self.wrong.append(now)
+        self._keep_wrong()
         raise Locked("That code does not fit, or it has already been used once.")
+
+    def _drift_of_the_clock(self, digits: str, step: int) -> str:
+        """How far off this server's clock is, where a refused code says it is off rather than wrong.
+
+        Looked for well beyond the step either way, because the point is to recognise a real code
+        from a real authenticator rather than to accept it. Nothing is opened by this, no attempt is
+        spent differently, and a guessed code matches nothing here any more than it did before.
+        """
+        for drift in range(-HOURS_OF_DRIFT_LOOKED_FOR * 120, HOURS_OF_DRIFT_LOOKED_FOR * 120 + 1):
+            if abs(drift) <= DRIFT_STEPS:
+                continue  # already tried, and accepted if it fitted
+            if hmac.compare_digest(code_at(self.secret, (step + drift) * STEP_SECONDS), digits):
+                seconds = abs(drift) * STEP_SECONDS
+                if seconds < 90 * 60:
+                    return f"{round(seconds / 60)} minutes"
+                return f"{round(seconds / 3600, 1)} hours"
+        return ""
 
     def lock(self, ticket: str | None = None, everywhere: bool = False) -> dict:
         """Throw a pass away now, or every pass at once."""
@@ -210,14 +336,19 @@ class Lock:
         return max(0.0, self.wrong[-1] + minutes * 60 - now)
 
     def clear(self) -> None:
-        """Forget the guessing. For the owner, from the server, when a stranger made them wait."""
+        """Forget the guessing. For the owner, from the server, when a stranger made them wait.
+
+        Written through as well as forgotten, or the next code reads the wait back off the file.
+        """
         self.wrong = []
+        self._keep_wrong()
 
     def _forget_old(self, now: float) -> None:
         self.passes = {ticket: given for ticket, given in self.passes.items() if given[0] > now}
         self.open_until = self.open_until if self.open_until > now else 0.0
         if self.wrong and self._wait_over(now) <= 0 and now - self.wrong[-1] > WAITS_MINUTES[-1] * 60:
             self.wrong = []
+            self._keep_wrong()  # or the file outlives the run it recorded, for ever
         step = int(now // STEP_SECONDS)
         self.used = {(code, at) for code, at in self.used if at >= step - DRIFT_STEPS - 1}
 

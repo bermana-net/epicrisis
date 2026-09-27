@@ -26,9 +26,21 @@
 
   header.top { border-bottom: 4px solid var(--ink); position: sticky; top: 0; background: var(--paper); z-index: 20; }
   header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; padding-bottom: 12px; }
+  .brand-block { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
+  .brand-words { min-width: 0; }
+  .brand-mark { flex: 0 0 auto; display: block; width: 34px; height: 34px; line-height: 0; }
+  .brand-mark svg { display: block; width: 100%; height: 100%; }
   .brand { font-weight: 700; letter-spacing: .02em; }
   .brand small { display: block; font: 11px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
   header.top nav { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* On a phone the two of them do not fit side by side, and side by side is what they were told to
+     be: the name was squeezed to a box narrower than itself and its letters ran out over the menu.
+     A name and a menu that will not share a line take one each. */
+  @media (max-width: 760px) {
+    header.top .wrap { flex-wrap: wrap; gap: 10px; }
+    .brand-block { flex: 1 0 100%; }
+    header.top nav { flex: 1 0 100%; }
+  }
   header.top nav a { text-decoration: none; color: var(--ink); border: 1px solid var(--ink);
     padding: 5px 12px; font: 12px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
   header.top nav a:hover { background: var(--ink); color: var(--paper); }
@@ -161,7 +173,25 @@
 
 <header class="top">
   <div class="wrap">
-    <span class="brand">Epicrisis Companion<small>Not a medical device</small></span>
+    <span class="brand-block">
+      <!-- The same mark as the program's own panel and favicon.svg: a black square, an E of
+           rectangles, one red square in the corner. Drawn here rather than fetched, so it is
+           right on a machine with none of this page's fonts and costs no request. Hidden from a
+           screen reader: the name beside it says the same thing. -->
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64">
+          <rect width="64" height="64" fill="#0e0e0e"/>
+          <g fill="#f3f2ee">
+            <rect x="13" y="12" width="10" height="40"/>
+            <rect x="13" y="12" width="30" height="9"/>
+            <rect x="13" y="27" width="25" height="9"/>
+            <rect x="13" y="43" width="30" height="9"/>
+          </g>
+          <rect x="46" y="42" width="10" height="10" fill="#d9502a"/>
+        </svg>
+      </span>
+      <span class="brand">Epicrisis Companion<small>Not a medical device</small></span>
+    </span>
     <nav>
       <a href="#pictures">Pictures</a>
       <a href="#why">Why not a chatbot</a>
@@ -224,9 +254,11 @@
     <figure>
       <img src="images/04-hba1c.png?v=3" alt="Fifteen years of HbA1c">
       <figcaption><b>A father's diabetes, in one line.</b> The shaded band is the reference range
-        <i>printed on each form</i>, held until another form printed a different one. It steps
-        because laboratories differ — not because anything was calculated. The rows below are
-        Russian where his clinic was Russian, and English after he moved.</figcaption>
+        <i>printed on the form beside that value</i>, drawn around the value it belongs to. Where a
+        form printed no range there is no band, because the range on the form before it says nothing
+        about a value printed without one. It steps because laboratories differ — not because
+        anything was calculated. The rows below are Russian where his clinic was Russian, and
+        English after he moved.</figcaption>
     </figure>
   </div>
 </section>
@@ -319,7 +351,7 @@
       <tr><td><b>Provenance</b></td><td>A number in a chat</td><td>Every value carries its file, page and date, and links to the scan</td></tr>
       <tr><td><b>Your corrections</b></td><td>Die with the conversation</td><td>Stored apart from the model's output, keyed to the printed line, reapplied after every re-read</td></tr>
       <tr><td><b>Catching mistakes</b></td><td>You have to notice</td><td>Deterministic checks find them; a second, different model reads again and disagreements are shown</td></tr>
-      <tr><td><b>Units and specimens</b></td><td>Quietly converted, quietly merged</td><td>Never converted; split by unit and by specimen</td></tr>
+      <tr><td><b>Units and specimens</b></td><td>Quietly converted, quietly merged</td><td>Never converted silently; split by unit and by specimen, and where one test printed at two scales is drawn as one history, every moved point says so</td></tr>
       <tr><td><b>Vocabulary</b></td><td>Regrouped differently every time</td><td>One vocabulary, approved once, in five languages</td></tr>
       <tr><td><b>Several people</b></td><td>One pile</td><td>One archive per person, one index file each, by construction</td></tr>
       <tr><td><b>With no model at all</b></td><td>Nothing works</td><td>Search, charts, index, checks and the whole dashboard</td></tr>
@@ -332,18 +364,18 @@
 
 <section id="tested">
   <div class="wrap">
-    <h2>Tested on</h2>
-    <p class="sub">Two real archives on one machine, kept by the people whose archives they are.
-      Whose they are is nobody's business, and nothing from them appears here: every picture on
-      this page comes from <code>epicrisis demo</code>, which invents its own people.</p>
+    <h2>What it has been run on</h2>
+    <p class="sub">Real medical records of real people, and whose they are is nobody's business.
+      Nothing from them appears here: every picture on this page comes from
+      <code>epicrisis demo</code>, which invents its own people.</p>
     <div class="facts">
-      <div><div class="n">479</div><div class="k">documents</div></div>
+      <div><div class="n">479</div><div class="k">documents read</div></div>
       <div><div class="n">5 355</div><div class="k">values, as printed</div></div>
       <div><div class="n">1989–2026</div><div class="k">years covered</div></div>
       <div><div class="n">5</div><div class="k">languages</div></div>
       <div><div class="n">200+</div><div class="k">institutions on the forms</div></div>
       <div><div class="n">492</div><div class="k">approved test groups</div></div>
-      <div><div class="n">292</div><div class="k">tests, no network, no model</div></div>
+      <div><div class="n">761</div><div class="k">tests, no network, no model</div></div>
     </div>
   </div>
 </section>
@@ -358,7 +390,8 @@
         <ul class="plain">
           <li><b>Self-hosted.</b> Your computer or your own server. No account, no service, no telemetry.</li>
           <li><b>The dashboard listens on <code>127.0.0.1</code> only.</b> From anywhere else, through an SSH tunnel.</li>
-          <li><b>Your scans are read-only.</b> Nothing is copied, moved or renamed. Everything derived lives under <code>data/</code> and can be deleted and rebuilt from scratch.</li>
+          <li><b>Your scans are read-only.</b> Nothing is copied, moved or renamed. Everything the program derives lives under <code>data/</code>. Most of it is made again by code alone: the index and the checks in seconds, the walk of the folder in minutes. The readings &mdash; what each page is and what was printed on it &mdash; only by paying a model to read the documents again, and it will read them a little differently.</li>
+          <li><b>Five things under <code>data/</code> are your own work, and nothing rebuilds them:</b> your corrections, your verdicts on findings, the indicators you approved, the earlier readings kept when a later one displaced them, and your conversations. <code>epicrisis backup &lt;folder&gt;</code> copies exactly those, and nothing else, in one place. Do not delete <code>data/</code> without them.</li>
           <li><b>Each person is a separate database.</b> A folder is one owner's; two owners' folders may not contain one another; ids are random, because folder names carry surnames.</li>
         </ul>
       </div>
@@ -376,7 +409,7 @@
           <li><b>Read-only tools only.</b> Nothing writes, nothing runs, nothing reads a file outside the index.</li>
           <li><b>An unguessable secret path.</b> Without it the server answers as though nothing were there.</li>
           <li><b>A private tunnel</b> (Tailscale Funnel) that admits only the connector's own network.</li>
-          <li><b>A six-digit code from your authenticator (RFC 6238).</b> <code>unlock</code> returns a pass good for four hours; every tool refuses without it; <code>lock</code> ends it early. The secret behind that code is generated on your server, read once into your phone, and never travels through a conversation.</li>
+          <li><b>A six-digit code from your authenticator (RFC 6238).</b> <code>unlock</code> returns a pass good for four hours; every tool refuses without it; <code>lock_archive</code> ends it early. The secret behind that code is generated on your server, read once into your phone, and never travels through a conversation.</li>
           <li><b>An access log</b> of time, address, tool name and whether the call was let through — never the secret, never the question, never the answer. A log of a medical archive that holds the questions is a second copy of the archive.</li>
         </ul>
       </div>
@@ -394,13 +427,15 @@
 
 <section id="licence">
   <div class="wrap">
-    <h2>Two ways to use it</h2>
-    <p class="sub">Which of the two you are is written into the licence itself, not promised on a
-      page that can be edited later.</p>
+    <h2>How you may use it</h2>
+    <p class="sub">Two licences &mdash; free for a person and their family, commercial for an
+      organisation &mdash; and which one you fall under is written into the licence itself, not
+      promised on a page that can be edited later.</p>
 
     <div class="tabs" role="tablist">
       <button class="tab on" role="tab" id="tab-mine" aria-controls="panel-mine" aria-selected="true">Private use</button>
-      <button class="tab" role="tab" id="tab-org" aria-controls="panel-org" aria-selected="false">Organisations</button>
+      <button class="tab" role="tab" id="tab-org" aria-controls="panel-org" aria-selected="false">Insurance companies</button>
+      <button class="tab" role="tab" id="tab-clinic" aria-controls="panel-clinic" aria-selected="false">Clinics and hospitals</button>
     </div>
 
     <div class="panel" id="panel-mine" role="tabpanel" aria-labelledby="tab-mine">
@@ -420,14 +455,14 @@
 
     </div>
 
-    <div class="panel" id="panel-org" role="tabpanel" aria-labelledby="tab-org" hidden>
-      <div class="who">For organisations</div>
+    <div class="panel" id="panel-org" role="tabpanel" aria-labelledby="tab-org">
+      <div class="who">For insurers &mdash; underwriting, claims, risk</div>
       <h3>A commercial licence</h3>
       <div class="org-cols">
         <div>
-          <p>A clinic, a hospital, a laboratory, an insurer, an employer, a research institution —
-            and anyone offering this program, or what it does, to other people as a product or a
-            service — needs a commercial licence. It carries:</p>
+          <p>An insurer, a reinsurer, an assistance company &mdash; and any other organisation running
+            this program, or offering what it does to other people as a product or a service &mdash;
+            needs a commercial licence. It carries:</p>
           <ul>
             <li>the right to run it in production, for your own people and your own clients;</li>
             <li>a data processing agreement under Article 28 GDPR, and answers to a security review;</li>
@@ -436,17 +471,75 @@
               that is the honest position for something given away.</li>
           </ul>
           <p>The first teams this is built for are <b>medical underwriting and claims</b>: a full
-            case history before the decision instead of a stack of PDFs, when a value first left the
-            range printed on its own form, and the scan behind every number. Self-hosted, inside
-            your own perimeter. It extracts and cites; it does not score, price or decide.</p>
+            case history before the decision instead of a stack of PDFs, and the scan behind every
+            number. Self-hosted, inside your own perimeter. It extracts and cites; it does not
+            score, price or decide.</p>
+          <p><b>Three modes, and the strictest is the default.</b> <i>As printed</i>: the archive is
+            shown as the forms wrote it and the application compares nothing. <i>May also read the
+            values</i>: a model may say what a value means and how it moved, and the application
+            still computes nothing. <i>No limits set here</i>: the model answers under no rule of
+            ours, and this is the one mode in which the application itself compares a number with
+            the range printed beside it on its own form and counts what fell outside — so this is
+            where a question such as <i>when a value first left its printed range</i> is answered.
+            The mode is chosen on the Settings page of your own instance, by you, and nothing here
+            changes who is responsible for a decision.</p>
           <p><b>Write to <a href="mailto:artem.berman@gmail.com">artem.berman@gmail.com</a></b> and
             say what your organisation does and how many people would use it.</p>
         </div>
         <div class="sheet-card">
           <a href="epicrisis-for-underwriting.pdf" target="_blank" rel="noopener">
-            <img src="images/one-pager.png?v=1" alt="One page: Epicrisis for underwriting and claims teams"></a>
+            <img src="images/one-pager.png?v=2" alt="One page: Epicrisis for underwriting and claims teams"></a>
           <div class="grab">
             <a href="epicrisis-for-underwriting.pdf" download>Download the PDF &mdash; one page, A4</a>
+          </div>
+        </div>
+      </div>
+      <p class="fine under"><a href="https://github.com/bermana-net/epicrisis/blob/main/LICENSE">Business
+        Source License 1.1</a> &middot; running it in production by or for an organisation is not
+        covered by the free grant and needs a <a href="https://github.com/bermana-net/epicrisis/blob/main/COMMERCIAL.md">commercial
+        licence</a> &middot; reading the code, changing it and evaluating it are free for everyone
+        &middot; every version becomes Apache 2.0 four years after it is published</p>
+    </div>
+    <div class="panel" id="panel-clinic" role="tabpanel" aria-labelledby="tab-clinic">
+      <div class="who">For clinics and hospitals</div>
+      <h3>A commercial licence</h3>
+      <div class="org-cols">
+        <div>
+          <p>A clinic, a hospital, a laboratory, a practice &mdash; any organisation running this
+            program for its own clinicians and its own patients &mdash; needs a commercial licence. It
+            carries the same things: the right to run it in production, a data processing agreement
+            under Article 28 GDPR and answers to a security review, releases, a named person to write
+            to, and terms of liability an organisation can sign.</p>
+          <p>What it is for here is <b>the paper a patient brings from somewhere else</b>: other
+            clinics' discharge letters, other laboratories' forms, often in several languages and
+            spanning decades. It becomes one archive your clinician can read before the visit ends —
+            one timeline per test across laboratories, the range printed on each form kept as that
+            form printed it, and every value one click from the scan it came from. It reads and
+            cites; it does not diagnose, triage or decide, and the page, not the program, is the
+            authority. It holds what the patient brought and what could be read from it: a test
+            missing from this archive is not a test that was never taken, and the program says as
+            much wherever it answers with nothing.</p>
+          <p><b>Three modes, and the strictest is the default.</b> <i>As printed</i>: the archive is
+            shown as the forms wrote it and the application compares nothing. <i>May also read the
+            values</i>: a model may say what a value means and how it moved, and the application
+            still computes nothing. <i>No limits set here</i>: the model answers under no rule of
+            ours, and this is the one mode in which the application itself compares a number with the
+            range printed beside it on its own form. The last two were written for a person reading
+            their own records &mdash; the model is told that the person asking is the person the
+            records are about &mdash; so the mode that fits a clinic reading somebody else's file is
+            the first. The mode is chosen on the Settings page of your own instance, by you, and
+            nothing here changes who is responsible for a clinical decision.</p>
+          <p>One archive per patient, isolated by construction, and every page carries the name of
+            the one whose records are open. Self-hosted, inside your own perimeter: no vendor cloud
+            and no telemetry, and model calls go out with your own key or not at all.</p>
+          <p><b>Write to <a href="mailto:artem.berman@gmail.com">artem.berman@gmail.com</a></b> and
+            say what your organisation does and how many people would use it.</p>
+        </div>
+        <div class="sheet-card">
+          <a href="epicrisis-for-clinics.pdf" target="_blank" rel="noopener">
+            <img src="images/one-pager-clinics.png?v=1" alt="One page: Epicrisis for clinics and hospitals"></a>
+          <div class="grab">
+            <a href="epicrisis-for-clinics.pdf" download>Download the PDF &mdash; one page, A4</a>
           </div>
         </div>
       </div>
@@ -464,7 +557,13 @@
     <h2>Try it without a page of your own</h2>
     <p class="sub">The same four commands whichever of the two you are: a person about to type up a
       parent's folder, or a team looking at this before it goes anywhere near a real case.</p>
-    <p>Python 3.14 and <a href="https://docs.astral.sh/uv/">uv</a>.</p>
+    <p>Python 3.14 and <a href="https://docs.astral.sh/uv/">uv</a>. This project asks uv to use a
+      Python already on the machine rather than fetching one, so install 3.14 the way your system
+      installs Pythons — <code>brew install python@3.14</code> on macOS — rather than with
+      <code>uv python install</code>. One system library too: <b>libmagic</b>, which tells a file's
+      kind from its first bytes — <code>brew install libmagic</code> on macOS,
+      <code>apt install libmagic1</code> on Debian or Ubuntu, <code>python-magic-bin</code> on
+      Windows.</p>
 <pre><code>git clone https://github.com/bermana-net/epicrisis &amp;&amp; cd epicrisis
 uv sync
 uv run epicrisis demo --into /tmp/demo        # three invented archives, no model called
@@ -472,10 +571,17 @@ uv run epicrisis serve --data-dir /tmp/demo/data</code></pre>
     <p>That demo is everything on this page: three lives that never happened — Vera, her father
       Anders, her grandmother Zoya — drawn as scanned forms in five languages, transcribed, checked
       and indexed for real, with not one call leaving your machine.</p>
-    <p>Then, when you are ready:</p>
+    <p>Then, when you are ready &mdash; <b>in this order</b>:</p>
 <pre><code>uv run epicrisis sources add ~/scans --owner "Your name"
-uv run epicrisis update          # inventory → classify → extract → validate → index
-uv run epicrisis serve</code></pre>
+uv run epicrisis serve                        # open /consent and read what would be sent
+uv run epicrisis update          # inventory → classify → extract → validate → index</code></pre>
+    <p>The steps that read documents need a model: either the <code>claude</code> command signed in
+      with your own Claude subscription, or <code>ANTHROPIC_API_KEY</code> in a <code>.env</code>
+      file with the engine changed on the Settings page. Without one the other steps still work and
+      the dashboard says which is missing. Nothing is sent before you read, once, what would go
+      &mdash; which is why <code>serve</code> comes before <code>update</code> here: run them the
+      other way round and the two steps in the middle are skipped, and you are left with an archive
+      that has been listed and not read.</p>
   </div>
 </section>
 
@@ -549,9 +655,10 @@ rail.addEventListener("scroll", say, {passive: true});
 say();
 
 (() => {
-  // Both panels are in the page; the script hides one. A browser with no JavaScript shows both,
-  // which is longer but never empty.
-  const tabs = {"tab-mine": "panel-mine", "tab-org": "panel-org"};
+  // All three panels are in the page and none is hidden in the markup: a browser with no
+  // JavaScript shows all three, one after another, which is longer but never empty. The two
+  // that are not the chosen tab are hidden from here, on the first line that runs.
+  const tabs = {"tab-mine": "panel-mine", "tab-org": "panel-org", "tab-clinic": "panel-clinic"};
   const show = (which) => {
     for (const [tab, panel] of Object.entries(tabs)) {
       const on = tab === which;
@@ -564,7 +671,9 @@ say();
     document.getElementById(tab).addEventListener("click", () => show(tab));
   }
   const fromHash = () => {
-    if (location.hash === "#for-organisations") { show("tab-org"); document.getElementById("licence").scrollIntoView(); }
+    // The old address is kept: it has been linked to. Each tab has one of its own now.
+    const named = {"#for-organisations": "tab-org", "#for-insurers": "tab-org", "#for-clinics": "tab-clinic"};
+    if (named[location.hash]) { show(named[location.hash]); document.getElementById("licence").scrollIntoView(); }
   };
   addEventListener("hashchange", fromHash);
   show("tab-mine");

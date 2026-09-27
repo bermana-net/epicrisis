@@ -11,8 +11,15 @@
   {% elif here.state == "unindexed" %}
   <p class="empty">The documents of {{ here.whose }} have been read, but the index every page of this interface is built from is missing or older than they are.</p>
   <p class="caps muted">Nothing is being sent anywhere by this: the index is built here, from what is already on this machine, in seconds.</p>
-  <p><code class="mono">epicrisis index</code></p>
+  <p><code class="mono">{{ cli }} index --data-dir {{ data_dir }}</code></p>
   <p><a class="btn" href="/status">Archive status</a></p>
+  {% elif here.state == "nothing_to_read" %}
+  {# A folder that was looked through to the end and holds nothing this program can read. Every page
+     used to say "the documents have not been read yet" here and offer the step that sends pages to
+     a model — for nought pages, with nothing anywhere saying that the folder was the trouble. #}
+  <p class="empty">The folder of {{ here.whose }} was looked through to the end, and nothing in it is a document this program can read.</p>
+  <p class="caps muted">It looks for PDFs, photographs and scans, Word documents and spreadsheets, in the folder and in every folder under it. A folder of something else &mdash; or one level too high or too low &mdash; looks exactly like this. Nothing was changed in it, and nothing has been sent anywhere.</p>
+  <p><a class="btn" href="/status">The folder of this archive</a></p>
   {% elif here.state == "scanning" %}
   <p class="empty">The archive of {{ here.whose }} is being looked through right now. This page appears once its documents have been read.</p>
   <p><a class="btn" href="/status">Watch the progress</a></p>
@@ -27,8 +34,8 @@
   {% elif not here.consented %}
   <p><a class="btn" href="/consent">Read what would be sent</a></p>
   {% elif not here.installed %}
-  <p class="caps alert">The program that talks to the model is not installed on this server, so the reading cannot run.</p>
-  <p><a class="btn" href="/status">Archive status</a></p>
+  <p class="caps alert">The program that talks to the model is not installed on this server, so the reading cannot run. It needs either the <span class="mono">claude</span> command for the account this server runs as, or a key of your own in <span class="mono">.env</span> with the engine changed in Settings.</p>
+  <p><a class="btn" href="/settings">Settings</a> <a class="btn" href="/status">Archive status</a></p>
   {% else %}
   <form method="post" action="/update"><button class="btn" type="submit">Read the documents</button></form>
   {% endif %}

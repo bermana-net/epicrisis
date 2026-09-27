@@ -33,9 +33,11 @@ This is the picture no single form contains, and the one every endocrinologist a
 
 ![HbA1c over fifteen years](docs/images/04-hba1c.png)
 
-*The shaded band is the reference range **printed on each form**, held until another form printed
-a different one. It steps because laboratories differ, not because anything was calculated. The
-rows below the chart are Russian where his clinic was Russian, and English after he moved.*
+*The shaded band is the reference range **printed on the form beside that value**, drawn around the
+value it belongs to. Where a form printed no range there is no band: the range on the form before
+it says nothing about a value printed without one. It steps because laboratories differ, not
+because anything was calculated. The rows below the chart are Russian where his clinic was Russian,
+and English after he moved.*
 
 **For your grandmother.** Her archive is small, on paper, in the language of another decade, and
 nobody but the family will ever type it up. Twenty documents are still twenty documents you can
@@ -134,7 +136,7 @@ job, and the difference is structural rather than a matter of prompting.
 | **Provenance** | A number in a chat | Every value carries its file, page and date, and links to the scan |
 | **Your corrections** | Die with the conversation | Stored apart from the model's output, keyed to the printed line, reapplied after every re-read |
 | **Catching mistakes** | You have to notice | Deterministic checks find them; a second, different model reads again and disagreements are shown |
-| **Units and specimens** | Quietly converted, quietly merged | Never converted; split by unit and by specimen |
+| **Units and specimens** | Quietly converted, quietly merged | Never converted silently; split by unit and by specimen, and where one test printed at two scales is drawn as one history, every moved point says so |
 | **Vocabulary** | Regrouped differently every time | One vocabulary, approved once, in five languages |
 | **Several people** | One pile | One archive per person, one index file each, by construction |
 | **With no model at all** | Nothing works | Search, charts, index, checks and the whole dashboard |
@@ -145,22 +147,21 @@ when the models change.
 
 ---
 
-## Tested on
-
-Two real archives on one machine, kept by the people whose archives they are.
+## What it has been run on
 
 | | |
 |---|---|
-| Documents | **479** |
+| Documents read | **479** |
 | Values kept as printed | **5 355** |
 | Years covered | **1989–2026** |
 | Languages | Russian, Ukrainian, English, Spanish, Greek |
 | Institutions as printed | over 200 |
 | Tests in the vocabulary | 492 approved groups of spellings |
-| Test suite | 292 tests, no network, no model |
+| Test suite | 761 tests, no network, no model |
 
-Whose they are is nobody's business, and nothing from them appears in this repository: every
-screenshot here comes from `epicrisis demo`, which invents its own people.
+These are real medical records of real people, and whose they are is nobody's business. Nothing
+from them appears in this repository: every screenshot here comes from `uv run epicrisis demo`, which
+invents its own people.
 
 ---
 
@@ -169,7 +170,15 @@ screenshot here comes from `epicrisis demo`, which invents its own people.
 - **Self-hosted.** Your computer or your own server. No account, no service, no telemetry.
 - **The dashboard listens on `127.0.0.1` only.** From anywhere else, through an SSH tunnel.
 - **Your scans are read-only.** Nothing is copied, moved or renamed. Everything the program
-  derives sits under `data/` and can be deleted and rebuilt from scratch.
+  derives sits under `data/`. Most of it can be deleted and rebuilt: the index in seconds
+  (`uv run epicrisis index`), the checks in seconds (`uv run epicrisis validate`), the walk of the folder in
+  minutes (`uv run epicrisis inventory`). The readings themselves — what each page is and what was printed
+  on it — can only be made again by paying a model to read the documents again, and it will read
+  them a little differently. And five things under `data/` are **your own work, which nothing can
+  rebuild**: your corrections (`corrections.jsonl`), your verdicts on findings
+  (`judgements.jsonl`), the indicators you approved (`indicators.json`), the earlier readings kept
+  when a later one displaced them (`replaced/`), and your conversations (`chats/`). Copy those
+  somewhere: `uv run epicrisis backup <folder>` puts exactly them, and nothing else, in one place.
 - **Each person's archive is a separate database.** A folder belongs to one owner, two owners'
   folders may not contain one another, and ids are random, because folder names carry surnames.
   A question asked of one archive cannot reach another's values.
@@ -182,13 +191,33 @@ screenshot here comes from `epicrisis demo`, which invents its own people.
   - an unguessable secret path — without it, the server answers as if nothing were there;
   - a private tunnel (Tailscale Funnel) that admits only the connector's own network;
   - and **a six-digit code from your authenticator** (RFC 6238): `unlock` returns a pass good for
-    four hours, every tool refuses without it, `lock` ends it early. The secret behind that code is
+    four hours, every tool refuses without it, `lock_archive` ends it early. The secret behind that code is
     generated on your server, read once into your phone, and never travels through a conversation.
   - The access log keeps who called and which tool — never the question, never the answer. A log
     of a medical archive that holds the questions is a second copy of the archive.
 
 A secret path and a private tunnel say *where* a request came from and nothing at all about *who*
 sent it. The code from a phone is the only part a stranger cannot copy out of an address bar.
+
+Setting that up, in order — the first two on the server, as root:
+
+```sh
+sudo $(which uv) run epicrisis mcp-secret    # the secret that stands in the served path
+sudo $(which uv) run epicrisis mcp-lock init # prints one line for your authenticator, once
+uv run epicrisis mcp --http --secret-file /etc/epicrisis/mcp-token --public-host <name.ts.net>
+tailscale funnel 8051                     # or `tailscale serve` to keep it inside your own network
+```
+
+`--public-host` is the name the tunnel answers on. Without it a request arriving through the
+tunnel carries a name this server does not know itself by, and is refused before it reaches
+anything.
+
+Then turn the lock on under **Settings → Over the network**, which also says what a code opens,
+for how long, and what to do if you lose the phone it is in. Behind `tailscale serve` rather than
+Funnel, every device of your own tailnet reaches it whatever `--allow-from` says — the private
+networks are always allowed — so there the path and the code are the whole of it. The address
+filter is the weakest of the three in any case: it says where a request came from and nothing
+about who sent it.
 
 **And nothing of yours goes out with the code.** This repository is published from a machine that
 holds a real archive, so a check runs before every push:
@@ -213,7 +242,20 @@ Names published deliberately — an author's own, in a licence and a copyright l
 
 Python 3.14 and [uv](https://docs.astral.sh/uv/).
 
+This project asks uv to use a Python already on the machine rather than fetching one, so
+`uv python install 3.14` will not satisfy it. Install 3.14 the way your system installs
+Pythons — `brew install python@3.14` on macOS, your distribution's package or the installer
+from python.org elsewhere.
+
+One system library as well: **libmagic**, which tells a file's kind from its first bytes rather
+than from its name. Debian and Ubuntu have it already or install it with `apt install libmagic1`;
+on macOS it is `brew install libmagic`; on Windows install `python-magic-bin` into the environment.
+Without it every command says so and names it, rather than failing on its own imports.
+
+Then:
+
 ```sh
+git clone https://github.com/bermana-net/epicrisis && cd epicrisis
 uv sync
 uv run epicrisis demo --into /tmp/demo          # three invented archives, no model called
 uv run epicrisis serve --data-dir /tmp/demo/data
@@ -223,16 +265,39 @@ Then, when you are ready:
 
 ```sh
 uv run epicrisis sources add ~/scans --owner "Your name"
-uv run epicrisis update        # inventory → classify → extract → validate → index
-uv run epicrisis serve
+uv run epicrisis serve         # say yes on /consent: nothing goes to a model before you do
+uv run epicrisis update        # every step, skipping what is done
 ```
+
+**In that order.** Nothing reaches a model until you have read, once, what would be sent and
+agreed to it, and that screen is in the dashboard. Run `update` before it and the steps that
+need a model are skipped — it finishes, says so, and leaves you with an archive that has been
+listed and not read.
+
+What `update` runs, in order: the inventory of the folder; then, behind that agreement, reading
+what each page is, transcribing the values, searching for a date where the form printed none,
+and reading what a table was measured in; then the checks, which need no model; then the index.
+The last two run whether you agreed or not.
+
+The steps that read documents need a model, and there are two ways to give it one: the
+`claude` command installed for the account this runs as, signed in with your own Claude
+subscription, or `ANTHROPIC_API_KEY` in a `.env` file beside the data folder with the engine
+changed on the Settings page. Without one of them the other steps still work and the dashboard
+says which is missing. Nothing is sent before you read, once, what would go and say yes.
+
+Scans on a disk of their own: add the folder by typing it — `uv run epicrisis sources add
+/mnt/scans --owner "Your name"` — which takes a folder anywhere. The folder picker on the page
+stays inside your home and this instance's own folder, because the dashboard has no login; to
+have it offer your disks too, set `EPICRISIS_ARCHIVE_ROOT` to them before starting, several
+separated by `:`. An archive is only ever read, wherever it is, and nothing is copied out of it.
 
 Other commands:
 
 ```sh
-epicrisis check-indicators     # a second model over the test vocabulary
-epicrisis mcp [--http]         # read-only tools for an assistant
-uv run pytest                  # 292 tests, no network, no model
+uv run epicrisis check-indicators     # a second model over the test vocabulary
+uv run epicrisis mcp                  # read-only tools for an assistant, over stdio
+uv run epicrisis mcp --http --secret-file /etc/epicrisis/mcp-token --public-host <tunnel host>
+uv run pytest -n 4             # 761 tests, no network, no model
 ```
 
 > **Status:** working and in daily use by its author and their family; not yet used by anyone
@@ -245,6 +310,15 @@ uv run pytest                  # 292 tests, no network, no model
 Epicrisis is **not a medical device**. It is **not for diagnosis, treatment or any clinical
 decision**. It stores and shows what your documents say; it does not interpret them, does not
 decide what is normal, and does not advise.
+
+One door exists, and naming it is part of the rule. The Settings page of an instance has three
+modes, and the strictest is the default: **as printed**, where the application compares nothing
+and the model is asked to quote rather than explain; **may also read the values**, where the model
+may say what a value means and how it moved, and the application still computes nothing; and **no
+limits set here**, where the model answers under no rule of this program's — and where the
+application itself will compare a number with the range printed beside it on its own form and count
+what fell outside. That last mode is the owner's own choice on their own instance, it is off until
+they choose it, and everything this program computes about "outside the range" lives in it.
 
 A transcription from a scan can be wrong. That is why every value in this program is one click
 from the page it came from, and why the page — not the program — is the authority.

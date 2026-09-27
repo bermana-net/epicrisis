@@ -12,24 +12,28 @@ result printed in two files is not counted twice.
 import json
 import re
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
-from epicrisis import layout
+from epicrisis import layout, reference
 from epicrisis.classify.pages import page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
-from epicrisis.corrections import CORRECTABLE, load_corrections, load_primary_copies, load_value_corrections, value_key
+from epicrisis.corrections import BY_A_PERSON, as_a_person_left_it, load_corrections, load_primary_copies, load_value_corrections
 from epicrisis.settings import trusts_read_materials
-from epicrisis.material_reading import load_materials, panel_key
+from epicrisis import material_reading
+from epicrisis.material_reading import load_materials, panel_key, why_no_material as load_why_no_material
 from epicrisis.datesearch import load_search_results
 from epicrisis.document_dates import document_date, provider_key, source_day_first
 from epicrisis import indicators
 from epicrisis.extract.run import load_extracted
 from epicrisis.records import read_records
-from epicrisis.printed_values import fold, number_tokens
+from epicrisis.printed_values import fold
 from epicrisis.sources import Source, source_output_dir
 from epicrisis.validate import load_validation
 from epicrisis.runs import one_at_a_time, put_in_place, temporary_name
+from epicrisis.state import NoSpace
+from epicrisis.invocation import CLI
 
 FILE_NAME = "index.sqlite"
 SCHEMA_VERSION = 6
@@ -37,19 +41,25 @@ SCHEMA_VERSION = 6
 # Fields of a value a person may correct; everything else stays as the model read it.
 # What was measured, from the heading of the table or the title of the document: the same name
 # means a different test in urine and in blood ("Білок" in a urine panel is not serum protein).
+# Greek patterns are written without their accents. A heading is matched four ways — as printed,
+# with the spaces squeezed out, folded, and folded and squeezed — and folding takes the accents
+# off both sides; but a pattern that keeps them can only ever meet the two spellings that still
+# have them. Greek laboratory forms title their sections in capitals, and capitals lose their
+# accents, so ΠΤΥΕΛΑ, ΣΙΕΛΟΣ, ΣΠΕΡΜΑ, ΕΠΙΧΡΙΣΜΑ and ΕΓΚΕΦΑΛΟΝΩΤΙΑΙΟ ΥΓΡΟ matched nothing at all
+# and their values went in with the blood — which the README promises they do not.
 MATERIALS = {
     # The words end where the word ends. "Мочевина" and "Мочевая кислота" are blood tests whose
     # Russian names begin with the word for urine, and "кесарево сечение" is not a specimen at
     # all: both were read as urine, and a title matches every value in its document.
-    "urine": (r"сеч[іїея]\b|сечі\b|моч[иеаую]\b|urine|urina\b|urinari|orina|ουρ[ωο]|ούρων|uri-|urin"),
+    "urine": (r"сеч[іїея]\b|сечі\b|моч[иеаую]\b|urine|urina\b|urinari|orina|ουρ[ωοα]|ούρων|uri-|urin"),
     "stool": (r"кал[аоуіы]?\b|фекал|копрограм|копрологи|stool|faec(?:es|al)|fec(?:es|al)|heces|"
               r"coprogram|coprolog|κοπραν|κοπράν|κοπρολογ"),
-    "csf": r"ліквор|ликвор|спинномозков|cerebrospinal|líquido cefalorraqu|εγκεφαλονωτιαί",
-    "saliva": r"слин[иа]|слюн|saliva|σίελο",
-    "sputum": r"мокрот|sputum|esputo|πτύελ",
-    "semen": r"спермограм|еякулят|эякулят|semen|sperm|σπέρμα",
+    "csf": r"ліквор|ликвор|спинномозков|cerebrospinal|líquido cefalorraqu|εγκεφαλονωτιαι",
+    "saliva": r"слин[иа]|слюн|saliva|σιελο",
+    "sputum": r"мокрот|sputum|esputo|πτυελ",
+    "semen": r"спермограм|еякулят|эякулят|semen|sperm|σπερμα",
     # A smear of blood is blood: the swab words stop where the form names what was smeared.
-    "swab": r"мазок(?!\s+кров)|мазк(?!\w*\s+кров)|зіскр|соскоб|(?<!blood )smear|frotis|exudado|επίχρισμα",
+    "swab": r"мазок(?!\s+кров)|мазк(?!\w*\s+кров)|зіскр|соскоб|(?<!blood )smear|frotis|exudado|επιχρισμα",
     # Last, so that a form naming two things is read as the more particular one, and a urinalysis
     # that happens to say "кров" somewhere stays a urinalysis.
     # Every one of these is a word a form prints for what was put in the machine: blood itself,
@@ -180,13 +190,30 @@ def index_state(data_dir: Path, output: Path, source_id: str | None = None) -> d
     path = index_path(data_dir, source_id)
     if not path.exists():
         return {"state": "not_started", "label": "", "title": "Index: not built yet"}
-    inputs = [output / name for name in (layout.CLASSIFY, layout.CORRECTIONS, layout.DATE_SEARCH, layout.VALIDATION, layout.EXTRACTED)]
-    changed = max((item.stat().st_mtime for item in inputs if item.exists()), default=0)
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # What the index is built from is written down in layout.py, once, beside what the checks are
+    # built from: it is built from more than one archive's folder — which printed spellings are one
+    # test, and whether a model's reading of a material is trusted, are instance-wide and decide the
+    # indicator and the material of every value — and both lists had a file missing.
+    changed = layout.changed_since(output, data_dir, "index")
     try:
-        documents = connection.execute("SELECT count(*) FROM documents").fetchone()[0]
-    finally:
-        connection.close()
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+            documents = connection.execute("SELECT count(*) FROM documents").fetchone()[0]
+    except sqlite3.DatabaseError:
+        # A file that is there and will not open. Every other page of this dashboard answers that
+        # with a page of its own, because without an index it has nothing to show; the status page
+        # must not, because it is the page a person comes to when something is wrong. So the step
+        # says it, and the rest of the page — the folders, the scans, the steps before this one —
+        # goes on working.
+        return {
+            "state": "failed", "label": "Cannot be read",
+            "title": "Index: the file is there and cannot be read",
+            "note": "The index of this archive is there and cannot be read — a build that was cut "
+                    "off, or a file damaged since. Nothing that was read is lost: the index holds no "
+                    "answer of its own, it is built from the files already on this machine, in "
+                    "seconds, with no model and nothing sent anywhere. Build it again: "
+                    f"'{CLI} index'.",
+            "alert": True,
+        }  # fmt: skip
     if path.stat().st_mtime < changed:
         return {"state": "partial", "label": "Outdated", "title": f"Index: {documents} documents, data changed since"}
     return {"state": "done", "label": str(documents), "title": f"Index: {documents} documents"}
@@ -201,31 +228,93 @@ def build_index(data_dir: Path, sources: list[Source]) -> dict:
 
 
 def _build_index(path: Path, data_dir: Path, sources: list[Source]) -> dict:
+    """Build the whole index under a temporary name and rename it over the old one.
+
+    The temporary file goes whatever happens, which is what the walk of the folder beside this
+    already does (inventory/run.py) and what this one forgot — where the file is the largest this
+    program writes. A build stopped by a full disk left ninety kilobytes of half an index behind,
+    named with the pid so the next attempt could not reuse it, and every attempt to free space and
+    try again started from a disk that was fuller than the last: the program burying the way out
+    a person was told to take.
+    """
     temporary = temporary_name(path)
     temporary.unlink(missing_ok=True)
-    connection = sqlite3.connect(temporary)
     try:
-        connection.executescript(SCHEMA)
-        names = indicators.approved_names(data_dir)
-        for indicator in indicators.load(data_dir):
-            connection.execute(
-                "INSERT INTO indicators VALUES (?, ?, ?, ?)",
-                (indicator.id, indicator.label, indicator.status, json.dumps(sorted(indicator.names), ensure_ascii=False)),
-            )
-        totals = {"documents": 0, "transcribed": 0, "observations": 0, "copy_groups": 0}
-        for source in sources:
-            output = source_output_dir(data_dir, source.id)
-            if (output / layout.CLASSIFY).exists():
-                _index_source(connection, source, output, totals, names, data_dir)
-        built_at = datetime.now(UTC).isoformat(timespec="seconds")
-        connection.executemany(
-            "INSERT INTO meta VALUES (?, ?)", [("built_at", built_at), ("schema_version", str(SCHEMA_VERSION))]
-        )
-        connection.commit()
-    finally:
-        connection.close()
+        with closing(sqlite3.connect(temporary)) as connection:
+            built = _fill_index(connection, data_dir, sources)
+    except sqlite3.OperationalError as trouble:
+        _remove_the_unfinished(temporary)
+        if "full" not in str(trouble).lower():
+            raise
+        raise NoSpace(
+            "There is no space left on the disk to build the index. Nothing was changed: the "
+            "archive, everything read from it and the index that was there are all as they were. "
+            f"Free some space and run '{CLI} index' again."
+        ) from trouble
+    except BaseException:
+        _remove_the_unfinished(temporary)
+        raise
     put_in_place(temporary, path)
+    return built
+
+
+def _fill_index(connection: sqlite3.Connection, data_dir: Path, sources: list[Source]) -> dict:
+    """Every table of a fresh index, from the files on disk. Nothing here is asked of a model."""
+    connection.executescript(SCHEMA)
+    names = indicators.approved_names(data_dir)
+    totals = {"documents": 0, "transcribed": 0, "observations": 0, "copy_groups": 0}
+    for source in sources:
+        output = source_output_dir(data_dir, source.id)
+        if (output / layout.CLASSIFY).exists():
+            _index_source(connection, source, output, totals, names, data_dir)
+    _index_the_vocabulary(connection, data_dir)
+    built_at = datetime.now(UTC).isoformat(timespec="seconds")
+    connection.executemany(
+        "INSERT INTO meta VALUES (?, ?)", [("built_at", built_at), ("schema_version", str(SCHEMA_VERSION))]
+    )
+    connection.commit()
     return {**totals, "built_at": built_at}
+
+
+def _remove_the_unfinished(temporary: Path) -> None:
+    """Take away a half-built index and whatever sqlite wrote beside it."""
+    for leftover in (temporary, *temporary.parent.glob(temporary.name + "-*")):
+        leftover.unlink(missing_ok=True)
+
+
+def _index_the_vocabulary(connection: sqlite3.Connection, data_dir: Path) -> None:
+    """The groups of spellings this archive actually uses, written after its values are in.
+
+    The vocabulary is one file for the whole instance, which is right: a person keeping the records
+    of three people approves "Cystatin C" once. But it was copied whole into every archive's index,
+    so an assistant holding one person's archive could ask list_indicators and read the printed
+    names of another person's forms — a laboratory's own wording, of tests somebody else had done.
+    Values never crossed; the words did, and the file beside them promises that a question asked of
+    one archive cannot reach another's.
+
+    What leaks is the spellings, and only those: a label is a word the owner of this instance chose
+    — "Ferritin" — and the vocabulary is deliberately one file for all their archives, so the labels
+    belong to whoever keeps them. The names under a label are what a laboratory printed on somebody
+    else's form, and those are written into an archive's index only where that archive has printed
+    them itself.
+
+    Every label stays, and that is not laziness: a person who switches archive while looking at a
+    test must get a page saying this archive has no values of it, not an address that has stopped
+    existing. Trimming the labels too took that page away.
+    """
+    # Everywhere this archive's own text has it, and not only where it stands as the name of a row.
+    # A spelling also turns up inside the text of a value — a line of a urine panel naming a second
+    # test in its own cell — and that is precisely what the rule about a value naming another test
+    # reads these for. Trimmed to row names only, two real findings of this archive went quiet.
+    printed = {fold(row[0]) for row in connection.execute("SELECT DISTINCT name FROM observations") if row[0]}
+    said_in_values = " \n".join(
+        fold(row[0]) for row in connection.execute("SELECT DISTINCT value FROM observations") if row[0])
+    for indicator in indicators.load(data_dir):
+        here = sorted(name for name in indicator.names if name in printed or name in said_in_values)
+        connection.execute(
+            "INSERT INTO indicators VALUES (?, ?, ?, ?)",
+            (indicator.id, indicator.label, indicator.status, json.dumps(here, ensure_ascii=False)),
+        )
 
 
 def _index_source(connection: sqlite3.Connection, source: Source, output: Path, totals: dict,
@@ -242,6 +331,10 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
     corrections = load_corrections(output)
     # The person whose archive this is decides whether a material a model read is used at all.
     read_materials = load_materials(output) if trusts_read_materials(data_dir) else {}
+    # And why a panel has no material, where a model has looked and said which of the two it is.
+    # Kept whatever the switch above says: it is not a material a model read, it is the reason
+    # there is none, and a page that says "not said" over a blood pressure is wrong either way.
+    why_no_material = load_why_no_material(output)
     value_corrections = load_value_corrections(output)
     searches = load_search_results(output)
     day_first_files, day_first_providers = source_day_first(output, groups)
@@ -309,7 +402,8 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
             len(item["observations"]),
         )
         _index_transcription(connection, document_id, item, indicator_names, value_corrections, sha256, pages,
-                             carries_on_from=carries_on_from, read_materials=read_materials)  # fmt: skip
+                             carries_on_from=carries_on_from, read_materials=read_materials,
+                             why_no_material=why_no_material)  # fmt: skip
         totals["observations"] += len(item["observations"])
 
     copy_groups = _copy_groups(validation, ids)
@@ -333,21 +427,11 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
 def _index_transcription(
     connection: sqlite3.Connection, document_id: int, item: dict, indicator_names: dict[str, str],
     value_corrections: dict, file_sha256: str, pages: tuple[int, ...], carries_on_from: str | None = None,
-    read_materials: dict[str, dict] | None = None,
+    read_materials: dict[str, dict] | None = None, why_no_material: dict[str, str] | None = None,
 ) -> None:  # fmt: skip
     kind = "analyte" if item["doc_type"] == "lab_panel" else "measurement"
     sideways = inverted_tables(item["observations"])
-    for observation in item["observations"]:
-        correction = value_corrections.get((file_sha256, pages, value_key(observation["provenance"]["page"], observation["name_as_printed"], observation["value_as_printed"])))
-        if correction and correction.get("removed"):
-            continue  # a person said this line is not a value
-        if correction:
-            observation = {**observation, **{name: text for name, text in correction["changes"].items() if name in CORRECTABLE}}
-            # The number follows the value a person wrote. Without this the table showed 13,5
-            # with a "corrected" badge and the chart drew the model's 1,35, and the same stale
-            # number answered "outside the printed range" over the network.
-            if "value_as_printed" in correction["changes"]:
-                observation = {**observation, "value_numeric": number_as_printed(observation)}
+    for observation in as_a_person_left_it(item["observations"], file_sha256, pages, value_corrections):
         connection.execute(
             "INSERT INTO observations VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -360,8 +444,9 @@ def _index_transcription(
                 int(is_derived(observation)),
                 _indicator_of(observation, indicator_names, sideways),
                 *_material(observation, item, carries_on_from, read_materials, file_sha256, pages,
-                           correction, (observation.get("table_as_printed") or "").strip() in sideways),  # fmt: skip
-                int(bool(correction)),
+                           observation.get(BY_A_PERSON), (observation.get("table_as_printed") or "").strip() in sideways,
+                           why_no_material),  # fmt: skip
+                int(bool(observation.get(BY_A_PERSON))),
             ),
         )  # fmt: skip
     connection.executemany(
@@ -448,7 +533,8 @@ def _indicator_of(observation: dict, indicator_names: dict[str, str], sideways: 
 
 def _material(observation: dict, document: dict, carries_on_from: str | None,
               read_materials: dict[str, dict] | None, file_sha256: str, pages: tuple[int, ...],
-              correction: dict | None = None, sideways: bool = False) -> tuple[str | None, str | None]:  # fmt: skip
+              correction: dict | None = None, sideways: bool = False,
+              why_no_material: dict[str, str] | None = None) -> tuple[str | None, str | None]:  # fmt: skip
     """(what was measured, how that is known). A person first, then the form, then a model.
 
     A person who has looked at the scan knows what no rule can work out, so their word wins and
@@ -473,23 +559,13 @@ def _material(observation: dict, document: dict, carries_on_from: str | None,
         return printed, "printed"
     key = panel_key(file_sha256, list(pages), observation.get("table_as_printed"))
     read = (read_materials or {}).get(key)
-    return (read["material"], "model") if read else (None, None)
-
-
-def number_as_printed(observation: dict) -> float | None:
-    """The number a corrected value now holds, or nothing where the correction is not a number.
-
-    Only one reading counts: the printed text with a decimal comma read as a point. A value a
-    person rewrote as words ("not detected") has no number at all, and saying so is the answer.
-    """
-    printed = (observation.get("value_as_printed") or "").strip()
-    tokens = number_tokens(printed)
-    if len(tokens) != 1:
-        return None
-    try:
-        return float(tokens[0].replace(",", ".").replace(" ", ""))
-    except ValueError:
-        return None
+    if read:
+        return read["material"], "model"
+    # No material, and where a model has already looked, why. The two reasons are not one thing:
+    # "not a sample" is an answer about a measurement made on a person, and a panel holding two
+    # specimens is a lab result whose label is missing. Both were dropped, and every page called
+    # them the same: "Not said".
+    return None, (why_no_material or {}).get(key)
 
 
 def is_derived(observation: dict) -> bool:

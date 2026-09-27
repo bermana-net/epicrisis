@@ -44,13 +44,15 @@ network. Only the point on the chart moves, and it says what it was moved by.
 # How it can be wrong
 
 Nothing moves unless the printed ranges themselves say the test has two scales. That is the
-whole safety of it: **one value far outside its own range is an abnormal result, and an abnormal
-result must never be quietly divided by ten.**
+whole safety of it: **a value standing far outside the range printed beside it is a value a
+person has to see the way the form printed it, and nothing here may quietly divide it by ten.**
 
 The first and most obvious version of this rule — "the number is far outside its own range, and
 one power of ten brings it inside" — was measured against a real archive before it was written,
-and it would have hidden several genuine excursions: results sitting a little above their range,
-which one power of ten brings neatly inside it. It was thrown away for this one.
+and it would have moved values that the form printed exactly as they stand: numbers sitting a
+little above the range beside them, which one power of ten brings neatly inside it. What such a
+number means is not this rule's to know, and moving it would have taken the question away from
+the person before they saw it. It was thrown away for this one.
 
 Where a test's ranges are simply different between laboratories, and not one range at another
 scale, nothing moves at all. A value whose own form printed no range is placed on the scale its

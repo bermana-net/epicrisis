@@ -264,3 +264,121 @@ def test_the_code_is_asked_for_over_the_network_and_not_on_this_machine(archive_
 
     over_the_network = build_server(data_dir, over_the_network=True)
     assert asyncio.run(over_the_network.call_tool("archive_overview", {})).structured_content["locked"] is True
+
+
+def test_a_settings_file_that_cannot_be_read_does_not_open_the_archive(tmp_path, monkeypatch):
+    """The one setting that fails closed, because the other direction is silent and permanent.
+
+    Everything in settings.py answers with its default when the file is missing, which is right
+    for a new instance and wrong for a file that exists and will not parse: a truncated one read
+    as "no lock" over an archive whose owner had turned the lock on, and the page went on drawing
+    it as on.
+    """
+    from epicrisis import mcp_lock, settings
+
+    (tmp_path / "settings.json").write_text('{"mcp_lock": true', encoding="utf-8")  # cut short
+    assert settings.unreadable(tmp_path)
+
+    monkeypatch.setattr(mcp_lock, "read_secret", lambda *rest: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+    assert settings.mcp_lock_on(tmp_path) is True
+
+    # Where no secret was ever set up there is nothing to fail closed about, and asking for a code
+    # nobody can produce would only shut a person out of their own archive over a corrupt file.
+    monkeypatch.setattr(mcp_lock, "read_secret", lambda *rest: None)
+    assert settings.mcp_lock_on(tmp_path) is False
+
+
+def test_the_secret_is_never_readable_by_everybody_even_for_an_instant(tmp_path):
+    """Written and then chmod-ed, it stands at 0644 for a moment in a directory anyone may enter.
+
+    This is the one secret where a single silent read is permanent: codes made from it look
+    exactly like the owner's, for ever, and nothing would ever show that somebody else has them.
+    """
+    import os
+
+    from epicrisis.mcp_lock import read_secret, write_secret
+
+    # Under the umask the command that writes this sets for itself. A mode handed to os.open is
+    # cut down by it; the group the server runs as would then lose the file it has to read.
+    was = os.umask(0o077)
+    where = write_secret("GEZDGNBVGY3TQOJQ", tmp_path / "etc" / "mcp-totp")
+    assert os.stat(where).st_mode & 0o777 == 0o640
+    # And again, over a secret that is already there: --force replaces it.
+    again = write_secret("MZXW6YTBOI======", tmp_path / "etc" / "mcp-totp")
+    os.umask(was)
+    assert os.stat(again).st_mode & 0o777 == 0o640 and read_secret(again) == "MZXW6YTBOI======"
+
+
+def test_the_wait_after_wrong_codes_outlives_the_server(tmp_path):
+    """Kept only in memory, the wait was undone by a restart.
+
+    Which made the documented way for the owner to end a wait — restart the service — the same
+    way out for whoever had put them into it.
+    """
+    from epicrisis.mcp_lock import WRONG_CODES, WRONG_CODES_FILE, Lock, Locked
+
+    secret, kept = new_secret(), tmp_path / WRONG_CODES_FILE
+    lock = Lock(secret=secret, remembers=kept)
+    for _ in range(WRONG_CODES):
+        with pytest.raises(Locked):
+            lock.unlock("000000")
+
+    restarted = Lock(secret=secret, remembers=kept)
+    with pytest.raises(Locked, match="Too many wrong codes"):
+        restarted.unlock("000000")
+
+    # The owner ends it from the server, and that is an act rather than a suggestion to restart
+    # the very thing that used to reset it.
+    kept.unlink()
+    with pytest.raises(Locked, match="does not fit"):
+        Lock(secret=secret, remembers=kept).unlock("000000")
+
+
+def test_the_address_filter_applies_behind_every_kind_of_tunnel():
+    """`tailscale serve` marks nothing, so a call through it looked like a call from this machine.
+
+    Which made it welcome before --allow-from was so much as consulted: the one setting that says
+    "only the connectors may reach this" did nothing at all in that arrangement.
+    """
+    from epicrisis.mcp_server import caller_of
+
+    assert caller_of({}, "127.0.0.1") == ("127.0.0.1", False)
+    assert caller_of({"tailscale-funnel-request": "1", "x-forwarded-for": "203.0.113.9"}, "127.0.0.1") == ("203.0.113.9", True)
+    assert caller_of({"x-forwarded-for": "203.0.113.9"}, "127.0.0.1") == ("203.0.113.9", True)
+    # Only something on this machine can forward from loopback. The header from anywhere else is
+    # what anyone may write, and it is not read.
+    assert caller_of({"x-forwarded-for": "127.0.0.1"}, "198.51.100.7") == ("198.51.100.7", False)
+
+
+def test_the_lock_command_does_not_print_defaults_as_the_owner_s_own_choices(tmp_path, monkeypatch):
+    """`mcp-lock status` over a settings file that will not parse, which it read as facts.
+
+    Every reader in this program answers with its own default over such a file, which is right, and
+    the lock's reader fails closed, which is righter. What was wrong was the report: a window of 120
+    minutes stored in the file, and a calm "for 240 minutes" printed with exit 0 and no word about
+    the file at all. The person reading it is the owner working out why the lock is behaving as it is
+    — a lost phone, a clock that drifted — and the settings page has said this in full all along.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from epicrisis import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    settings.set_mcp_lock_minutes(data_dir, 120)
+    whole = (data_dir / "settings.json").read_text(encoding="utf-8")
+    assert "120" in whole
+    (data_dir / "settings.json").write_text(whole[: len(whole) // 2], encoding="utf-8")  # cut off
+
+    done = subprocess.run([sys.executable, "-m", "epicrisis", "mcp-lock", "status", "--data-dir", str(data_dir)],
+                          capture_output=True, text=True, cwd=Path(__file__).parent.parent)  # fmt: skip
+    said = done.stdout + done.stderr
+
+    assert done.returncode == 0, said  # the question was answered; the trouble is named, not raised
+    assert "settings.json is there and cannot be read" in said
+    assert "240 minutes (a default: the file above cannot be read)" in said
+    assert "settings.json.previous" in said, "and the way back is an act, as on the page"
+    # The lock staying closed over an unreadable file is the safe direction, and now it says so.
+    assert "fails closed" in said

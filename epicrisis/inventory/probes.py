@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import BinaryIO
 
 import docx
-import magic
 import openpyxl
 import xlrd
 from PIL import Image, UnidentifiedImageError
@@ -86,8 +85,28 @@ def http_payload(path: Path) -> tuple[int, BytesIO] | None:
     return offset, BytesIO(path.read_bytes()[offset:])
 
 
+# python-magic is a few lines of ctypes over a system library, and the wheel does not carry it.
+# Ubuntu has libmagic; macOS and Windows do not, and the README sends a person on macOS to install
+# nothing but Python. The import stood at the top of this module, which the command line imports on
+# startup, so on such a machine *everything* answered with a traceback — `epicrisis demo`,
+# `epicrisis serve`, and `epicrisis --help` itself, before this program had said one word of its
+# own. It is asked for where it is used now, and what is missing is said in a sentence naming the
+# one thing to install.
+def _reading_the_signature():
+    try:
+        import magic
+    except ImportError as missing:  # pragma: no cover - depends on the machine, not on the code
+        raise UnsupportedFormat(
+            "this needs libmagic, the system library that tells a file's kind from its first bytes. "
+            "python-magic is only a wrapper over it. Install it: 'brew install libmagic' on macOS, "
+            "'apt install libmagic1' on Debian or Ubuntu; on Windows use 'pip install python-magic-bin'."
+        ) from missing
+    return magic
+
+
 def detect_mime(source: Source) -> str:
     """MIME type from the content signature, never from the extension."""
+    magic = _reading_the_signature()
     if isinstance(source, Path):
         mime = magic.from_file(str(source), mime=True)
     else:

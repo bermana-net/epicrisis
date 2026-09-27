@@ -14,63 +14,62 @@ from pathlib import Path
 from epicrisis import layout
 from epicrisis.classify.pages import PageUnreadable, document_payloads, page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
-from epicrisis.corrections import load_corrections
+from epicrisis.corrections import as_a_person_left_it, load_corrections, load_value_corrections
 from epicrisis.datesearch import load_search_results
 from epicrisis.document_dates import document_date, provider_key, source_day_first
 from epicrisis.extract.run import load_extracted, transcription_problems
-from epicrisis.records import read_records
+from epicrisis.state import Unreadable
+from epicrisis.records import read_records, torn_under
 from epicrisis.printed_values import SIGNS, comparator_printed, fold, squeezed, number_matches, number_tokens
+from epicrisis import reference
 from epicrisis.rules import load as load_rules
 from epicrisis.rules.kinds import VALIDATE
-from epicrisis.rules.subjects import Document, Found
+from epicrisis.rules.subjects import ONE_DOCUMENT, THE_ARCHIVE, Archive, Document, Found
 from epicrisis.settings import rules_on
 from epicrisis.sources import data_dir_of
-from epicrisis.runs import one_at_a_time, put_in_place, temporary_name
+from epicrisis.runs import one_at_a_time, write_whole
 from epicrisis.values import is_result
+from epicrisis.invocation import run
 
 FILE_NAME = layout.VALIDATION
 
-CHECKS = {
-    "transcription_incomplete": ("document", "Parts of the document were not transcribed"),
-    "number_differs": ("value", "The number stored differs from the value as printed"),
-    "comparator_missing": ("value", "A < or > sign is printed but not stored, or the other way round"),
-    "quantitative_without_number": ("value", "A value marked as a number has no number"),
-    "value_not_on_the_page": ("value", "A value that is nowhere in the text of its page"),
-    "reference_reversed": ("value", "The reference range has its lower bound above the upper bound"),
-    "row_without_result": ("value", "A row has other values but no result"),
-    "repeated_value": ("value", "The same value is stored twice for the same row"),
-    "lab_without_values": ("document", "Lab results with no values transcribed"),
-    "checks_still_failing": ("document", "Automatic checks still fail after the strong model"),
-    "unreadable_parts": ("document", "Parts could not be read"),
-    "date_to_check": ("document", "The document date needs a look"),
-    "possible_copy": ("document", "Possibly the same document as one in another file"),
+# The three findings that are not rules, and are not going to be. Each says what it is, where a
+# finding of it hangs, what would settle it, and where it stands in the queue a person works
+# through — the same four things every rule says in its own file.
+#
+# What is left here after possible_copy moved out is not a backlog. These three are not judgements
+# about a person's data: they are this program reporting on its own reading. "Parts of the document
+# were not transcribed" and "the checks still fail after the strong model" come from what the
+# extract step recorded about itself; "a value that is nowhere in the text of its page" is one of
+# that step's own checks, surfaced. There is nothing in them to tune and nothing to call noise, and
+# a switch on them would be a switch that hides a hole in somebody's archive — which is how a
+# transcription that had gone missing from disk came to be drawn as a finished step (see the note
+# in web/app.py:_extract_step). They fire when something really is missing, and they stay on.
+LEFTOVER = {
+    "transcription_incomplete": ("document", "Parts of the document were not transcribed", 0,
+        "Open the document beside the original. If pages or tables are missing, this file needs reading again."),
+    "value_not_on_the_page": ("value", "A value that is nowhere in the text of its page", 2,
+        "The page's own text does not contain this value. Open the page beside the card: either the layout was misread, or the page asked for something other than what it prints."),
+    "checks_still_failing": ("document", "Automatic checks still fail after the strong model", 9,
+        "The stronger model read this and the checks still do not pass. These need your eyes."),
 }
 
-# What the person is being asked to do about a finding. A list of findings without this is a
-# wall: the page says a check failed and leaves the reader to work out whether it is their
-# problem and what would settle it. Each line says who decides and what settles it.
-ASKS = {
-    "transcription_incomplete": "Open the document beside the original. If pages or tables are missing, this file needs reading again.",
-    "number_differs": "The number stored is not the one printed. Open the line and set it to what the form says.",
-    "comparator_missing": "A < or > is printed and not stored, or stored and not printed. Correct the line on the card.",
-    "quantitative_without_number": "A value counted as a number has none. Read the line on the form and correct it, or mark it as not a value.",
-    "value_not_on_the_page": "The page's own text does not contain this value. Open the page beside the card: either the layout was misread, or the page asked for something other than what it prints.",
-    "reference_reversed": "The range reads backwards. Often the form prints it that way; look, and correct it only if the form does not.",
-    "row_without_result": "A row has a unit or a range but no result. The result may sit in a column that was not read. Open it and see.",
-    "repeated_value": "One line stored twice. Remove the second one on the card.",
-    "lab_without_values": "Lab results with nothing transcribed. It may be a covering letter, or it may need reading again.",
-    "checks_still_failing": "The stronger model read this and the checks still do not pass. These need your eyes.",
-    "date_to_check": "The date could not be settled from the document. Set it by hand on the card, or leave it as it was read.",
-    "possible_copy": "Choose which file answers for the group.",
-    "unreadable_parts": "Mostly nothing to do: a signature, a stamp, a handwritten margin. Read what could not be read, and open only what touches a value.",
-}
 
-# Numbers as labs print them, including a leading decimal separator such as ",5".
-# The order a person works through findings: errors in values first, unreadable parts last.
-PRIORITY = [
-    "transcription_incomplete", "number_differs", "value_not_on_the_page", "comparator_missing", "quantitative_without_number", "reference_reversed", "row_without_result",
-    "repeated_value", "lab_without_values", "checks_still_failing", "date_to_check", "possible_copy", "unreadable_parts",
-]  # fmt: skip
+def vocabulary(data_dir: Path | None = None) -> dict[str, dict]:
+    """Every finding a person can be shown: what it is, where it hangs, what settles it, in order.
+
+    One home for each of those, which is the rule's own file wherever the check has become a
+    rule. What is left here is the handful that have not moved yet.
+    """
+    from epicrisis.rules import load as load_rules
+
+    said = {code: {"kind": kind, "label": label, "order": order, "ask": ask}
+            for code, (kind, label, order, ask) in LEFTOVER.items()}  # fmt: skip
+    for rule in load_rules(data_dir):
+        if rule.attaches:
+            said[rule.id] = {"kind": rule.attaches, "label": rule.name, "order": rule.order, "ask": rule.settles}
+    return dict(sorted(said.items(), key=lambda item: item[1]["order"]))
+
 
 NUMBER = re.compile(r"[-+]?(?:\d+(?:[.,]\d+)?|[.,]\d+)")
 # Codes from the extract checks that other checks here already cover or that do not point at an error.
@@ -81,10 +80,6 @@ INCOMPLETE_CHECK_PROBLEMS = {"page_text_missing", "page_text_short", "page_numbe
 # ask, rather than being counted together as "the checks still fail".
 OWN_FINDING_PROBLEMS = {"value_not_on_the_page"}
 RANGE = re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)?)\s*[-–—]\s*([-+]?\d+(?:[.,]\d+)?)\s*$")
-COPY_MIN_SHARED = 0.8
-COPY_MIN_VALUES = 5
-COPY_MIN_SIZE_RATIO = 0.6  # a short form sharing a date with a long one is not its copy
-COPY_MIN_CONTAINED = 3  # a shorter document whose named results all appear in a longer one
 
 
 def _rows(item: dict) -> dict[tuple, list[dict]]:
@@ -138,6 +133,46 @@ def reference_reversed(document, settings: dict) -> list[Found]:
     return found
 
 
+def range_read_two_ways(document, settings: dict) -> list[Found]:
+    """The two readings of one printed range disagree: the model's numbers and this program's.
+
+    Everything after the reading is done without a model, and the printed range is read by a parser
+    in reference.py — a hand-written thing that has to know a decimal comma from a separator of
+    thousands, a unit carrying a power, a word of direction in five languages, a label before the
+    range, and a ratio that only looks like a range. It has been wrong, and when it is wrong nothing
+    disagrees with it: the band is missing, or it is the wrong band, and no page says so. This asks
+    the one reader that had the page in front of it for the same two numbers, and reports where the
+    two answers differ.
+
+    It reports and decides nothing. Which reading draws the band is one decision in one place —
+    reference.parse, as before — and a disagreement is a thing for a person to look at, beside the
+    scan of the page, exactly like every other finding here.
+
+    Silent where the model was never asked: a document transcribed before those two fields existed
+    carries neither, and the absence of an answer is not a disagreement with one.
+    """
+    apart_by = settings["apart_by"]
+
+    def far_apart(ours: float | None, theirs: float | None) -> bool:
+        if ours is None or theirs is None:
+            return ours is not theirs  # one read a bound where the other read none
+        widest = max(abs(ours), abs(theirs))
+        return abs(ours - theirs) > apart_by * widest
+
+    found = []
+    for value in document.item["observations"]:
+        printed = value.get("reference_as_printed")
+        if not printed or ("reference_low" not in value and "reference_high" not in value):
+            continue
+        theirs = (value.get("reference_low"), value.get("reference_high"))
+        ours = reference.parse(printed) or (None, None)
+        if theirs == (None, None) and ours == (None, None):
+            continue  # both say this is not one range for this person, which is an answer they share
+        if any(far_apart(mine, theirs[side]) for side, mine in enumerate(ours)):
+            found.append(_found(document, value))
+    return found
+
+
 def row_without_result(document, settings: dict) -> list[Found]:
     """A row with a unit or a range but nothing that is the result of it."""
     return [_found(document, values[0]) for values in _rows(document.item).values()
@@ -178,10 +213,37 @@ def date_to_check(document, settings: dict) -> list[Found]:
     return [Found(document.file_sha256, document.pages[0] if document.pages else 0, None, "")]
 
 
+def _the_document_of(documents: list[dict], hit: Found):
+    """The one document a finding is about: its file, and the document holding the page it names.
+
+    The hash alone is the file, and a file can hold several documents — a four-page scan that is
+    two forms. Hanging a finding by hash put it on every document of the file, which turned
+    forty-seven copies into a hundred and seven.
+
+    The page it names, and not the page a document starts on. A rule is free to point at the page
+    where the thing it found actually stands, which for a four-page form is usually not the first;
+    matched against first pages only, such a finding belonged to no document at all and was thrown
+    away in silence — a rule that runs, finds something, and is heard by nobody.
+    """
+    for doc in documents:
+        if doc["file_sha256"] != hit.file_sha256:
+            continue
+        pages = doc["pages"] or [0]
+        if hit.first_page in pages or hit.first_page == pages[0]:
+            yield doc
+
+
 def findings_for(document: Document, checked_by) -> Counter:
-    """What the rules find in one document, counted by the id of the rule that found it."""
+    """What the rules find in one document, counted by the id of the rule that found it.
+
+    Only the rules that are handed one document. A rule of this step that looks at the archive as
+    a whole is run once for all of them, after every document has been read, and would otherwise
+    be handed a document and asked a question it cannot answer from one.
+    """
     found: Counter = Counter()
     for rule in checked_by:
+        if rule.check.looks_at != ONE_DOCUMENT:
+            continue
         hits = rule.check.run(document, rule.settings)
         if hits:
             found[rule.id] += len(hits)
@@ -201,6 +263,12 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
     records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
     pages = latest_pages(output / layout.CLASSIFY)
     corrections = load_corrections(output)
+    # What a person put right themselves. The checks used to read only what the model wrote, so a
+    # value somebody had corrected went on being reported as wrong for ever, and a row they had
+    # marked as not a value went on producing findings. The only way to clear either was to call
+    # the check noise — that is, to say of one's own correction that the check had been mistaken.
+    # A list of work that does not shrink as the work is done is not a list of work.
+    value_corrections = load_value_corrections(output)
     searches = load_search_results(output)
 
     groups = group_documents(pages)
@@ -214,12 +282,22 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
         item = next((doc for doc in (extracted or {"documents": []})["documents"] if tuple(doc["pages"]) == numbers), None)
         if not goes_to_extract(group[0]):
             item = None
+        # Two readings of one document, on purpose, and each check gets the one it is asking about.
+        # The value checks ask what the archive now holds, which is the transcription with this
+        # archive's corrections on it. The transcription check asks whether the model wrote down
+        # what was on the page, and judging that by a correction a person made afterwards is
+        # answering a different question: the person's reading would be reported as the model's
+        # mistake, and correcting a value would add a finding instead of taking one away.
+        as_left = item
+        if item is not None and value_corrections:
+            as_left = {**item, "observations": as_a_person_left_it(
+                item["observations"], sha256, numbers, value_corrections)}  # fmt: skip
         date = document_date(
             item, group, correction=corrections.get((sha256, numbers, "document_date")), search=searches.get((sha256, numbers)),
             day_first=(sha256, numbers) in day_first_documents or provider_key(item, group) in day_first_providers,
         )
         tabular = tuple(page["page"] for page in group if page.get("has_tabular_results"))
-        subject = Document(file_sha256=sha256, pages=numbers, item=item, tabular_pages=tabular,
+        subject = Document(file_sha256=sha256, pages=numbers, item=as_left, tabular_pages=tabular,
                            goes_to_extract=goes_to_extract(group[0]), date_flags=tuple(date["flags"]))  # fmt: skip
         findings = findings_for(subject, checked_by)
         if item:
@@ -234,9 +312,31 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
                      if code not in COVERED_CHECK_PROBLEMS | INCOMPLETE_CHECK_PROBLEMS | OWN_FINDING_PROBLEMS}  # fmt: skip
             if still:
                 findings["checks_still_failing"] += sum(still.values())
-        documents.append({"file_sha256": sha256, "pages": list(numbers), "date": date["value"], "item": item, "findings": findings})
+        # as_left, the same reading every line-by-line check is given: the transcription with what
+        # a person corrected on top of it. The raw one went to the rules of the whole archive, so
+        # the check for copies compared documents by what a model wrote and not by what the person
+        # left — and a list of work that does not shrink as the work is done is not a list of work,
+        # which is written twenty lines above this and was true of every check but that one.
+        documents.append({"file_sha256": sha256, "pages": list(numbers), "date": date["value"],
+                          "item": as_left, "findings": findings})  # fmt: skip
 
-    _mark_possible_copies(documents)
+    # The rules of this step that look at the archive as a whole, rather than at one document:
+    # they run once, after every document has been read, and hang their findings on the documents
+    # they are about. A rule that is switched off does not run and finds nothing, here as anywhere.
+    for rule in checked_by:
+        if rule.check.looks_at == THE_ARCHIVE:
+            # The archive as this step can give it: every document with its transcription, and no
+            # rows. The same subject at the suspects step is built whole, out of the index, with
+            # the habits and numbers of every test in it — so a rule written against those finds
+            # nothing here rather than failing, and the halves are named here instead of guessed
+            # at. kinds.SERVED says which steps hand out this subject at all.
+            for hit in rule.check.run(Archive(rows=[], documents=documents), rule.settings):
+                for doc in _the_document_of(documents, hit):
+                    # Counted, not set. A rule of the whole archive may have several things to say
+                    # about one document, and the line-by-line path beside this one counts them;
+                    # this one wrote 1 whatever it was handed, so one rule was counted two ways
+                    # depending only on which subject it happens to take.
+                    doc["findings"][rule.id] += 1
     result = {
         "validated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "documents": [
@@ -249,9 +349,7 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
         "documents_checked": len(documents),
     }
     path = output / FILE_NAME
-    temporary = temporary_name(path)
-    temporary.write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    put_in_place(temporary, path)
+    write_whole(path, json.dumps(result, ensure_ascii=False, indent=1) + "\n")
     return result
 
 
@@ -277,6 +375,12 @@ def coverage(output: Path) -> dict:
         "pages_not_classified": len(unclassified),
         "documents_due": len(due),
         "documents_not_transcribed": [{"file_id": sha256[:8], "pages": numbers} for sha256, numbers in untranscribed],
+        # Lines this run could not read, from this archive's own files. read_records skips a torn
+        # line and counts it, which is right — one lost record must not take the rest of an archive
+        # down — but the count was asked for in exactly one place, a page of the dashboard, in
+        # another process. From a terminal the archive simply got smaller and every number agreed
+        # with every other: forty-three files became forty-two, and nothing said a word.
+        "lines_not_read": torn_under(output),
     }
 
 
@@ -285,8 +389,7 @@ def validation_state(output: Path) -> dict:
     result = load_validation(output)
     if result is None:
         return {"state": "not_started", "label": "", "title": "Validate: not run yet"}
-    inputs = [output / layout.CLASSIFY, output / layout.CORRECTIONS, output / layout.DATE_SEARCH, output / layout.EXTRACTED]
-    changed = max((path.stat().st_mtime for path in inputs if path.exists()), default=0)
+    changed = layout.changed_since(output, data_dir_of(output), "validate")
     ran = (output / FILE_NAME).stat().st_mtime
     documents = len(result["documents"])
     if ran < changed:
@@ -311,32 +414,73 @@ def _sent_texts(record: dict, pages: tuple[int, ...], archive_root: Path | None)
 
 
 def load_validation(output: Path) -> dict | None:
+    """The findings of the last run of the checks, or nothing where they have not been run.
+
+    A file that is there and will not parse is neither, and it used to be raised from here into
+    whatever was drawing the page: the status page and the page of things to check both answered
+    with the words Internal Server Error, while the five pages that live on the index went on
+    working — so the archive was half open and nothing said why. The way out is the cheapest in
+    this program, and nothing named it: these findings are made by code, in seconds, with no model
+    and nothing sent anywhere.
+    """
     path = output / FILE_NAME
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as broken:
+        raise Unreadable(
+            FILE_NAME,
+            "Nothing that was read is lost. These are the findings of the checks that need no "
+            "model: they are made from what is already on this machine, in seconds.",
+            # The command, with the archive and the instance in it, and nothing about a button.
+            # This same file draws the status page and the page of things to check, so both are
+            # down while it is torn — and "press Check again on the status page" sent a person who
+            # lives on the dashboard to the one page that could not answer them, over the half of
+            # the advice addressed to them. A way out that is not there is worse than one way out.
+            f"Run them again: {run(f'validate --source {output.name}', data_dir_of(output))}. They "
+            f"need no model and send nothing anywhere. The Check again button cannot be used for "
+            f"this one: the status page it stands on is drawn from this same file and is down with "
+            f"it until the checks have been run.",
+        ) from broken
 
 
-def _mark_possible_copies(documents: list[dict]) -> None:
+def possible_copies(documents: list[dict], settings: dict) -> list[Found]:
     """Documents in different files with the same date that print the same results.
 
     Either the same named values (any size, one file an excerpt or export of the other), or
     for longer documents of similar size mostly the same values.
+
+    A rule of the registry rather than a check written into this file: the four numbers below
+    decide what counts as a copy, they were constants nobody could see or move, and "is this a
+    copy" is exactly the kind of judgement a person may want tuned, measured, or turned off —
+    which is what the registry is for. It writes the list of twins onto each document as it
+    goes, because the page that asks a person to choose which file answers for a group needs to
+    know what the group is.
     """
     by_date = defaultdict(list)
     for doc in documents:
         if doc["item"] and doc["date"] and doc["item"]["observations"]:
             by_date[doc["date"]].append(doc)
+    found: list[Found] = []
+    already: set[int] = set()
     for group in by_date.values():
         for position, one in enumerate(group):
             for other in group[position + 1 :]:
                 if one["file_sha256"] == other["file_sha256"]:
                     continue
-                if not (_same_named_values(one["item"], other["item"]) or _mostly_same_values(one["item"], other["item"])):
+                if not (_same_named_values(one["item"], other["item"], settings)
+                        or _mostly_same_values(one["item"], other["item"], settings)):  # fmt: skip
                     continue
                 for doc, twin in ((one, other), (other, one)):
                     # One finding per document, however many twins it has: a group of three used
                     # to report six findings over three documents, which reads as twice the work.
-                    doc["findings"]["possible_copy"] = 1
+                    if id(doc) not in already:
+                        already.add(id(doc))
+                        found.append(Found(doc["file_sha256"], doc["pages"][0] if doc["pages"] else 0,
+                                           doc["date"], ""))  # fmt: skip
                     doc.setdefault("copies", []).append({"file_sha256": twin["file_sha256"], "pages": twin["pages"]})
+    return found
 
 
 def _named_values(item: dict) -> set[tuple[str, str]]:
@@ -352,16 +496,16 @@ def _named_values(item: dict) -> set[tuple[str, str]]:
     }
 
 
-def _same_named_values(one: dict, other: dict) -> bool:
-    """Identical named results, or all results of one document found in the other (at least three)."""
+def _same_named_values(one: dict, other: dict, settings: dict) -> bool:
+    """Identical named results, or all results of one document found in the other."""
     a, b = _named_values(one), _named_values(other)
     if not a or not b:
         return False
     small, large = sorted((a, b), key=len)
-    return small == large or (len(small) >= COPY_MIN_CONTAINED and small <= large)
+    return small == large or (len(small) >= settings["results_in_common"] and small <= large)
 
 
-def _mostly_same_values(one: dict, other: dict) -> bool:
+def _mostly_same_values(one: dict, other: dict, settings: dict) -> bool:
     """Mostly the same results, named. Numbers alone made copies of two different forms.
 
     A urinalysis and a coprogram from one day print the same handful of small numbers — 0, 1,
@@ -369,11 +513,11 @@ def _mostly_same_values(one: dict, other: dict) -> bool:
     because only one document of a group of copies is shown.
     """
     a, b = _named_values(one), _named_values(other)
-    if min(len(one["observations"]), len(other["observations"])) < COPY_MIN_VALUES or not a or not b:
+    if min(len(one["observations"]), len(other["observations"])) < settings["results_at_least"] or not a or not b:
         return False
-    if min(len(a), len(b)) < COPY_MIN_SIZE_RATIO * max(len(a), len(b)):
+    if min(len(a), len(b)) < settings["similar_in_size"] * max(len(a), len(b)):
         return False
-    return len(a & b) >= COPY_MIN_SHARED * min(len(a), len(b))
+    return len(a & b) >= settings["results_shared"] * min(len(a), len(b))
 
 
 def _number(text: str) -> float:

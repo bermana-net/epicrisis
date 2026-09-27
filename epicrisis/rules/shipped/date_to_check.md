@@ -4,6 +4,9 @@ name = "A document whose date could not be settled"
 summary = """Several dates on the page and no way to tell which is the study; a date in a \
 format that reads two ways; or no date anywhere at all."""
 kind = "date-that-could-not-be-settled"
+attaches = "document"   # where a finding of it hangs: on a value, or on the document
+order = 10             # where it stands in the queue a person works through
+settles = """The date could not be settled from the document. Set it by hand on the card, or leave it as it was read."""
 does = "marks"
 at = "validate"
 on_by_default = true
@@ -15,10 +18,6 @@ What `document_dates.py` could not settle. **The deciding is there, not here**: 
 says that what it could not settle is worth a person's eye, and turning it off hides the
 question without changing a single date.
 
-# What settles it
-
-Set the date by hand on the card, or leave it as it was read. A date set by hand is kept apart
-from what the model read and survives the document being read again.
 
 # How it can be wrong
 

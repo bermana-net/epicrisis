@@ -102,6 +102,7 @@ class Archive:
     documents: list[dict]
     habits: dict = None
     numbers: dict = None
+    spellings: dict = None  # every approved spelling of every test, folded, and whose it is
 
 
 @dataclass(frozen=True)

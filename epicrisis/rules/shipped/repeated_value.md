@@ -4,6 +4,9 @@ name = "One line of a form transcribed twice"
 summary = """The same value, on the same page, under the same name, in the same column, from the \
 same fragment of the page — stored twice. The same value printed in two places is not this."""
 kind = "repeated-value"
+attaches = "value"   # where a finding of it hangs: on a value, or on the document
+order = 7             # where it stands in the queue a person works through
+settles = """One line stored twice. Remove the second one on the card."""
 does = "marks"
 at = "validate"
 on_by_default = true
@@ -15,9 +18,6 @@ Values that agree on all of page, name, printed text, column and the fragment of
 they were read from. A form that genuinely prints one result twice — a summary line repeating a
 table — comes from two different fragments and is left alone.
 
-# What settles it
-
-Remove the second one on the card.
 
 # How it can be wrong
 

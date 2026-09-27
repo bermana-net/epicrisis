@@ -20,7 +20,7 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: #e6e4de; color: var(--ink); font: 14px/1.5 var(--sans); }
-  .sheet { width: 210mm; min-height: 297mm; margin: 24px auto; padding: 12mm 13mm 8mm;
+  .sheet { width: 210mm; min-height: 297mm; margin: 24px auto; padding: 9mm 12mm 7mm;
     background: var(--paper); box-shadow: 0 14px 32px rgba(122,33,19,.20); }
   a { color: #8a2f1c; }
 
@@ -30,47 +30,47 @@
   .brand small { display: block; font: 9px/1.5 var(--mono); letter-spacing: .22em; color: var(--muted); }
   .who { font: 9px/1.5 var(--mono); letter-spacing: .14em; text-transform: uppercase; text-align: right; color: var(--signal); }
 
-  h1 { font-size: 24px; line-height: 1.1; letter-spacing: -.02em; margin: 11px 0 7px; max-width: 150mm; }
+  h1 { font-size: 23px; line-height: 1.1; letter-spacing: -.02em; margin: 8px 0 6px; max-width: 150mm; }
   h1 span { color: var(--muted); }
   .lede { margin: 0; max-width: 175mm; font-size: 12.5px; }
   .lede b { font-weight: 700; }
 
-  figure { margin: 10px 0 0; }
-  figure img { display: block; width: 100%; height: 42mm; object-fit: cover; object-position: 50% 34%;
+  figure { margin: 8px 0 0; }
+  figure img { display: block; width: 100%; height: 34mm; object-fit: cover; object-position: 50% 34%;
     border: 1px solid var(--signal); box-shadow: 0 8px 18px rgba(122,33,19,.26); }
   figcaption { font: 8.5px/1.5 var(--mono); letter-spacing: .06em; text-transform: uppercase;
     color: var(--muted); margin-top: 6px; }
 
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 9px; }
   h2 { font: 9px/1.5 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--signal);
     margin: 0 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
   h2 i { color: var(--muted); font-style: normal; }
   ul { margin: 0; padding: 0; list-style: none; }
-  ul li { margin-bottom: 6px; font-size: 11.5px; line-height: 1.4; }
+  ul li { margin-bottom: 5px; font-size: 11.5px; line-height: 1.38; }
   ul li b { font-weight: 700; }
 
   .cases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line);
-    border: 1px solid var(--line); margin-top: 11px; }
+    border: 1px solid var(--line); margin-top: 8px; }
   .cases div { background: var(--paper); padding: 9px 10px; }
   .cases .n { font: 9px/1.5 var(--mono); color: var(--signal); letter-spacing: .1em; }
   .cases h3 { margin: 2px 0 3px; font-size: 11px; }
   .cases p { margin: 0; font-size: 10px; color: var(--muted); line-height: 1.35; }
 
   .facts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line);
-    border: 1px solid var(--line); margin-top: 11px; }
+    border: 1px solid var(--line); margin-top: 8px; }
   .facts div { background: var(--paper); padding: 9px 10px; }
   .facts .n { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
   .facts .k { font: 8.5px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
   .facts .lead { border-left: 3px solid var(--signal); }
 
-  .pilot { border: 1px solid var(--ink); padding: 10px 13px; margin-top: 11px;
+  .pilot { border: 1px solid var(--ink); padding: 9px 13px; margin-top: 8px;
     display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
   .pilot h3 { margin: 0 0 3px; font-size: 13px; }
   .pilot p { margin: 0; font-size: 11px; color: var(--muted); }
   .pilot .card { text-align: right; font: 9px/1.7 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
   .pilot .card b { display: block; font: 700 13px/1.4 var(--sans); letter-spacing: 0; text-transform: none; }
 
-  footer { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 6px;
+  footer { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 5px;
     font: 8px/1.45 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 
   @page { size: A4; margin: 0; }
@@ -103,7 +103,8 @@
     <img src="../docs/images/04-hba1c.png" alt="One test over fifteen years, on forms in two languages">
     <figcaption>Demo data, invented patient. Fifteen values of one test over fifteen years: Russian forms
       first, English after he moved. The shaded band is the range printed on each form, nothing
-      recalculated. The first value above it has a date, a laboratory and a scan behind it.</figcaption>
+      recalculated: where a form printed no range there is no band. Every value has a date, a
+      laboratory and a scan behind it.</figcaption>
   </figure>
 
   <div class="two">
@@ -112,8 +113,9 @@
       <ul>
         <li><b>One timeline per test</b> across laboratories, countries and languages. Units are kept as
           printed; mg/dL and µmol/L never land on one chart.</li>
-        <li><b>When it started.</b> The first value outside the printed range, dated and linked to its
-          form — the question behind every pre-existing condition review.</li>
+        <li><b>When it started.</b> The first value outside the range printed on its own form, dated
+          and linked to that form — the question behind every pre-existing condition review. This one
+          is of the third mode below: the application compares nothing in the other two.</li>
         <li><b>Checks with no model at all:</b> the same result filed three times, a stored number that
           differs from the print, a date nobody could read.</li>
         <li><b>Plain-language questions</b> through Claude or ChatGPT (MCP). Read-only. Each answer carries
@@ -123,6 +125,12 @@
     <section>
       <h2><i>02</i> &nbsp;Why it fits an insurer</h2>
       <ul>
+        <li><b>Three modes, strictest by default.</b> <i>As printed</i>: shown as the forms wrote it,
+          nothing compared. <i>May also read the values</i>: a model may say what a value means; the
+          application still computes nothing. <i>No limits set here</i>: the model answers under no
+          rule of ours, and only here does the application itself compare a number with the range
+          printed beside it and count what fell outside. Your instance, your choice, on its own
+          Settings page.</li>
         <li><b>Inside your perimeter.</b> Self-hosted, no vendor cloud, no telemetry. Model calls go out
           with your own key, one document per call, or not at all.</li>
         <li><b>One archive per case</b>, isolated by construction. Cases never mix.</li>
@@ -138,8 +146,8 @@
   <div class="cases">
     <div><div class="n">01</div><h3>Medical underwriting</h3><p>A full case history before the decision,
       not a stack of PDFs.</p></div>
-    <div><div class="n">02</div><h3>Claims and pre-existing conditions</h3><p>When a value first left range,
-      against the policy start date.</p></div>
+    <div><div class="n">02</div><h3>Claims and pre-existing conditions</h3><p>When a value first left
+      the range printed on its form, against the policy start date. Third mode.</p></div>
     <div><div class="n">03</div><h3>Post-issue review</h3><p>Contestability and audit work with the page
       behind every number.</p></div>
     <div><div class="n">04</div><h3>Cross-border cases</h3><p>IPMI, assistance and expat files in RU, UK,
@@ -147,9 +155,13 @@
   </div>
 
   <div class="facts">
-    <div class="lead"><div class="n">2</div><div class="k">Real archives tested on</div></div>
-    <div><div class="n">500+</div><div class="k">Documents</div></div>
+    <!-- What this has been run on, in numbers and without saying whose. The first cell here said
+         "2 — real archives tested on", which is the owner's own family; a reader of a sales sheet
+         has no business knowing how many real people's records exist, and the sentence sells
+         nothing that the counts below do not sell better. -->
+    <div class="lead"><div class="n">500+</div><div class="k">Documents read</div></div>
     <div><div class="n">5,000+</div><div class="k">Values as printed</div></div>
+    <div><div class="n">761</div><div class="k">Tests in the suite</div></div>
     <div><div class="n">1989–2026</div><div class="k">Years covered</div></div>
     <div><div class="n">200+</div><div class="k">Institutions · 5 languages</div></div>
   </div>

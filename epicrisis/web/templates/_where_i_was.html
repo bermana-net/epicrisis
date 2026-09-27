@@ -1,0 +1,11 @@
+{# Where on this page the person was standing, carried by the form itself.
+
+   Every button here used to come back to /indicators — the first page, no filter, nothing found,
+   every group closed — because the way back was read from the Referer header, and this server sets
+   Referrer-Policy: no-referrer on every answer it gives. So the browser sent no Referer at all, and
+   the page a person had filtered, paged and searched their way to was forgotten by the press of any
+   button on it. This page exists to be worked through five hundred groups at a time. #}
+<input type="hidden" name="at_status" value="{{ status }}">
+<input type="hidden" name="at_find" value="{{ find }}">
+<input type="hidden" name="at_show" value="{{ show }}">
+<input type="hidden" name="at_skip" value="{{ skip }}">

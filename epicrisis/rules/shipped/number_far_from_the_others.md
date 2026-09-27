@@ -5,6 +5,8 @@ summary = """A value ten times larger or smaller than the middle of the same tes
 unit and the same specimen. A misplaced decimal point reads exactly like this, and so does a \
 digit read twice."""
 kind = "number-far-from-the-others"
+attaches = "document"
+settles = """Open the page beside the card and read the number. If it is what the form printed, nothing is wrong: this is a queue of pages worth opening, not a list of errors."""
 does = "marks"
 at = "suspects"
 on_by_default = true

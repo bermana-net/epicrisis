@@ -11,7 +11,11 @@
   <section class="rule" style="padding-top: 18px;">
     <p class="caps"><a href="/?view=indicators">&larr; Timeline by test</a></p>
     <h1>{{ label }}</h1>
+    {% if derived_left_out %}
+    <p class="empty">Every value of this test in this archive was calculated by the laboratory rather than measured &mdash; {{ derived_left_out }} of them &mdash; and calculated values are not drawn here. Ask for them through the tools with <span class="mono">include_derived</span>, or open the documents themselves.</p>
+    {% else %}
     <p class="empty">This archive has no values of this test. Another one on this server may: the test is in the vocabulary, which is shared, and the values are not.</p>
+    {% endif %}
     <p><a class="btn" href="/?view=indicators">The tests this archive has</a></p>
   </section>
   {% elif missing %}
@@ -22,7 +26,7 @@
     <a class="caps back" href="/?view=indicators">&larr; Timeline by test</a>
     <div class="timeline-head">
       <h1>{{ label }}</h1>
-      <p class="caps muted">{{ values | length }} values{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}<br>every number exactly as its form printed it</p>
+      <p class="caps muted">{{ values | length }} values{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}{% if derived_left_out %} &middot; {{ derived_left_out }} more the laboratory calculated rather than measured, not drawn here{% endif %}<br>every number exactly as its form printed it</p>
     </div>
     {% if materials | length > 1 %}
     <div class="materials caps">
@@ -30,16 +34,33 @@
       <a href="/tests/{{ indicator_id }}?material={{ item.key }}"{% if material == item.key %} aria-current="page"{% endif %}>{{ item.label }} <span class="muted">{{ item.count }}</span></a>
       {% endfor %}
     </div>
-    {# A person looking at blood should know the rest exists, and be able to reach it, without
-       it being drawn on their line. Most values whose form said nothing are blood; some are
-       not, and the archive has no way to tell which, so it says so instead of deciding. #}
+    {# A person looking at blood should know the rest exists, and be able to reach it, without it
+       being drawn on their line. The two tabs that are not materials say which of the two they are:
+       a measurement made on the person, which is an answer, and a lab value whose label is missing,
+       which is work somebody can finish. One sentence used to cover both, and it described the
+       second while most of what stood under it was the first. #}
     <p class="caps muted materials-note">One material at a time: the same name is a different measurement in each.
-      {% for item in materials %}{% if item.key == "none" and material != "none" %}
-      <a href="/tests/{{ indicator_id }}?material=none">{{ item.count }} more value{{ "s" if item.count != 1 }} of this test</a> came on forms that did not say what was measured. Most such forms are blood; this one does not say so.
-      {% elif item.key == "none" and material == "none" %}{% endif %}{% endfor %}
-      {% if material == "none" %}These forms did not say what was measured, and no model would say either. Usually it means blood, and sometimes it does not: a urine test printed without its heading looks the same here.{% endif %}
+      {% for item in materials %}{% if item.key == "unknown" and material != "unknown" %}
+      <a href="/tests/{{ indicator_id }}?material=unknown">{{ item.count }} more value{{ "s" if item.count != 1 }} of this test</a> {{ "is" if item.count == 1 else "are" }} of a specimen nobody has been able to name yet.
+      {% endif %}{% endfor %}
+      {% if material == "unknown" %}No form said what these were measured in, and the panel each stands on holds more than one specimen, so a model would not say either. They are lab values missing a label, not measurements of no sample &mdash; that is the tab beside this one. Set it below if you know, from the page itself.{% endif %}
+      {% if material == "not_a_sample" %}These were measured on the person rather than in a sample &mdash; a size on an imaging report, a refraction, a pressure &mdash; so there is no specimen to name. Nothing is missing here.{% endif %}
       {% if read_by_model %}<br><span class="signal">{{ read_by_model }} of these {{ "value" if read_by_model == 1 else "values" }} came on a form that printed no material; a model read the table it stands in and said this one.</span>{% endif %}
     </p>
+    {# Said once for all of them. They arrive together — a form holding two specimens leaves its
+       whole panel without a label — and settling twelve values one card at a time is twelve visits
+       to say one thing. It is written as a person's own correction, which outlives every later
+       reading of the page. #}
+    {% if material == "unknown" %}
+    <form class="settle-material" method="post" action="/tests/{{ indicator_id }}/material">
+      <label class="caps" for="settle-material">These were measured in</label>
+      <select id="settle-material" name="material">
+        {% for one in materials_to_choose %}<option value="{{ one }}">{{ one }}</option>{% endfor %}
+      </select>
+      <button class="btn small" type="submit">Set it on all {{ values | length }}</button>
+      <small class="caps muted">Your own word, kept beside the archive and marked as yours on every value it settles. It survives the documents being read again.</small>
+    </form>
+    {% endif %}
     {% endif %}
   </section>
 
@@ -51,7 +72,7 @@
     </div>
 
     {% if chart.points %}
-    <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.count }} values of {{ label }} in {{ material_label }}, in {{ chart.unit }}, oldest first. The numbers are listed in the table below.">
+    <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.count }} values of {{ label }} in {{ material_label }}, in {{ chart.unit }}, from the archive of {{ owners().whose }}, oldest first. The numbers are listed in the table below.">
       {% for band in chart.bands %}
       <rect x="{{ band.x }}" y="{{ band.y }}" width="{{ band.width }}" height="{{ band.height }}" class="band"></rect>
       {% endfor %}
@@ -66,7 +87,12 @@
       {% for point in chart.points %}
       <a href="{{ point.card_url }}">
         <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4.5" class="point{% if point.corrected %} corrected{% endif %}"></circle>
-        <title>{{ point.date }} · {% if point.comparator and not point.value.startswith(point.comparator) %}{{ point.comparator }}{% endif %}{{ point.value }} {{ point.unit or "" }}{% if point.reference %} · printed range {{ point.reference }}{% endif %} · {{ point.file_id }}</title>
+        {# The printed number and where the dot actually stands. Where a form printed the value at
+           another scale, the two are a power of ten apart, and the note under the chart said so
+           while the thing a person points at said only the printed number — so the one place the
+           dot and the number could be read as disagreeing was the only place that did not
+           explain it. The table below says the same; this says it where the finger is. #}
+        <title>{{ point.date }} · {% if point.comparator and not point.value.startswith(point.comparator) %}{{ point.comparator }}{% endif %}{{ point.value }} {{ point.unit or "" }}{% if point.scaled %} · drawn at ×{{ "%g"|format(point.scaled.factor) }} on this axis, so that one test printed two ways draws one history{% elif point.converted_from %} · drawn in {{ chart.unit }} on this axis{% endif %}{% if point.reference %} · printed range {{ point.reference }}{% endif %} · {{ point.file_id }}</title>
       </a>
       {% endfor %}
     </svg>
@@ -76,9 +102,15 @@
     {# Directly under the drawing, not over it: every chart says which test and what was
        measured, and at the top that line runs into the unit and the count. A chart with too few
        points to draw says it too, because it is still a chart of something. #}
-    <p class="chart-what">{{ label }} <span class="chart-material caps">{{ material_label }}</span> <span class="chart-unit">{{ chart.unit or "no unit printed" }}</span></p>
+    {# And whose archive it is, in the line under the drawing. This chart is the thing that gets
+       held up to a doctor and photographed, and it left the screen carrying no name at all: one
+       server holds several people, the page at this address shows whichever is open, and a
+       daughter with her mother in one tab and her father in another had two of these side by side
+       with nothing on either to say which was which. The strip of tabs is answered by the title;
+       this is the same answer inside the picture. #}
+    <p class="chart-what">{{ label }} <span class="chart-material caps">{{ material_label }}</span> <span class="chart-unit">{{ chart.unit or "no unit printed" }}</span>{% if owners().whose %} <span class="chart-whose caps">archive of {{ owners().whose }}</span>{% endif %}</p>
     {% if chart.points %}
-    <p class="caps muted chart-note">The shaded band is the reference range printed on each form, held until another form printed a different one. It moves because laboratories differ, not because anything was calculated.</p>
+    <p class="caps muted chart-note">The shaded band is the reference range printed on the form beside that value, drawn around the value it belongs to. Where a form printed no range there is no band: the range on the form before it says nothing about a value printed without one. It moves because laboratories differ, not because anything was calculated.{% if chart.points | selectattr("corrected") | first %} A point drawn as a coloured ring is a value you corrected by hand against the page; the table below says so on its row.{% endif %}</p>
     {% endif %}
 
     <div class="obs-table series-table">
@@ -101,7 +133,7 @@
   <p class="empty">No values of this test in the archive.</p>
   {% endfor %}
 
-  <p class="provenance caps muted">Shown, not read: nothing here is averaged, no trend is drawn, and no value is marked high or low. What the numbers mean is for a doctor.</p>
+  <p class="provenance caps muted">Shown, not read: the points are joined in date order so you can see which value came after which — nothing is fitted, smoothed or averaged, and no value is marked high or low. What the numbers mean is for a doctor.</p>
   {% endif %}
 
 {% endblock %}

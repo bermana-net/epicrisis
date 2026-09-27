@@ -398,3 +398,47 @@ def test_word_97_documents_are_read_through_libreoffice(tmp_path):
     assert (record["category"], record["word"]["format"]) == ("word", "doc")
     [ref] = page_refs(record)
     assert "Synthetic discharge summary" in materialize(ref, tmp_path, tmp_path).text
+
+
+def test_a_folder_that_walks_empty_does_not_replace_a_scan_that_found_an_archive(tmp_path):
+    """os.walk over a path that is no longer there yields nothing and raises nothing.
+
+    Put in place, that empty scan became the archive — every page saying nought documents, the
+    index rebuilt from it — for the ordinary reason that a disk did not mount or a folder was
+    renamed. The transcriptions survive it; a person looking at an empty medical archive does
+    not know that.
+    """
+    import pytest
+
+    from epicrisis.inventory.run import NothingWhereTheArchiveWas, write_inventory
+
+    archive, out = tmp_path / "archive", tmp_path / "data" / "inventory.jsonl"
+    archive.mkdir()
+    (archive / "a-form.txt").write_text("a page", encoding="utf-8")
+    assert write_inventory(archive, out).files == 1
+    was = out.read_bytes()
+
+    (archive / "a-form.txt").unlink()
+    with pytest.raises(NothingWhereTheArchiveWas):
+        write_inventory(archive, out)
+    assert out.read_bytes() == was, "the scan that found the archive is still there"
+
+    # An archive that was empty the first time is not this case, and is written as it is.
+    empty_out = tmp_path / "data" / "second.jsonl"
+    assert write_inventory(archive, empty_out).files == 0 and empty_out.exists()
+
+
+def test_one_torn_line_does_not_take_the_whole_archive_down(tmp_path):
+    """These files are the archive itself, appended to a line at a time.
+
+    A disk that fills up or a process killed mid-write leaves one torn line at the end. Raising
+    there took every page of the interface down at once, with nothing to say which file or which
+    line, and no way back from inside the program.
+    """
+    from epicrisis.records import read_records, torn_lines
+
+    path = tmp_path / "classify.jsonl"
+    path.write_text('{"page": 1}\n{"page": 2\n{"page": 3}\n', encoding="utf-8")
+
+    assert [row["page"] for row in read_records(path)] == [1, 3]
+    assert torn_lines().get(str(path)) == 1

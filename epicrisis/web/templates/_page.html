@@ -11,9 +11,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}{% endblock %} · Epicrisis Companion</title>
+{# Whose archive this is, in the title of every page. One server holds several and shows one at a
+   time, so two people's pages live at the same addresses: a daughter with her mother's records in
+   one tab and her father's in another had two tabs reading "Haemoglobin · Epicrisis Companion",
+   and a bookmark made from either opened whoever happened to be showing. The strip of tabs, the
+   history and the bookmark all read this line and nothing else. #}
+<title>{% block title %}{% endblock %}{% if stage().whose %} · {{ stage().whose }}{% endif %} · Epicrisis Companion</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/static/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/fonts/fonts.css">
 <link rel="stylesheet" href="/static/app.css?v={{ style_version() }}">
 </head>

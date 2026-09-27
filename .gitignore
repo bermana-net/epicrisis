@@ -35,3 +35,6 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Working copies of agents, made by the harness beside the repository.
+.claude/worktrees/

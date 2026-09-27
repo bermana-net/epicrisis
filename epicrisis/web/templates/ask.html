@@ -15,18 +15,28 @@
 
   <section class="rule" style="padding-top: 18px;">
     <h1>Ask</h1>
-    <p class="lead caps">Questions about this archive, answered from the index by a model that can only read it. Values come as printed, with the document behind each number. It does not say whether a value is normal and does not give medical advice: that is for a doctor.</p>
+    {# What this page actually does, which is set on the Settings page and is not the same in all
+       three modes. It used to say the strictest of the three whichever was chosen — so an owner
+       who had deliberately taken the limits off showed this page to somebody, who read "it does
+       not say whether a value is normal" above an answer that did exactly that, and concluded
+       that this is how the program works rather than that its owner had allowed it. The words
+       below are the words of the mode itself, on Settings. #}
+    <p class="lead caps">Questions about this archive, answered from the index by a model that can only read it. Values come as printed, with the document behind each number.
+    {%- if mode == "direct" %} <b>The limits on what the model may say are off on this instance</b>, by its owner's choice: it answers the way it would anywhere else, with no rule about what it may say and no line drawn between what is printed and its own reading. It is not a doctor and this is not a medical device.
+    {%- elif mode == "with_meaning" %} This instance lets the model read the values as well as show them: it may compare a value with the range printed on its own form, say how values moved and what a test measures. It still does not diagnose, prescribe or judge urgency, and what the numbers mean is for a doctor.
+    {%- else %} It does not say whether a value is normal and does not give medical advice: that is for a doctor.
+    {%- endif %}</p>
   </section>
 
   {% if not enabled %}
-  <p class="empty">Answering questions is turned off on this instance. Turn it on in <a href="/settings">Settings</a>, or with <span class="mono">epicrisis ask --on</span>.</p>
+  <p class="empty">Answering questions is turned off on this instance. Turn it on in <a href="/settings">Settings</a>, or with <span class="mono">{{ cli }} ask --on --data-dir {{ data_dir }}</span>.</p>
   {% if not confirmed %}<p class="caps muted">It also needs model processing to be allowed: <a href="/consent">read what would be sent</a>.</p>{% endif %}
   {% elif not confirmed %}
   <p class="empty">Model processing is not confirmed yet. <a href="/consent">Review what is sent</a>.</p>
   {% else %}
   <div class="ask-layout">
     <aside class="chat-list">
-      <form method="post" action="/ask" class="new-chat"><input type="hidden" name="question" value=""><a class="btn small" href="/ask">New chat</a></form>
+      <span class="new-chat"><a class="btn small" href="/ask">New chat</a></span>
       {% for item in chats %}
       <a class="chat-item{% if chat and item.id == chat.id %} current{% endif %}" href="/ask/{{ item.id }}">
         <span>{{ item.title }}</span>
@@ -63,7 +73,10 @@
         <div class="answer">{{ message.text|markdown }}</div>
         {% if message.text %}
         <div class="answer-foot">
-          <button class="btn small copy" type="button" data-copy="{{ message.text }}">Copy answer</button>
+          {# The note beside an answer says which mode made it; the copy took only the words. An answer
+             read by a model, pasted into a message to a doctor, arrived with nothing to say that it
+             was a reading and not what the documents print — so it goes with the text. #}
+          <button class="btn small copy" type="button" data-copy="{{ message.text }}&#10;&#10;{% if message.mode == "direct" %}&mdash; Answered through Epicrisis Companion with no limits set on that instance: this is a model&#39;s reading, not what the documents print. Not a medical device.{% elif message.mode == "with_meaning" %}&mdash; Answered through Epicrisis Companion, which on that instance may read the values as well as show them: anything beyond what the documents print is the model&#39;s reading. Not a medical device.{% else %}&mdash; Answered through Epicrisis Companion, values as printed, with the document behind each number. Not a medical device.{% endif %}">Copy answer</button>
           <span class="caps muted">{% if message.seconds %}Answered in {{ message.seconds }} seconds{% endif %}{% if message.mode == "with_meaning" %} &middot; this answer may read the values, not only show them{% elif message.mode == "direct" %} &middot; answered with no limits set here{% endif %}</span>
         </div>
         {% endif %}
@@ -100,7 +113,20 @@
     if (!id || !document.querySelector(".running-note")) return;
     const poll = async () => {
       try {
-        const state = await (await fetch(`/ask/${id}/state`)).json();
+        const answer = await fetch(`/ask/${id}/state`);
+        {# The archive was switched, here or in another tab, and this conversation belongs to the
+           one that was open when it started — so it is gone from this page for good. Knocking on
+           by, once every two seconds for as long as the tab stays open, left the page saying
+           "answering" for ever over an answer nobody was going to bring. #}
+        if (answer.status === 404) {
+          const note = document.querySelector(".running-note");
+          if (note) {
+            note.textContent = "The archive shown was switched while this was being answered, so this conversation is not on this page any more. It is kept with the archive it was asked of: choose that person again under \u201cArchive of\u201d at the top of this page and the conversation is here, with whatever was written while you were away.";
+            note.classList.remove("running-note");
+          }
+          return;
+        }
+        const state = await answer.json();
         if (!state.running) { location.reload(); return; }
         const steps = state.messages[state.messages.length - 1].steps || [];
         const list = document.querySelector(".steps ul");

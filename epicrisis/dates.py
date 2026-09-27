@@ -7,7 +7,10 @@ file name or folder.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
+
+from epicrisis.printed_values import fold, fold_with_offsets
 from datetime import date
 
 # Month names by stem: genitive and nominative forms in ru, uk, en, es, el share these starts.
@@ -16,7 +19,12 @@ MONTH_STEMS = {
     2: ("феврал", "фев", "лют", "february", "feb", "febrero", "φεβ", "φλεβ"),
     3: ("март", "мар", "берез", "march", "mar", "marzo", "μαρ", "μάρ"),
     4: ("апрел", "апр", "квіт", "april", "apr", "abril", "abr", "απρ", "απρ"),
-    5: ("мая", "май", "трав", "may", "mayo", "μαΐ", "μαι", "μάι"),
+    # μαϊ, with the dialytika and no accent, is how May comes out of capitals: ΜΑΪΟΥ. Greek prints
+    # that mark in capitals precisely because ΜΑΙΟΥ would read as the diphthong αι, so a form
+    # headed in capitals — as laboratory forms are — carried the one spelling this list did not
+    # hold, and every document dated in May lost its day and its month and went to the first of
+    # January. May is the only month of the twelve this happens to.
+    5: ("мая", "май", "трав", "may", "mayo", "μαΐ", "μαϊ", "μαι", "μάι"),
     6: ("июн", "черв", "june", "jun", "junio", "ιουν", "ιούν"),
     7: ("июл", "лип", "july", "jul", "julio", "ιουλ", "ιούλ"),
     8: ("август", "авг", "серп", "august", "aug", "agosto", "ago", "αυγ", "αύγ"),
@@ -42,9 +50,15 @@ ROMAN_MONTHS = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "
 ROMAN = re.compile(r"(?<!\d)(\d{1,2})\s*[./\-\s]\s*([ivx]{1,4})\s*[./\-\s]\s*(\d{4}|\d{2})(?!\d)")
 # The year first, with any of the separators a form may print it with.
 ISO = re.compile(r"(?<!\d)(\d{4})\s*([.\-/])\s*(\d{1,2})\s*\2\s*(\d{1,2})(?!\d)")
-DAY_MONTH_WORD = re.compile(r"(?<!\d)(\d{1,2})\s*\.?\s*(?:de\s+)?(" + _WORD + r")\s*,?\s*(?:de\s+)?(\d{4}|\d{2})(?!\d)")
+# A hyphen between the day, the month and the year is what a laboratory system prints:
+# "10-NOV-2021", "8-ago-2019". Allowed only between the parts, never as the separator a number
+# begins with, so "3,89-5,84" is still two numbers and not a date. Without it the day and the
+# month were both lost and the document went quietly to the first of January.
+_APART = r"[-–/.\s\u00a0]"
+DAY_MONTH_WORD = re.compile(r"(?<!\d)(\d{1,2})\s*[º°]?\s*" + _APART + r"?\s*(?:de\s+)?(" + _WORD
+                            + r")\s*,?\s*" + _APART + r"?\s*(?:de\s+)?(\d{4}|\d{2})(?!\d)")  # fmt: skip
 MONTH_WORD_DAY = re.compile(r"(" + _WORD + r")\s+(\d{1,2})\s*,?\s+(\d{4})(?!\d)")
-MONTH_WORD_YEAR = re.compile(r"(" + _WORD + r")\s*[/\s]\s*(\d{4}|\d{2})(?!\d)")
+MONTH_WORD_YEAR = re.compile(r"(" + _WORD + r")\s*(?:" + _APART + r"|\s*de\s+)\s*(\d{4}|\d{2})(?!\d)")
 MONTH_YEAR = re.compile(r"(?<!\d)(\d{1,2})\s*[./]\s*(\d{4}|\d{2})(?!\d)")
 YEAR = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
 
@@ -66,7 +80,14 @@ def read_printed_date(printed: str | None, language: str | None = None, today: d
     if not printed or not printed.strip():
         return PrintedDate(printed)
     today = today or date.today()
-    text = re.sub(r"[«»\"„“”']", " ", printed.casefold())
+    # Put back together before the words are looked for. casefold turns Greek ΐ into a letter and
+    # two combining marks, and a pattern of letters stops at the first mark it cannot take — so
+    # "8 Μαΐου 2019" lost both the day and the month and became the first of January. The same
+    # month in capitals was said here to read perfectly, and did not: ΜΑΪΟΥ folds to μαϊου, a
+    # third spelling that was in no list, and it is the spelling a laboratory form actually
+    # prints. The sentence stood over the code for two versions; the shape now stands in
+    # tests/printed-shapes.json, where it can be run instead of believed.
+    text = unicodedata.normalize("NFC", re.sub(r"[«»\"„“”']", " ", printed.casefold()))
     latin_digits = text.replace("і", "i").replace("х", "x").replace("у", "v")
 
     candidates = []
@@ -134,21 +155,32 @@ def _full_year(text: str, today: date) -> int:
 
 
 # Labels printed before a date of birth. Such a date is never the date of a document.
-BIRTH_LABEL = re.compile(
-    r"(дата\s+рожд\w*|год\s+рожд\w*|дата\s+народж\w*|рік\s+народж\w*|fecha\s+de\s+nacimiento|date\s+of\s+birth|"
-    r"birth\s*date|d\.\s*o\.\s*b\.?|\bdob\b|ημερομηνία\s+γέννησης|ημ\.?\s*γέννησης|έτος\s+γέννησης)[^\d\n]{0,40}"
-)
+#
+# Written here as a person writes them, and compiled through the same fold as the text they are
+# looked for in. Matched against a merely lower-cased text they could not work in Greek at all: a
+# casefold turns the final ς into σ, so the literal "γέννησης" could never meet itself, and a form
+# that prints the label in capitals loses its accents on top of that. The date of birth then passed
+# for the date of the document, in silence, on every Greek form. The same answer — fold both sides —
+# is what reference.py and index/build.py already do; this list was the one left behind.
+_BIRTH_LABELS = (
+    r"дата\s+рожд\w*", r"год\s+рожд\w*", r"дата\s+народж\w*", r"рік\s+народж\w*",
+    r"fecha\s+de\s+nacimiento", r"date\s+of\s+birth", r"birth\s*date", r"d\.\s*o\.\s*b\.?", r"\bdob\b",
+    r"ημερομηνία\s+γέννησης", r"ημ\.?\s*γέννησης", r"έτος\s+γέννησης",
+)  # fmt: skip
+BIRTH_LABEL = re.compile(fold("(" + "|".join(_BIRTH_LABELS) + r")[^\d\n]{0,40}"))
 
 
 def birth_dates(text: str | None, language: str | None = None, today: date | None = None) -> list[PrintedDate]:
     """Dates printed right after a date-of-birth label."""
     found = []
-    # Searched in the lower-cased text and read from the same text, not from the original: a
-    # casefold can change a string's length (ß becomes ss), and every offset after it would then
-    # point a letter or two off — at the tail of the date rather than at the date.
-    lowered = (text or "").casefold()
-    for match in BIRTH_LABEL.finditer(lowered):
-        parsed = read_printed_date(lowered[match.end() : match.end() + 30], language, today)
+    # Searched in the folded text and read from the original one, through the offsets the fold
+    # keeps: a fold can change a string's length (ß becomes ss), and every offset after it would
+    # then point a letter or two off — at the tail of the date rather than at the date.
+    whole = text or ""
+    folded, offsets = fold_with_offsets(whole)
+    for match in BIRTH_LABEL.finditer(folded):
+        start = offsets[match.end()] if match.end() < len(offsets) else len(whole)
+        parsed = read_printed_date(whole[start : start + 30], language, today)
         if parsed.value:
             found.append(parsed)
     return found
