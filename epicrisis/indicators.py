@@ -19,7 +19,8 @@ from pathlib import Path
 from epicrisis import layout
 from epicrisis import records
 from epicrisis.printed_values import fold
-from epicrisis.runs import one_at_a_time, put_in_place
+from epicrisis.runs import copy_whole, one_at_a_time, write_whole
+from epicrisis.state import Unreadable
 from epicrisis.values import only_results
 
 FILE_NAME = layout.INDICATORS
@@ -51,10 +52,31 @@ def path(data_dir: Path) -> Path:
 
 
 def load(data_dir: Path) -> list[Indicator]:
+    """Every group this instance holds, or none at all when the vocabulary has not been started.
+
+    A file that is there and will not parse is not an empty vocabulary, and treating it as one
+    was the most expensive mistake in this program. It read as "no groups yet", so the page said
+    "0 indicators shown" as though the work had not been done; the index was rebuilt from that
+    emptiness and every chart of a test across the years went with it; and then one press of
+    Approve on that page wrote the emptiness plus one group back over the file. Five hundred
+    groups of spellings, approved one at a time by a person, replaced by one, with a 303 for
+    "saved". Nothing rebuilds them: a model can propose groups, only a person can approve them,
+    so this is the one file under data/ whose contents no code and no money can make again.
+    """
+    file = path(data_dir)
     try:
-        stored = json.loads(path(data_dir).read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
+        stored = json.loads(file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return []
+    except (ValueError, OSError) as broken:
+        raise Unreadable(
+            FILE_NAME,
+            "Nothing has been written over it. Every spelling a person approved is still in that "
+            "file, and the documents and values it groups are untouched.",
+            f"Repair it, or copy back {FILE_NAME}.previous beside it — the version before the last "
+            "change. Moving it aside instead starts the vocabulary from nothing, and the groups "
+            "would have to be approved again by hand.",
+        ) from broken
     return [Indicator(**item) for item in stored.get("indicators", [])]
 
 
@@ -81,11 +103,43 @@ def editing(data_dir: Path):
 
 
 def save(data_dir: Path, indicators: list[Indicator]) -> None:
+    """Write the whole vocabulary, keeping the version it replaces beside it.
+
+    Every caller builds the new list out of load(), so a write over an unreadable file would
+    write whatever load() managed to salvage — which is why load() raises instead of salvaging,
+    and why this asks again here: a caller that catches Unreadable somewhere in the middle of its
+    work must not reach the write with a list built from nothing.
+
+    The temporary name carries this process's pid, like every other written file here. It did not,
+    and two writers — the page and a command — then shared one temporary file, so the rename put
+    the loser's half of the vocabulary in place of the winner's whole one.
+    """
+    if unreadable(data_dir):
+        raise Unreadable(
+            FILE_NAME,
+            "Nothing was changed, and every spelling a person approved is still in that file.",
+            f"Repair it, or copy back {FILE_NAME}.previous beside it.",
+        )
     file = path(data_dir)
-    temporary = file.with_name(file.name + ".tmp")
     payload = {"version": 1, "indicators": [indicator.as_dict() for indicator in sorted(indicators, key=lambda item: item.label.casefold())]}
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    put_in_place(temporary, file)
+    if file.exists():
+        copy_whole(file, file.with_name(file.name + ".previous"))
+    write_whole(file, json.dumps(payload, ensure_ascii=False, indent=1) + "\n")
+
+
+def unreadable(data_dir: Path) -> bool:
+    """A vocabulary file that is there and cannot be read. Not the same as none yet.
+
+    Asked by the page, so that it can say so instead of showing a person an empty vocabulary and
+    letting them press Approve over it.
+    """
+    try:
+        json.loads(path(data_dir).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (ValueError, OSError):
+        return True
+    return False
 
 
 def approved_names(data_dir: Path) -> dict[str, str]:

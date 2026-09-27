@@ -124,3 +124,64 @@ def test_a_range_that_is_only_numbers_and_a_per_cent_sign_says_its_unit():
     assert unit_from_reference("20 - 44") is None
     # A unit named outright still wins over the per-cent shape: "мг%" is milligrams per decilitre.
     assert unit_from_reference("0 - 5 мг%") == "mg/dl"
+
+
+def test_one_unit_written_in_two_alphabets_is_one_unit():
+    """Од/л and U/L are the same unit, and they were two keys.
+
+    A word left out of the table does not fail loudly: it stays in the key half translated, and
+    the key comes out in two alphabets at once — "нmol/l" beside "nmol/l" — so one enzyme printed
+    on a Ukrainian form and on an English one drew two separate charts of one history. On the
+    real archive that was ten pairs of charts and fifteen per cent of every value with a unit.
+    """
+    from epicrisis.units import unit_key
+
+    same = [("Од/л", "U/L"), ("Ед/л", "U/L"), ("Е/л", "U/L"), ("МЕ/л", "IU/L"),
+            ("нмоль/л", "nmol/L"), ("пмоль/л", "pmol/L"), ("мкм/л", "umol/L"),
+            ("мкмоль/л", "µmol/L"), ("мм/год", "mm/h"), ("мм/ч", "mm/h"),
+            ("мл/хв/1,73 м²", "ml/min/1.73 m2"), ("мл/мин/1,73 м²", "ml/min/1.73 m2")]  # fmt: skip
+    for cyrillic, latin in same:
+        assert unit_key(cyrillic) == unit_key(latin), f"{cyrillic} and {latin}"
+
+    # And the key of a unit this program knows is written in one alphabet, not in two.
+    for printed, _ in same:
+        assert not any("Ѐ" <= letter <= "ӿ" for letter in unit_key(printed)), printed
+
+    # Units that are not the same must not become the same: the table is read longest word first,
+    # and read shortest first it turned an hour into a unit — "мм/год" folded to "мм/gu".
+    assert unit_key("мг/л") != unit_key("г/л") != unit_key("мкг/л")
+    assert unit_key("ммоль/л") != unit_key("мкмоль/л") != unit_key("нмоль/л")
+
+
+def test_the_capital_in_a_printed_range_is_part_of_the_unit():
+    """Г/л is giga per litre — a count of cells. г/л is grams per litre. One letter apart.
+
+    The unit named inside a printed range was read with the case dropped, which is right for
+    мг/дл and MG/DL and wrong for exactly this pair: a platelet count printed "180,0-320,0 Г/л",
+    on a form with no unit column, was given grams per litre and drawn on the scale of the
+    proteins, a thousand million times away from what it is.
+    """
+    from epicrisis.units import unit_from_reference
+
+    assert unit_from_reference("180,0-320,0 Г/л") == "10^9/l"
+    assert unit_from_reference("4,0-9,0 Г/л") == "10^9/l"
+    assert unit_from_reference("60 - 80 г/л") == "g/l"
+    assert unit_from_reference("3,5-5,5 g/l") == "g/l"
+
+
+def test_the_capital_is_the_unit_only_when_it_is_the_whole_unit():
+    """"Г/Л" is inside "МГ/Л" and "МКГ/Л" and "MG/L".
+
+    Looked for as a substring, the capital that means giga per litre matched the tail of
+    milligrams and micrograms per litre, and put a range printed in milligrams on the scale of a
+    cell count: the very mistake the capital was added to prevent, in the other direction and
+    over more values than it ever fixed.
+    """
+    from epicrisis.units import unit_from_reference
+
+    assert unit_from_reference("10,0-25,0 МГ/Л") == "mg/l"
+    assert unit_from_reference("3 - 8 МКГ/Л") == "ug/l"
+    assert unit_from_reference("0,5-2,0 MG/L") == "mg/l"
+    # And the unit it was added for still reads as itself.
+    assert unit_from_reference("180,0-320,0 Г/л") == "10^9/l"
+    assert unit_from_reference("4,0-9,0 Г/Л") == "10^9/l"

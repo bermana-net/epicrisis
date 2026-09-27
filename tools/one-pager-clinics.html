@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The source of docs/epicrisis-for-clinics.pdf, the sheet behind the Clinics and Hospitals tab.
+     It is not published: it lives here so the PDF can be made again. The styles are the ones of
+     one-pager.html, deliberately unchanged, so the two sheets are plainly of one program. Rebuild:
+       uv run --with playwright --with pypdf --with pypdfium2 python tools/make-one-pager.py -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epicrisis for clinics and hospitals</title>
+<meta name="description" content="Epicrisis Companion for clinics and hospitals: the records a patient brings from elsewhere, in five languages, as a structured archive on your own servers, every value one click from the scan it came from.">
+<style>
+  /* The same paper, ink and red as the program and the project page, laid out for one sheet of
+     A4: this page is the PDF, and the PDF is printed from this page, so the two cannot drift. */
+  :root {
+    --paper: #f3f2ee; --ink: #0e0e0e; --signal: #d9502a; --deep: #7a2113;
+    --muted: #55544f; --line: #dcdad3; --faint: #e9e7e1;
+    --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e6e4de; color: var(--ink); font: 14px/1.5 var(--sans); }
+  .sheet { width: 210mm; min-height: 297mm; margin: 24px auto; padding: 9mm 12mm 6mm;
+    background: var(--paper); box-shadow: 0 14px 32px rgba(122,33,19,.20); }
+  a { color: #8a2f1c; }
+
+  .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;
+    border-bottom: 3px solid var(--ink); padding-bottom: 8px; }
+  .brand { font: 700 15px/1.2 var(--sans); letter-spacing: .02em; }
+  .brand small { display: block; font: 9px/1.5 var(--mono); letter-spacing: .22em; color: var(--muted); }
+  .who { font: 9px/1.5 var(--mono); letter-spacing: .14em; text-transform: uppercase; text-align: right; color: var(--signal); }
+
+  h1 { font-size: 23px; line-height: 1.1; letter-spacing: -.02em; margin: 8px 0 6px; max-width: 150mm; }
+  h1 span { color: var(--muted); }
+  .lede { margin: 0; max-width: 175mm; font-size: 12.5px; }
+  .lede b { font-weight: 700; }
+
+  figure { margin: 8px 0 0; display: grid; grid-template-columns: 94mm 1fr; gap: 12px; align-items: center; }
+  /* The whole of the picture, smaller — not a slice of it at full size. The file itself is cut to
+     the chart, so nothing here crops and nothing is lost off an edge. */
+  figure img { display: block; width: 100%; height: auto;
+    border: 1px solid var(--signal); box-shadow: 0 8px 18px rgba(122,33,19,.26); }
+  figcaption { font: 8.5px/1.5 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin: 0; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 9px; }
+  h2 { font: 9px/1.5 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--signal);
+    margin: 0 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  h2 i { color: var(--muted); font-style: normal; }
+  ul { margin: 0; padding: 0; list-style: none; }
+  ul li { margin-bottom: 5px; font-size: 11.5px; line-height: 1.38; }
+  ul li b { font-weight: 700; }
+
+  .cases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line); margin-top: 8px; }
+  .cases div { background: var(--paper); padding: 9px 10px; }
+  .cases .n { font: 9px/1.5 var(--mono); color: var(--signal); letter-spacing: .1em; }
+  .cases h3 { margin: 2px 0 3px; font-size: 11px; }
+  .cases p { margin: 0; font-size: 10px; color: var(--muted); line-height: 1.35; }
+
+  .facts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line); margin-top: 8px; }
+  .facts div { background: var(--paper); padding: 9px 10px; }
+  .facts .n { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+  .facts .k { font: 8.5px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .facts .lead { border-left: 3px solid var(--signal); }
+
+  .pilot { border: 1px solid var(--ink); padding: 9px 13px; margin-top: 8px;
+    display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
+  .pilot h3 { margin: 0 0 3px; font-size: 13px; }
+  .pilot p { margin: 0; font-size: 11px; color: var(--muted); }
+  .pilot .card { text-align: right; font: 9px/1.7 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  .pilot .card b { display: block; font: 700 13px/1.4 var(--sans); letter-spacing: 0; text-transform: none; }
+
+  footer { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 5px;
+    font: 8px/1.45 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+  @page { size: A4; margin: 0; }
+  @media print {
+    body { background: var(--paper); }
+    .sheet { margin: 0; box-shadow: none; width: auto; min-height: auto; }
+  }
+  /* Only on a screen: at print width the page is exactly A4 and must keep its columns. */
+  @media screen and (max-width: 230mm) {
+    .sheet { width: auto; padding: 18px; }
+    .two, .cases, .facts, .pilot, figure { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="top">
+    <div class="brand">EPICRISIS COMPANION<small>NOT A MEDICAL DEVICE</small></div>
+    <div class="who">For clinics<br>and hospitals</div>
+  </div>
+
+  <h1>The folder the patient brought, read before the visit.<br><span>Every value one click from its page.</span></h1>
+  <p class="lede">Epicrisis turns the paper a patient carries in &mdash; other clinics&rsquo; letters, other
+    laboratories&rsquo; forms, in five languages &mdash; into a structured archive on your own servers. Your
+    clinician reads it in one place, can question it through an AI assistant, and every answer points
+    back to the scan. <b>The archive shows what the documents say. Your clinicians decide.</b></p>
+
+  <figure>
+    <img src="../docs/images/clinics-chart.png" alt="One test over thirteen years, with the range each form printed shaded behind it">
+    <figcaption>Demo data, invented patient. One test over thirteen years, drawn from forms somebody else
+      printed. The shaded band is the range printed on each form, held until another form printed a
+      different one: it moves because laboratories differ, not because anything was calculated. Every
+      value keeps its date, its institution and the scan it came from.</figcaption>
+  </figure>
+
+  <div class="two">
+    <section>
+      <h2><i>01</i> &nbsp;What the clinician gets</h2>
+      <ul>
+        <li><b>One timeline per test</b> across laboratories, countries and languages. Units are kept as
+          printed; mg/dL and &micro;mol/L never land on one chart.</li>
+        <li><b>The range of that form, on that day.</b> The band on a chart is what the laboratory printed
+          beside the value, not a table of ours &mdash; where a form printed no range, there is no band.</li>
+        <li><b>Every value one click from its scan.</b> The page is the authority, and a line read
+          wrongly is corrected by hand in seconds.</li>
+        <li><b>Search over every word</b> of every document, matching across Cyrillic and Latin
+          spellings of one test.</li>
+        <li><b>Checks with no model at all:</b> the same result filed three times, a stored number that
+          differs from the print, a date nobody could read.</li>
+      </ul>
+    </section>
+    <section>
+      <h2><i>02</i> &nbsp;Why it fits a clinic</h2>
+      <ul>
+        <li><b>Three modes, strictest by default.</b> <i>As printed</i>: shown as the forms wrote it,
+          nothing compared. <i>May also read the values</i>: a model may say what a value means and how it
+          moved. <i>No limits set here</i>: the model answers under no rule of ours, and only here does
+          the application itself compare a number with the range printed beside it. The last two were
+          written for a person reading their own records &mdash; the model is told that the person asking
+          is the person the records are about &mdash; so the mode that fits a clinic reading somebody
+          else's file is the first. Your instance, your choice, on its own Settings page.</li>
+        <li><b>Inside your perimeter.</b> Self-hosted, no vendor cloud, no telemetry. Model calls go
+          out with your own key, or not at all.</li>
+        <li><b>One archive per patient</b>, isolated by construction, and every page carries the name
+          of the one whose records are open.</li>
+        <li><b>It reads and cites; it does not diagnose, triage or decide.</b> Not a medical device, and
+          nothing here changes who is responsible for a clinical decision.</li>
+        <li><b>It holds what was brought and could be read</b>, and says so: a test missing from this
+          archive is not a test that was never taken.</li>
+        <li><b>Source-available.</b> Your IT and clinical governance read every line before it is
+          installed.</li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="cases">
+    <div><div class="n">01</div><h3>A new patient with a folder</h3><p>Years of somebody else&rsquo;s
+      paper, searchable before the visit ends.</p></div>
+    <div><div class="n">02</div><h3>Referral and second opinion</h3><p>The whole history in one place,
+      with the form behind every number.</p></div>
+    <div><div class="n">03</div><h3>Before a procedure</h3><p>Which tests exist, when they were taken,
+      and what that form printed.</p></div>
+    <div><div class="n">04</div><h3>Patients from abroad</h3><p>RU, UK, EN, ES and EL forms on one
+      timeline, each in its own words.</p></div>
+  </div>
+
+  <div class="facts">
+    <div class="lead"><div class="n">500+</div><div class="k">Documents read</div></div>
+    <div><div class="n">5,000+</div><div class="k">Values as printed</div></div>
+    <div><div class="n">761</div><div class="k">Tests in the suite</div></div>
+    <div><div class="n">1989&ndash;2026</div><div class="k">Years covered</div></div>
+    <div><div class="n">200+</div><div class="k">Institutions &middot; 5 languages</div></div>
+  </div>
+
+  <div class="pilot">
+    <div>
+      <h3>Looking for two or three clinics or departments for a pilot.</h3>
+      <p>Your own files, on your own server. We learn what your clinicians actually need; you keep
+        everything. A data processing agreement under Article 28 GDPR comes with the licence.</p>
+    </div>
+    <div class="card"><b>Artem Berman</b>
+      epicrisis.bermana.net<br>linkedin.com/in/artemberman</div>
+  </div>
+
+  <footer>Not a medical device under Regulation (EU) 2017/745: it stores and displays what the forms
+    printed (MDCG 2019-11). Not for diagnosis, treatment or clinical decisions.
+    Business Source License 1.1 &mdash; free for a person and their family, a commercial licence for
+    organisations.</footer>
+
+</div>
+</body>
+</html>

@@ -87,17 +87,64 @@ def web_command(executable: str, model: str, system_prompt: str = None, schema: 
 
 
 class WebCheckBackend:
-    name = "claude-code-subscription"
+    """The web through Claude Code's own search, under whatever account it is signed in to."""
+
+    # Its own name, because a name here is a destination and not a transport. This said
+    # "claude-code-subscription" — the same name the reading of documents uses — and consent is
+    # checked by name, so an agreement whose page describes sending pages to Anthropic also let
+    # printed test names out to a search engine and to whatever sites it returns. That is the only
+    # place in this program that reaches past Anthropic at all, and this file says so itself. The
+    # sibling backend below has always had a name of its own.
+    name = "claude-code-web-search"
 
     def __init__(self, model: str = STRONG_MODEL, executable: str = "claude", timeout_seconds: int = TIMEOUT_SECONDS):
         self.model, self.executable, self.timeout_seconds = model, executable, timeout_seconds
 
+    def ask(self, system_prompt: str, schema: dict, request: str, workdir: Path) -> dict:
+        fields, _ = run_claude(web_command(self.executable, self.model, system_prompt, schema),
+                               request, workdir, self.timeout_seconds)  # fmt: skip
+        return fields
+
     def settle(self, names: str, workdir: Path) -> dict:
-        fields, _ = run_claude(web_command(self.executable, self.model), REQUEST.format(names=names),
-                               workdir, self.timeout_seconds)  # fmt: skip
+        fields = self.ask(SYSTEM_PROMPT, SCHEMA, REQUEST.format(names=names), workdir)
         if not isinstance(fields.get("names"), list):
             raise BackendError("no valid structured output")
         return fields
+
+
+class ApiWebCheckBackend:
+    """The web through the provider's own search, on a key of the instance owner's.
+
+    The search runs on their side: no search engine of ours, no second key, and nothing of ours
+    executes for it. What leaves this server is the same as with the other engine — a printed
+    name, its units and how often it appears — because what is sent is decided by the request
+    and not by which engine carries it.
+    """
+
+    name = "anthropic-api-web-search"
+
+    def __init__(self, call, timeout_seconds: int = TIMEOUT_SECONDS):
+        self.call, self.model, self.timeout_seconds = call, call.model, timeout_seconds
+
+    def ask(self, system_prompt: str, schema: dict, request: str, workdir: Path) -> dict:
+        from epicrisis.conversing import with_the_web
+
+        return with_the_web(self.call, system_prompt, schema, request)
+
+    def settle(self, names: str, workdir: Path) -> dict:
+        fields = self.ask(SYSTEM_PROMPT, SCHEMA, REQUEST.format(names=names), workdir)
+        if not isinstance(fields.get("names"), list):
+            raise BackendError("no valid structured output")
+        return fields
+
+
+def web_backend(data_dir: Path, model: str | None = None):
+    """Whichever engine this instance is set to, for the one pass that asks the open web."""
+    from epicrisis import engines
+
+    if engines.chosen_engine(data_dir) == engines.ANTHROPIC_API:
+        return ApiWebCheckBackend(engines.a_call(data_dir, "strong"))
+    return WebCheckBackend(model=model or STRONG_MODEL)
 
 
 SYNONYM_FILE = "indicator-web-names.jsonl"
@@ -271,10 +318,7 @@ def look_up_names(data_dir: Path, printed: list[dict], backend: "WebCheckBackend
         batch = todo[start : start + BATCH]
         by_ref = {str(number): item for number, item in enumerate(batch, start + 1)}
         blocks = "\n\n".join(_test_block(number, item) for number, item in enumerate(batch, start + 1))
-        fields, _ = run_claude(
-            web_command(backend.executable, backend.model, SYNONYM_PROMPT, SYNONYM_SCHEMA),
-            SYNONYM_REQUEST.format(tests=blocks), workdir, backend.timeout_seconds,
-        )  # fmt: skip
+        fields = backend.ask(SYNONYM_PROMPT, SYNONYM_SCHEMA, SYNONYM_REQUEST.format(tests=blocks), workdir)
         if not isinstance(fields.get("tests"), list):
             raise BackendError("no valid structured output")
         counts["batches"] += 1

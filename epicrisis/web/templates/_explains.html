@@ -1,0 +1,19 @@
+{# A small circle that explains the thing beside it.
+
+   One of these wherever a word on a page is exact but not obvious: a threshold, a heading, a
+   state. The explanation is in the page, not in a tooltip the browser draws, so it can be long
+   enough to be useful and is styled like everything else.
+
+   No script: it shows on hover and on focus, so a mouse reveals it by pointing, a keyboard by
+   tabbing to it, and a finger by touching it. The button is type="button" on purpose — inside a
+   form, a button without one submits it.
+
+   The button says what it explains and carries the card as its description, so a screen reader
+   reads the explanation instead of seven identical circles saying "what this means".
+
+   Use:  {{ explains("What this number means, in a sentence a person can act on.", "this number") }}
+#}
+{% macro explains(text, about="", label="i") -%}
+{%- set said = an_id("explains") -%}
+<span class="explains"><button type="button" class="explains-mark" aria-label="What {{ about or "this" }} means" aria-describedby="{{ said }}">{{ label }}</button><span class="explains-text" id="{{ said }}" role="note">{{ text }}</span></span>
+{%- endmacro %}

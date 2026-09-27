@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from epicrisis import records
-from epicrisis.runs import belongs_to_the_folder, put_in_place, temporary_name
+from epicrisis.runs import belongs_to_the_folder, write_whole
 
 FILE_NAME = "mcp-access.jsonl"
 KEEP_LINES = 5000  # a few months of ordinary use; the file is trimmed when it grows past it
@@ -189,7 +189,5 @@ def _trim(file: Path) -> None:
     lines = file.read_text(encoding="utf-8").splitlines()
     if len(lines) <= KEEP_LINES:
         return
-    temporary = temporary_name(file)
-    temporary.write_text("\n".join(lines[-KEEP_LINES:]) + "\n", encoding="utf-8")
-    put_in_place(temporary, file)
+    write_whole(file, "\n".join(lines[-KEEP_LINES:]) + "\n")
 

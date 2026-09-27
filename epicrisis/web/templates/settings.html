@@ -1,4 +1,5 @@
 {% extends "_page.html" %}
+{% from "_explains.html" import explains %}
 {% set page_class = "settings" %}
 {% block title %}Settings{% endblock %}
 {% block page %}
@@ -12,8 +13,20 @@
   </section>
 
   {% if trouble %}<div class="notice caps"><span class="alert">{{ trouble }}</span></div>{% endif %}
-  {% if saved %}<p class="caps signal">Saved.</p>{% endif %}
+  {# The file these switches come from cannot be read. Said on the way in: every switch below is
+     then drawn at its default and not from the file, and the lock draws as on because it fails
+     closed — which is right, and looks exactly like somebody having turned it on. Until this was
+     here, the only way to find out was to press Save and be refused. #}
+  {% if settings_unreadable %}<div class="notice caps"><span class="alert">data/settings.json is there and cannot be read, so nothing below was read from it: every switch on this page is showing its default, and the lock on the network is showing as on because it closes rather than opens when this file cannot be read. Nothing has been changed, and nothing can be saved until the file is repaired or moved aside.</span></div>{% endif %}
+  {# What was stored, not only that something was. One press of Save can store an engine, three
+     models, an answer mode, nineteen switches, their thresholds and the lock at once, and a bare
+     "Saved." over a switch still waiting to be confirmed said two opposite things at once. #}
+  {% if saved %}<p class="caps signal">{% if stored %}Saved: {{ stored }}.{% else %}Saved. Nothing on the page was different from what was already stored.{% endif %}</p>{% endif %}
+  {% if trying %}<p class="caps muted">Nothing was saved: trying a threshold only measures it. What is on the page is what you sent, and pressing Save is what stores it.</p>{% endif %}
 
+  {# A form of its own, outside the settings form: a rule is written, not saved with everything
+     else, and one form inside another is not a thing HTML has. #}
+  <form id="new-rule" method="post" action="/rules"></form>
   <form class="settings-form" method="post" action="/settings">
     {# One form, four tabs. The tab is a radio button and the panels are its siblings, so
        switching tabs is CSS alone: no script, no navigation, and nothing typed on another tab is
@@ -46,7 +59,11 @@
       {% set unknown = passes | rejectattr("chosen", "in", known_names) | list %}
       {% if unknown %}<p class="note alert caps">This program does not know {{ unknown | map(attribute="chosen") | join(", ") }}. If the subscription has no such model, the step using it will fail when it runs.</p>{% endif %}
       {% for item in passes %}
+      {# Under the same protocol as the switches: a form that did not draw these must not be able
+         to decide what they are. Without it, any form posted to this page without the three
+         selects put all three back to what the program ships with. #}
       <label class="choice model-choice">
+        <input type="hidden" name="shown" value="models">
         <span><b>{{ item.label }}</b><small>{{ item.about }}</small></span>
         <select name="model_{{ item.key }}">
           {% for name, description in known_models %}
@@ -61,12 +78,32 @@
       <legend class="caps">Ask page</legend>
       {% if not confirmed %}<p class="note alert caps">Model processing is not confirmed on this instance, so these choices do nothing yet. <a href="/consent">Read what would be sent</a> first.</p>
       {% elif not model_ready %}<p class="note alert caps">The program that talks to the model is not installed on this server, so nothing here can answer yet.</p>{% endif %}
-      <label class="choice"><input type="checkbox" name="ask_page" value="on"{% if enabled %} checked{% endif %}{% if not confirmed %} disabled{% endif %}>
+      {# The hidden field says "this switch was drawn, so what the form does not carry is what it
+         turned off". A disabled checkbox is never carried, so drawing the field beside one said
+         the switch had been turned off by somebody who had not touched it: change the engine,
+         which un-confirms the consent and disables this box, and the next Save anywhere on this
+         page silently switched the Ask page off. #}
+      <label class="choice">{% if confirmed %}<input type="hidden" name="shown" value="ask_page">{% endif %}<input type="checkbox" name="ask_page" value="on"{% if enabled %} checked{% endif %}{% if not confirmed %} disabled{% endif %}>
         <span><b>Answer questions about the archive</b><small>Adds the Ask page. Each question goes to one isolated model call that can only read this archive.{% if not confirmed %} Model processing is not confirmed yet: <a href="/consent">review what is sent</a>.{% endif %}</small></span>
       </label>
     </fieldset>
     <fieldset>
-      <legend class="caps">What answers may contain</legend>
+      <legend class="caps">What answers may contain, on the Ask page</legend>
+      {# Said out loud, because the words of these three are absolute and their reach is not: they
+         are the task given to the model on this page. An assistant you open the archive to over
+         the network is a model somebody else is running, under its own rules; the tools it gets
+         are read-only and say what they do not do, and that is the whole of what holds there. #}
+      {# What these three actually reach. The paragraph here said they were the task given to the
+         model on the Ask page and that an assistant over the network answers under its own rules,
+         "not these" — and then the third of them switches on a computation that lives in exactly
+         those network tools. Somebody reading top to bottom was told the choice was about one page
+         and then made a change that reached another. #}
+      <p class="note caps">These three are the task given to the model on the Ask page of this
+        instance. An assistant you open this archive to over the network answers under its own
+        rules rather than under these: what holds there is that its tools only read, and that each
+        one says what it does not do. One thing here does reach them &mdash; the third choice, which
+        is what lets this application compare a number with the range printed beside it, and the
+        tool that answers that question over the network refuses until it is chosen.</p>
       <label class="choice"><input type="radio" name="mode" value="as_printed"{% if mode == "as_printed" %} checked{% endif %}>
         <span><b>As printed only</b><small>Values, units and the reference ranges printed on the same form, with the document behind each number. The model does not say whether a value is normal, does not explain what results mean and does not advise. This is the default of the project.</small></span>
       </label>
@@ -74,17 +111,17 @@
         <span><b>May also read the values</b><small>For your own records. The model may compare a value with the range printed on its own form, describe how values moved, explain what a test measures and say what is worth asking a doctor. It keeps what is printed apart from its own reading, and it still does not diagnose, prescribe or judge urgency.</small></span>
       </label>
       <label class="choice"><input type="radio" name="mode" value="direct"{% if mode == "direct" %} checked{% endif %}>
-        <span><b>No limits set here</b><small>A plain conversation with the model. It is told where your archive is and nothing else: no rule about what it may say, no line between what is printed and its own reading. It answers the way it would anywhere else, and it can be wrong about your records as easily as about anything else.</small></span>
+        <span><b>No limits set here</b><small>A plain conversation with the model. It is told where your archive is and nothing else: no rule about what it may say, no line between what is printed and its own reading. It answers the way it would anywhere else, and it can be wrong about your records as easily as about anything else. <b>This one also lets the application itself compare a number with the range printed beside it</b> and count what fell outside — the only setting that does. That is about what is computed, not about what may be said.</small></span>
       </label>
-      <p class="note alert caps">Turning this on lets the model read your results, not only show them. The application still only stores and displays; the reading is done by a general-purpose model, under your own account, at your choice. Keep it for your own archive. It is not a doctor, and it is not a medical device: nothing here is a diagnosis or a treatment decision. Check any number against the original page before you act on it.</p>
+      <p class="note alert caps">Turning either of the last two on lets the model read your results, not only show them; the reading is done by a general-purpose model, under your own account, at your choice. In the first two the application itself still only stores and displays. Keep it for your own archive. It is not a doctor, and it is not a medical device: nothing here is a diagnosis or a treatment decision. Check any number against the original page before you act on it.</p>
     </fieldset>
     </div>
     <div class="tab-panel panel-reading">
       <p class="note caps">What is taken from a form beyond the value itself. How a history of one test is drawn &mdash; what a chart does with units, and what a value carrying no unit is placed beside &mdash; is on the Rules tab.</p>
     <fieldset>
       <legend class="caps">What was measured</legend>
-      <label class="choice"><input type="checkbox" name="read_materials" value="on"{% if read_materials %} checked{% endif %}>
-        <span><b>Let a model say what a form did not</b><small>Many forms never print which specimen they are of. Blood usually goes unsaid, because a laboratory has no reason to write it; a urinalysis printed without its heading looks the same; and a keratometry reading or the width of a ventricle is of no specimen at all. Off, all of those stay under &ldquo;not said&rdquo;, which is exactly what the form says. On, a model reads each table &mdash; its headings and the names of its values, never a number or a date &mdash; and settles the ones it is sure of. Those values are marked on the page as read rather than printed, and what the model was unsure of is never used either way. Changing this rebuilds the index, which takes a moment.{% if read_materials_known %} {{ read_materials_known }} tables have been read so far.{% endif %}</small></span>
+      <label class="choice"><input type="hidden" name="shown" value="read_materials"><input type="checkbox" name="read_materials" value="on"{% if read_materials %} checked{% endif %}>
+        <span><b>Let a model say what a form did not</b><small>Many forms never print which specimen they are of. Blood usually goes unsaid, because a laboratory has no reason to write it; a urinalysis printed without its heading looks the same; and a keratometry reading or the width of a ventricle is of no specimen at all. Off, all of those stay under &ldquo;material unknown&rdquo;, which is exactly what the form says. On, a model reads each table &mdash; its headings and the names of its values, never a number or a date &mdash; and settles the ones it is sure of. Those values are marked on the page as read rather than printed, and what the model was unsure of is never used either way. Changing this rebuilds the index, which takes a moment.{% if read_materials_known %} {{ read_materials_known }} tables have been read so far.{% endif %}</small></span>
       </label>
     </fieldset>
     </div>
@@ -94,21 +131,62 @@
       <p class="note caps">Each one is a file. The ones that come with the program live beside the code; the ones this archive added live in its own folder. A rule may mark something to look at or say what scale something is printed in. None of them computes a value, judges one, or decides anything for you.</p>
       {% for rule in rules %}
       {% if loop.first or rule.at != rules[loop.index0 - 1].at %}
-      <p class="rule-step caps"><span class="rule-at{% if rule.costly %} costs{% endif %}">{{ rule.at }}</span> {{ rule.cost }}</p>
+      <p class="rule-step caps"><span class="rule-at{% if rule.costly %} costs{% endif %}">{{ rule.at }}</span> {{ rule.cost }}
+        {{ explains("Which part of the program runs these rules. It decides what turning one on or off asks of you: a rule
+         that runs while documents are read can mean reading them again, with a model; one that runs when a page is drawn
+         costs nothing at all.", "this step") }}</p>
       {% endif %}
       {% if rule.waiting %}
       <div class="notice caps ask-first">
-        <p><b>{{ "Turning this on" if rule.turning_on else "Turning this off" }} means documents are read again by a model.</b> {{ rule.cost }} Nothing has been changed yet.</p>
+        <p><b>{{ "Turning this on" if rule.turning_on else "Turning this off" }} means documents are read again by a model.</b> {{ rule.cost }} This one switch is still as it was; the box is ticked the way you asked so that saying yes is one press.</p>
         <p>
           <button class="btn" type="submit" name="confirm_rule" value="{{ rule.id }}">Yes, {{ "turn it on" if rule.turning_on else "turn it off" }}</button>
           <a class="caps" href="/settings?tab=rules">Leave it as it was</a>
         </p>
       </div>
       {% endif %}
+      <input type="hidden" name="shown" value="{{ rule.id }}">
       <label class="choice"><input type="checkbox" name="rule_on" value="{{ rule.id }}"{% if rule.on %} checked{% endif %}>
         <span><b>{{ rule.name }}</b> <span class="rule-at filled caps" title="Which part of the program runs this rule, and what turning it on or off asks of you.">{{ rule.at }}</span>{% if not rule.shipped %} <span class="caps muted">this archive's own</span>{% endif %}
-        <small>{{ rule.summary }}</small></span>
+        <small>{{ rule.summary }}</small>
+        {# Where the switch does more than decide whether a line is reported. Said beside the switch
+           and not only in the rule's own page, because the page is behind a click and the switch is
+           not: somebody who calls five findings noise is shown "a candidate to switch off" right
+           here, and for this one rule that press also stops every copy of a document being folded
+           into one — after which the same measurement appears two or three times in every series. #}
+        {% if rule.switching_off %}<small class="caps signal rule-switching-off">Off: {{ rule.switching_off }}</small>{% endif %}
+        <small class="caps muted rule-found">{{ rule.found }}{% if rule.worth_keeping %} &middot; <span class="signal">{{ rule.worth_keeping }}</span>{% endif %}
+        {{ explains("What this rule found on the archive you are looking at, and how much of that you have since called
+         real or noise. A rule that is off says what it would find instead, so that turning it on is a decision made
+         knowing the answer. The rules that place a value on a scale are not counted: they find nothing, they move
+         points on a chart.", "this count") }}</small></span>
       </label>
+      {% if rule.knobs %}
+      <div class="knobs">
+        {% for knob in rule.knobs %}
+        <label>
+          <span class="caps">{{ knob.name }}</span>
+          <input type="hidden" name="knob_name" value="{{ knob.field }}">
+          <input type="text" name="knob_value" value="{{ knob.value }}"{% if knob.number %} inputmode="decimal"{% endif %}>
+          <small>{{ knob.means }} Ships as <b>{{ knob.default }}</b>.</small>
+        </label>
+        {% endfor %}
+        {% if rule.at == "suspects" %}
+        <p class="try-line caps">
+          <button class="btn small" type="submit" name="try_rule" value="{{ rule.id }}">Try it</button>
+          {% if rule.tried %}
+          {% if rule.tried.trouble %}<span class="alert">{{ rule.tried.trouble }}</span>
+          {% else %}<span><b>{{ rule.tried.found }}</b> on {{ rule.tried.documents }} document{{ "s" if rule.tried.documents != 1 }} with these numbers &mdash; nothing saved yet</span>{% endif %}
+          {% else %}<span class="muted">What it would find on this archive. Nothing is saved.</span>{% endif %}
+        </p>
+        {% if rule.tried and rule.tried.examples %}
+        <ul class="try-examples">{% for line in rule.tried.examples %}<li>{{ line }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% else %}
+        <p class="try-line caps muted">These checks read the documents themselves, so there is nothing to try in a moment: save, and the archive is checked again.</p>
+        {% endif %}
+      </div>
+      {% endif %}
       <details class="fix-row">
         <summary class="caps">What this rule looks at, and how it can be wrong</summary>
         <div class="lock-how-to">{{ rule.about }}</div>
@@ -116,6 +194,34 @@
       {% else %}
       <p class="note caps">No rules are installed.</p>
       {% endfor %}
+      <details class="fix-row write-rule">
+        <summary class="caps">Write a rule of your own</summary>
+        <div class="lock-how-to">
+          <p class="note caps">A rule of yours is a file in this archive's own folder. It picks one of the kinds of check this program already has — no code is written anywhere — and it arrives switched off, with the thresholds that kind ships with. Turn it on and tune it here like any other.</p>
+          <div class="knobs">
+            <label><span class="caps">kind of check</span>
+              <select name="kind" form="new-rule">
+                {% for item in kinds %}<option value="{{ item.name }}">{{ item.name }}</option>{% endfor %}
+              </select>
+              {# Each kind with what it looks at and what turning it on will ask of you. The step
+                 it runs at used to stand beside the name as its bare word — extract, validate,
+                 suspects — which says nothing to somebody writing their first rule, while the
+                 sentence that does say it was already written and not shown. #}
+              <small>{% for item in kinds %}<b>{{ item.name }}</b> &mdash; {{ item.about }} <i>{{ item.cost }}</i><br>{% endfor %}</small>
+            </label>
+            <label><span class="caps">name</span><input type="text" name="name" form="new-rule" placeholder="What it finds, in a line"><small>Shown beside its switch. The file is named after it.</small></label>
+            <label><span class="caps">one line</span><input type="text" name="summary" form="new-rule"><small>What it looks at, for somebody deciding whether to turn it on.</small></label>
+            <label><span class="caps">what settles it</span><input type="text" name="settles" form="new-rule"><small>What a person should do about a finding. A list without this is a wall.</small></label>
+            <label><span class="caps">hangs on</span>
+              <select name="attaches" form="new-rule"><option value="document">document</option><option value="value">value</option></select>
+              <small>Whether a finding of it is about one value or the whole document.</small>
+            </label>
+          </div>
+          <p class="note caps">And the longer text: what it looks at, and <b>how it can be wrong</b>. Every rule here carries one, and it is the part that matters when somebody comes back to it in a year.</p>
+          <textarea name="about" form="new-rule" rows="5" placeholder="# What it looks at&#10;&#10;...&#10;&#10;# How it can be wrong&#10;&#10;..."></textarea>
+          <p><button class="btn small" type="submit" form="new-rule">Write it</button></p>
+        </div>
+      </details>
       {% for problem in rule_problems %}
       <p class="note alert caps">A rule file could not be read &mdash; {{ problem }}</p>
       {% endfor %}
@@ -124,16 +230,21 @@
     <div class="tab-panel panel-network">
     <fieldset>
       <legend class="caps">The archive over the network</legend>
-      <label class="choice"><input type="checkbox" name="mcp_lock" value="on"{% if mcp_lock %} checked{% endif %}>
+      <label class="choice"><input type="hidden" name="shown" value="mcp_lock"><input type="checkbox" name="mcp_lock" value="on"{% if mcp_lock %} checked{% endif %}>
         <span><b>Ask for a code before answering an assistant</b><small>The read-only tools served over the network stay shut until someone gives the six digits from your authenticator. Tools used on this machine are not affected.{% if not mcp_secret %} No code is set up yet, so this switch does nothing.{% endif %}</small></span>
       </label>
       <details class="fix-row">
         <summary class="caps">What this means in use</summary>
         <div class="lock-how-to">
-          <p><b>Once, on the server:</b> <span class="mono">sudo epicrisis mcp-lock init</span>. It prints a line for your authenticator app &mdash; that line is the code's secret, so read it there and send it nowhere.</p>
+          <p><b>Once, on the server:</b> <span class="mono">{{ cli_root("mcp-lock init") }}</span> (written that way because sudo does not carry your PATH). It prints a line for your authenticator app &mdash; that line is the code's secret, so read it there and send it nowhere.</p>
           <p><b>Then, in a conversation:</b> the assistant hits the lock, asks you for the six digits, and the archive opens. A new conversation asks again; within one it stays open for the window below.</p>
           <p><b>Ending a conversation:</b> ask the assistant to lock the archive. The pass it was given stays written in that conversation, and locking makes it useless to anyone who reads it later.</p>
-          <p><b>If you lose the phone with the authenticator:</b> <span class="mono">epicrisis mcp-lock off</span> on the server takes the lock away, and <span class="mono">mcp-lock init --force</span> sets up a new code. Nothing is lost.</p>
+          {# With --data-dir, and said. The first two commands here write to /etc and work from any
+             folder; this one writes a setting of one instance, and its default is a folder called
+             "data" beside wherever the person is standing. Without the option, somebody whose phone
+             was lost was told "The lock is off" while the lock stayed shut over their archive. #}
+          <p><b>If you lose the phone with the authenticator:</b> <span class="mono">{{ cli }} mcp-lock off --data-dir {{ data_dir }}</span> on the server takes the lock away, and <span class="mono">{{ cli_root("mcp-lock init --force") }}</span> sets up a new code. Nothing is lost. The folder has to be named, or the command writes a setting beside wherever you are standing and says it worked.</p>
+          <p><b>If the code is refused and you are sure it is right:</b> the clock of this server may have drifted away from the phone's &mdash; a machine that stood switched off, a restored snapshot, a time service that did not come up. A code is only good for about half a minute either way. <span class="mono">{{ cli }} mcp-lock status --data-dir {{ data_dir }}</span> prints this server's own time to compare with the phone, and a code that is right for a drifted clock is now refused with that said out loud rather than as "the code does not fit".</p>
         </div>
       </details>
       <div class="lock-how">

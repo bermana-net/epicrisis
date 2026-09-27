@@ -12,7 +12,16 @@
   {# Until the checks have run over something there is nothing to check, so this page says what
      every other one says. Findings that exist are always shown, index or no index: validation
      runs before the index is built, and its findings are not to be hidden in between. #}
-  {% if not sources or not (sources | selectattr("validated_at") | list) %}
+  {# Read but never checked is a state of its own: the archive is here, the checks have not run,
+     and the thing to do is run them — which costs nothing and sends nothing. This used to fall
+     into the general empty state, which told a read archive it had not been read and offered a
+     full model re-read, while the one Run checks button on the site sat inside the branch that
+     state was hiding. Not read at all is still the general empty state: there the model is the
+     step, and it is the same sentence every other page says. #}
+  {% set here = stage() %}
+  {# "Nothing to read in that folder" belongs with the states that have nothing to show, not with a
+     "Run checks" button over nought documents: it is the same noise the other pages were making. #}
+  {% if not sources or here.state in ("no_archive", "unread", "nothing_to_read", "scanning") %}
   {{ nothing("To check") }}
   {% else %}
 
@@ -24,7 +33,10 @@
   {% for source in sources %}
   <section class="docs-source">
     <div class="docs-summary caps">
-      <span>{{ source.name }}</span>
+      {# Whose archive this is, as every other page of this interface says it. This said the base
+         name of the folder on disk: a name the owner chose, which may be a nickname, a diagnosis or
+         "mum's scans", printed two blocks under a header that names the person properly. #}
+      <span>Archive of {{ source.whose }}</span>
       {% if source.validated_at %}
       <span>{{ source.documents_with_findings }} of {{ source.documents_checked }} documents to check</span>
       <span>Checked {{ source.validated_at.replace("T", " ")[:16] }} UTC</span>
@@ -46,6 +58,42 @@
           {% else %}<span class="mono">{{ item.file_sha256[:8] }} p. {{ item.pages | join(", ") }}</span> &middot; that document is no longer in the archive{% endif %}
           {% if item.removed %} &middot; marked as not a value{% elif item.changes %} &middot; {{ item.changes.keys() | join(", ") | replace("_as_printed", "") }}{% endif %}
         </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {# The same loss on a whole document: a date put in by hand, or the choice of which of several
+       copies answers. Both are kept against the pages the classification grouped, and a page read
+       again can be grouped differently — after which the correction applies to nothing at all,
+       and a document that was dated by hand goes back to having no date. #}
+    {% if source.lost_document_corrections %}
+    <div class="card-findings">
+      <span class="caps signal">Corrections that no longer match a document: {{ source.lost_document_corrections | length }}</span>
+      <p class="caps muted">A date put in by hand, or the choice of which copy answers, follows the document it was made on. These were made on documents whose pages have since been grouped differently, so they now apply to nothing. Open the document and make them again.</p>
+      <ul>
+        {% for item in source.lost_document_corrections %}
+        <li>
+          <span class="mono">{{ item.file_sha256[:8] }} p. {{ item.pages | join(", ") }}</span>
+          &middot; {% if item.field == "document_date" %}a date put in by hand{% else %}the copy that answers{% endif %}
+          {% if item.value %} &middot; <span class="mono">{{ item.value }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {# And a verdict a person gave on a finding, kept against the same key as a correction on a
+       document and lost the same way. It was the quietest of the three: not counted as lost, and
+       still counted as a verdict under the rule — in the pair of numbers on the settings page that
+       decides whether that rule is worth keeping. #}
+    {% if source.lost_judgements %}
+    <div class="card-findings">
+      <span class="caps signal">Verdicts that no longer match a document: {{ source.lost_judgements | length }}</span>
+      <p class="caps muted">What you said about a finding &mdash; that it was real, or that it was noise &mdash; follows the document it was said about. These were said about documents whose pages have since been grouped differently, so they now apply to nothing and are no longer counted under their rule. Nothing is lost from the file; say it again on the finding as it stands now.</p>
+      <ul>
+        {% for item in source.lost_judgements %}
+        <li><span class="mono">{{ item.file_sha256[:8] }} p. {{ item.pages | join(", ") }}</span> &middot; {{ item.rule }} &middot; {{ item.verdict }}</li>
         {% endfor %}
       </ul>
     </div>
@@ -89,16 +137,25 @@
     {% for check in source.checks %}
     {# Closed to begin with: nine checks and a thousand findings opened at once are a wall, not
        a list. The headings say what each one is and how much of it there is, and a person opens
-       the one they mean to work on. #}
-    <details class="docs-year">
+       the one they mean to work on.
+
+       The id is what a verdict comes back to. Saying "real" on the fortieth row and landing at
+       the top of a page with every check shut again loses a person's place and shows them
+       nothing for the click, so the check they were working in is named in the address and
+       opened here. #}
+    <details class="docs-year" id="{{ check.code }}"{% if open_check == check.code %} open{% endif %}>
       <summary>
         <span class="check-title">{{ check.label }}</span>
         <span class="caps muted">{{ check.entries|length }} {% if check.entries|length == 1 %}document{% else %}documents{% endif %}</span>
       </summary>
-      {% if check.ask %}<p class="caps muted copies-note">{{ check.ask }}</p>{% endif %}
+      {# Out of the head row, which a phone does not draw: this is the only explanation of what
+         saying "real" or "noise" does, and on a phone it disappeared along with the column
+         headings, leaving two buttons and no word about them. Here it is beside the note that
+         says what settles the check, which is where a person is already reading. #}
+      <p class="caps muted copies-note">{% if check.ask %}{{ check.ask }} {% endif %}Your word &mdash; real or noise &mdash; marks and never hides: a finding you call noise stays on the page, because one mistaken click must not be able to lose a real one. What you say is counted beside the rule on the Settings page, which is how a rule that is never right can be found and removed.</p>
       <div class="doc-table">
         <div class="doc-row head caps review-row">
-          <span>Date</span><span>Type</span><span>File</span><span>Findings</span>
+          <span>Date</span><span>Type</span><span>File</span><span>Findings</span><span>Was it real?</span>
         </div>
         {% for entry in check.entries %}
         {% set document = entry.row %}{% set file = document.file %}
@@ -107,6 +164,21 @@
           <span><a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type }}</a></span>
           <span class="doc-file-cell"><span class="file-id" style="background: {{ file.reading.background }}; color: {{ file.reading.color }}" title="File ID {{ file.file_id }}. {{ file.reading.title }}.">{{ file.file_id }}</span> <span class="path mono">{{ file.path }}</span> <span class="caps muted">p. {{ document.page_label }}</span></span>
           <span class="mono">{{ entry.count }}{% for copy in entry.copies %}<br><a class="doc-link" href="/documents/{{ source.id }}/{{ copy.file.sha256 }}/{{ copy.pages[0] }}">{{ copy.file.file_id }} p. {{ copy.page_label }}</a>{% endfor %}</span>
+          {# Marks, never hides: one mistaken click must not be able to lose a real finding. #}
+          <span class="judge caps">
+            {% for verdict, word in (("real", "real"), ("noise", "noise")) %}
+            <form method="post" action="/review/{{ source.id }}/judge">
+              <input type="hidden" name="rule" value="{{ check.code }}">
+              <input type="hidden" name="sha256" value="{{ entry.sha256 }}">
+              <input type="hidden" name="pages" value="{{ entry.pages }}">
+              <input type="hidden" name="verdict" value="{{ verdict }}">
+              {# Which of the two was chosen is a colour on the screen and nothing at all to a
+                 screen reader without this, and a pair of unlabelled buttons on every row of a
+                 long table says only "real, button / noise, button" over and over. #}
+              <button type="submit" class="judge-button{% if entry.said == verdict %} said{% endif %}" aria-pressed="{{ "true" if entry.said == verdict else "false" }}" aria-label="{{ word }} &mdash; {{ check.label }}, {{ file.file_id }} p. {{ document.page_label }}">{{ word }}</button>
+            </form>
+            {% endfor %}
+          </span>
         </div>
         {% if entry.parts %}
         <div class="doc-row unreadable-row">

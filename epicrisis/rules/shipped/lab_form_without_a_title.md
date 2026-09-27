@@ -5,6 +5,8 @@ summary = """A transcribed laboratory form that came back with no title. Most fo
 so its absence usually means the top of the page was not read — and the top of the page is \
 where the date and the institution live."""
 kind = "lab-form-without-a-title"
+attaches = "document"
+settles = """Open the top of the page. If a title is printed there and was not read, the page may be worth reading again."""
 does = "marks"
 at = "suspects"
 on_by_default = true

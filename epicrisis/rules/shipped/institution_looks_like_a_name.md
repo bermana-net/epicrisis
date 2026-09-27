@@ -5,6 +5,8 @@ summary = """The doctor who signed under the stamp recorded as the laboratory th
 form. A small model reading a scan takes the name nearest the stamp, and on many forms that \
 name is the signature."""
 kind = "institution-looks-like-a-name"
+attaches = "document"
+settles = """Open the original. If the letterhead names an institution and the card names a person, correct the institution on the card."""
 does = "marks"
 at = "suspects"
 on_by_default = true

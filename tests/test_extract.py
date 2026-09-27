@@ -519,10 +519,11 @@ def test_validation_lists_findings_without_changing_data(setup, monkeypatch):
 
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
     page = client.get("/review").text
-    assert "The number stored differs from the value as printed" in page and labs[:8] in page
-    assert page.index("The number stored differs") < page.index("A row has other values but no result")
+    # The label comes from the rule's own file now, and is the same sentence said once.
+    assert "The number stored is not the number printed" in page and labs[:8] in page
+    assert page.index("The number stored is not the number printed") < page.index("A row with a unit or a range but no result")
     card = client.get(f"/documents/{source.id}/{labs}/1").text
-    assert "To check" in card and "The reference range has its lower bound above the upper bound" in card
+    assert "To check" in card and "A reference range that reads backwards" in card
     assert client.post(f"/sources/{source.id}/validate", follow_redirects=False).status_code == 303
 
 
@@ -857,3 +858,128 @@ def test_a_value_that_is_nowhere_on_its_page_is_a_finding_of_its_own():
     assert "value_not_on_the_page" not in transcription_problems(document, {}, (1,))
     words = dict(document, observations=[dict(document["observations"][1], value_kind="qualitative")])
     assert "value_not_on_the_page" not in transcription_problems(words, {1: page}, (1,))
+
+
+def test_a_reading_a_later_reading_displaces_is_kept_beside_the_archive(tmp_path):
+    """This layer is described as written once, and it very nearly is — but not quite.
+
+    A document already read is skipped, and the skip is a key: the file, the pages, the model and
+    the version of the prompt. The key stops matching whenever somebody picks another model, the
+    prompt is raised, --redo is given, or a page is classified again and the document regrouped.
+    Then it is read afresh and what was there is gone, with nothing to compare against. And a
+    regrouping takes out every document whose pages the new one touches, so one new reading of
+    pages 1-2 removed two. A model reads worse as well as better.
+    """
+    import json
+
+    from epicrisis import layout
+    from epicrisis.extract.run import load_extracted, write_document
+
+    def reading(pages, what):
+        return {"pages": pages, "doc_type": "lab_panel", "observations": [what], "sections": [],
+                "page_texts": [], "diagnoses_as_printed": [], "medications_as_printed": [],
+                "provenance": {"model": "a-model"}}  # fmt: skip
+
+    extracted = tmp_path / layout.EXTRACTED
+    write_document(extracted, "f" * 64, reading([1], "the first reading"))
+    write_document(extracted, "f" * 64, reading([2], "the second page"))
+    assert (tmp_path / layout.REPLACED).exists() is False  # nothing displaced yet
+
+    write_document(extracted, "f" * 64, reading([1, 2], "read again, regrouped"))
+
+    on_disk = load_extracted(extracted, "f" * 64)["documents"]
+    assert [item["pages"] for item in on_disk] == [[1, 2]]
+    kept = (tmp_path / layout.REPLACED / f"{'f' * 64}.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["document"]["observations"] for line in kept] == [
+        ["the first reading"], ["the second page"],
+    ]  # fmt: skip
+    assert all(json.loads(line)["by"]["pages"] == [1, 2] for line in kept)
+
+
+def test_a_ledger_line_without_a_transcription_is_not_a_document_that_was_read(tmp_path):
+    """A line in the ledger is a claim; the transcription on disk is the thing itself.
+
+    They can part — a machine losing power, or two of these runs going at once. Trusting the
+    claim alone meant the document was never read again by anything, and it sat in the archive
+    as "not transcribed" with nothing able to say why.
+    """
+    from epicrisis import layout
+    from epicrisis.extract.run import PROMPT_VERSION, DocumentRef, _stored, done_keys
+    from epicrisis.records import append_line, now
+
+    ledger = tmp_path / layout.LEDGER
+    append_line(ledger, {"step": "extract", "status": "done", "file_sha256": "a" * 64,
+                         "pages": [1], "model": "a-model", "prompt_version": PROMPT_VERSION, "at": now()})  # fmt: skip
+
+    done = done_keys(ledger, [])
+    assert ("a" * 64, (1,), "a-model", PROMPT_VERSION) in done  # the claim is there
+    asked_for = DocumentRef(file_sha256="a" * 64, pages=(1,), doc_type="lab_panel", language="uk", record={})
+    assert _stored(tmp_path, asked_for) is None  # and the thing itself is not
+
+
+def test_the_rules_of_the_whole_archive_are_given_what_a_person_corrected(setup):
+    """Two files of one day print the same results and are copies; a correction says they are not.
+
+    The line-by-line checks were handed the document as its owner left it, and the rules that look
+    at the whole archive were handed the model's text. So the check for copies decided whether two
+    documents were the same thing by a reading a person had already replaced — and one document of
+    a group of copies answers nowhere at all, which means a page somebody had corrected by hand
+    could be hidden from every list and every answer on the strength of the text they corrected.
+    """
+    from datetime import date
+
+    from epicrisis.corrections import set_document_date, set_value, value_key
+    from epicrisis.validate import validate_source
+
+    data_dir, source, output, records = setup
+    extract_source(data_dir, source, FakeExtractBackend())
+    labs, scan = records["labs.pdf"]["sha256"], records["long_scan.pdf"]["sha256"]
+    one_day, printed = date(2019, 7, 8), (("Haemoglobin", "125"), ("Glucose", "5,4"), ("Creatinine", "71"))
+    pages = {}
+    template = load_extracted(output / "extracted", labs)["documents"][0]["observations"][0]
+    for sha in (labs, scan):
+        document = load_extracted(output / "extracted", sha)["documents"][0]
+        document["observations"] = [
+            dict(template, name_as_printed=name, value_as_printed=value,
+                 value_numeric=float(value.replace(",", ".")), unit_as_printed="g/l", value_role="result")
+            for name, value in printed
+        ]  # fmt: skip
+        write_document(output / "extracted", sha, document)
+        set_document_date(output, sha, document["pages"], one_day)
+        pages[sha] = document["pages"]
+
+    def copies_found() -> int:
+        return sum(item["findings"].get("possible_copy", 0) for item in validate_source(output)["documents"])
+
+    assert copies_found() == 2  # each of the two says it has a twin
+
+    # The person has both scans in front of them and puts one number right. Three results, one of
+    # them now different: not the same document, and they are the only one who could know.
+    set_value(output, labs, pages[labs], value_key(template["provenance"]["page"], "Haemoglobin", "125"),
+              {"value_as_printed": "135"})  # fmt: skip
+
+    assert copies_found() == 0
+
+
+def test_asking_for_the_range_as_numbers_does_not_send_the_archive_through_a_model_again():
+    """The prompt version decides whether a document already read has to be read again.
+
+    Asking the transcription for the printed range as two numbers is a change to the prompt that
+    adds something beside what was already read, and it must not mark four hundred documents out of
+    date: that is hours of a model and the owner's money, and their decision rather than the side
+    effect of a field being added.
+
+    If this number has to change, it is because the prompt was changed in a way that makes earlier
+    readings worth replacing. That is a real decision; make it on purpose, write down why, and put
+    the new number here.
+    """
+    from epicrisis.extract.backend import DOCUMENT_SCHEMA, PROMPT_VERSION, SYSTEM_PROMPT, THE_RANGE_AS_NUMBERS
+
+    assert PROMPT_VERSION == "8d4f5af303d0"
+
+    # And the two numbers really are asked for: a version that stayed the same because the fields
+    # were never added would pass the line above and nothing else here.
+    printed_value = DOCUMENT_SCHEMA["properties"]["observations"]["items"]
+    assert {"reference_low", "reference_high"} <= set(printed_value["properties"])
+    assert {"reference_low", "reference_high"} <= set(printed_value["required"])
+    assert THE_RANGE_AS_NUMBERS in SYSTEM_PROMPT

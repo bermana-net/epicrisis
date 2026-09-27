@@ -8,8 +8,12 @@
   {% include "_header.html" %}
 
   {# The empty state is the page when there is nothing in it: the heading and the legend of a
-     colour scale mean nothing above an archive whose documents have not been read. #}
-  {% if not sources %}
+     colour scale mean nothing above an archive whose documents have not been read. That was true
+     only of an archive nobody had walked through yet — one whose folder had been listed and which
+     held no documents came back as a view full of noughts, and drew the whole page over it: a
+     heading, a lead about hovering dates, and a scale from 0% to 100% of nothing. #}
+  {% set anything = sources | selectattr("document_count") | list %}
+  {% if not anything %}
   {{ nothing("Documents") }}
   {% else %}
 
@@ -22,10 +26,13 @@
   {% for source in sources %}
   <section class="docs-source">
     <div class="docs-summary caps">
-      <span>{{ source.name }}</span>
+      {# Whose archive this is, as every other page of this interface says it. This said the base
+         name of the folder on disk: a name the owner chose, which may be a nickname, a diagnosis or
+         "mum's scans", printed two blocks under a header that names the person properly. #}
+      <span>Archive of {{ source.whose }}</span>
       <span>{{ source.classified_pages|thousands }} of {{ source.total_pages|thousands }} pages classified</span>
       <span>{{ source.document_count|thousands }} documents</span>
-      {% if source.dates_to_check %}<span class="signal">{{ source.dates_to_check }} dates to check</span>{% endif %}
+      {% if source.dates_to_check %}<span class="signal">{{ source.dates_to_check }} date{{ "s" if source.dates_to_check != 1 }} to check</span>{% endif %}
       {% if source.running %}<span class="signal">Classify is running, reload for more</span>{% endif %}
     </div>
 
@@ -47,7 +54,7 @@
           <span class="doc-file-cell"><span class="file-id" style="background: {{ file.reading.background }}; color: {{ file.reading.color }}" title="File ID {{ file.file_id }}. {{ file.reading.title }}.">{{ file.file_id }}</span> <span class="path mono">{{ file.path }}</span> <span class="caps muted">p. {{ document.page_label }}</span></span>
           <span>{{ document.provider or "–" }}</span>
           <span>{{ document.language or "–" }}</span>
-          <span class="page-links">{% for number in document.pages %}<a href="/sources/{{ source.id }}/files/{{ file.sha256 }}/pages/{{ number }}" target="_blank" rel="noopener">p{{ number }}</a>{% endfor %}</span>
+          <span class="page-links">{% for number in document.pages %}<a href="/sources/{{ source.id }}/files/{{ file.sha256 }}/pages/{{ number }}">p{{ number }}</a>{% endfor %}</span>
         </div>
         {% endfor %}
       </div>

@@ -17,6 +17,7 @@ from epicrisis.classify.pages import PageRef, PageUnreadable, materialize, page_
 from epicrisis.classify.report import latest_pages
 from epicrisis.records import append_line, now, read_records
 from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
+from epicrisis.runs import holder, one_at_a_time
 from epicrisis.sources import Source, source_output_dir
 
 LOCK_NAME = "classify.lock"
@@ -121,28 +122,20 @@ def classify_source(
         }
     stats = RunStats(total=len(refs))
 
-    lock = output / LOCK_NAME
-    lock.write_text(json.dumps({"pid": os.getpid(), "started_at": now()}), encoding="utf-8")
-    try:
+    with one_at_a_time(output / LOCK_NAME, "Reading what each page is"):
         _classify_refs(refs, done, stats, output, source, backend, limit, progress, workers)
-    finally:
-        lock.unlink(missing_ok=True)
     return stats
 
 
 def is_running(output: Path, lock_name: str = LOCK_NAME) -> bool:
-    """True while a run holds the lock (classify by default) for this source's output directory."""
-    try:
-        pid = json.loads((output / lock_name).read_text(encoding="utf-8"))["pid"]
-    except (FileNotFoundError, ValueError, KeyError):
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # alive, owned by another user
-        return True
-    return True
+    """True while a run holds the lock (classify by default) for this source's output directory.
+
+    Through runs.holder, which is the one reader of a lock file. This had a copy of that reading
+    and the copy had already drifted: a lock whose pid was null raised TypeError here and came
+    back as None there, so a stray lock file took down every page that asks whether a run is
+    going — the documents, the status, a document's own card.
+    """
+    return holder(output / lock_name) is not None
 
 
 def _classify_refs(refs, done, stats, output, source, backend, limit, progress, workers=DEFAULT_WORKERS) -> None:

@@ -30,11 +30,11 @@
   select:hover, select:focus { border-color: var(--signal); }
   /* And one kind of field, for the same reason: a box in system white standing beside a select
      drawn on this paper is the one thing on the page that came from somewhere else. */
-  input[type="text"], input[type="number"], input[type="search"], input[type="date"], textarea {
+  input:not([type]), input[type="text"], input[type="number"], input[type="search"], input[type="date"], textarea {
     font: 14px var(--sans); padding: 6px 9px; border: 1px solid var(--ink);
     background: var(--paper); color: var(--ink); border-radius: 0; }
-  input[type="text"]:hover, input[type="number"]:hover, input[type="search"]:hover,
-  input[type="date"]:hover, textarea:hover { border-color: var(--signal); }
+  input:not([type]):hover, input[type="text"]:hover, input[type="number"]:hover,
+  input[type="search"]:hover, input[type="date"]:hover, textarea:hover { border-color: var(--signal); }
   .brand { font-weight: 800; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; }
   .live { display: flex; align-items: center; gap: 8px; }
   .live::before { content: ""; width: 8px; height: 8px; background: var(--signal); }
@@ -142,12 +142,19 @@
   a.brand { text-decoration: none; }
   .notice { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--ink); font-size: 12px; }
   .notice a { color: var(--signal); font-weight: 600; }
+  /* Under the bar of every page rather than inside a section of one, so it needs the space above
+     that a section's own padding gives the others. */
+  .notice.catching-up { margin-top: 14px; }
 
   /* Consent page */
   /* The page is as wide as every other page: the header, the rule and the heading line up
      with them. Only the reading column is narrow, because prose this long needs a measure. */
   .consent dl, .consent form, .consent .confirmed, .consent .error { max-width: 820px; }
   .consent h1 { font-size: 60px; }
+  /* Specificity again: this heading alone stayed at 60px on a phone while every other one
+     dropped. And a word longer than the line has nowhere to go, with the page unable to scroll. */
+  @media (max-width: 900px) { .consent h1 { font-size: 56px; } }
+  h1, h2, .card-title, .check-title { overflow-wrap: anywhere; }
   .consent dl { margin: 28px 0 0; }
   .consent dt { padding-top: 12px; border-top: 1px solid var(--ink); }
   .consent dd { margin: 6px 0 18px; font-size: 17px; line-height: 1.45; }
@@ -183,7 +190,12 @@
      them on a narrow screen, beside them on a wide one. */
   header.topbar { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center; column-gap: 16px; row-gap: 6px; }
-  .topbar .brand-block { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .topbar .brand-block { grid-column: 1; grid-row: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .topbar .brand-words { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  /* The mark, at the height of the two lines beside it. Drawn in the page rather than fetched, so
+     it is there before anything else loads and costs no request. */
+  .brand-mark { flex: 0 0 auto; display: block; width: 30px; height: 30px; line-height: 0; }
+  .brand-mark svg { display: block; width: 100%; height: 100%; }
   .topbar .not-a-device { font-size: 10px; letter-spacing: .1em; color: var(--muted); }
   .topbar .owner-line { grid-column: 2; grid-row: 1; justify-self: end; min-width: 0; }
   .topbar-right { grid-column: 3; grid-row: 1; justify-self: end; display: flex; align-items: center; gap: 16px; }
@@ -266,7 +278,7 @@
   .date-form input { font: 13px var(--mono); padding: 3px 6px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink); }
   .card-meta .date-flag { display: block; color: var(--signal); font-size: 10px; margin-top: 3px; }
   .date-flag-hand { display: block; font-size: 10px; margin-top: 3px; }
-  .review-row { grid-template-columns: minmax(100px, 0.6fr) minmax(150px, 1fr) minmax(220px, 2fr) minmax(120px, 1fr); min-width: 700px; }
+  .review-row { grid-template-columns: minmax(100px, 0.6fr) minmax(150px, 1fr) minmax(220px, 2fr) minmax(80px, 0.6fr) minmax(120px, 0.8fr); min-width: 780px; }
   .check-title { font-weight: 800; font-size: 22px; letter-spacing: -0.01em; }
   .docs-summary form { margin: 0; }
   .btn.small { padding: 4px 12px; font-size: 13px; }
@@ -277,7 +289,7 @@
   .update-row form { margin: 0; }
   .ask-layout { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 24px; margin-top: 18px; }
   .chat-list { display: flex; flex-direction: column; gap: 8px; border-right: 1px solid var(--line); padding-right: 16px; }
-  .chat-list .new-chat { margin: 0 0 6px; }
+  .chat-list .new-chat { display: block; margin: 0 0 6px; }
   .chat-item { display: block; padding: 8px 10px; border: 1px solid var(--line); text-decoration: none; color: var(--ink); }
   .chat-item small { display: block; color: var(--muted); margin-top: 3px; }
   .chat-item:hover, .chat-item.current { border-color: var(--ink); }
@@ -325,7 +337,10 @@
   .proposed-actions { display: flex; gap: 6px; }
   .proposed-actions form, .assign { margin: 0; display: flex; gap: 6px; }
   .waiting-row { grid-template-columns: minmax(180px, 2fr) 70px minmax(90px, 1fr) 110px minmax(180px, 1fr); min-width: 700px; }
-  .find { display: flex; gap: 6px; margin: 0; }
+  /* Three controls whose intrinsic width is their widest option, plus a button. Without wrapping
+     they run off a phone, and the page cannot be scrolled sideways to reach them. */
+  .find { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+  .find input, .find select { min-width: 0; }
   .spellings { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0 4px; align-items: center; }
   .spelling { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); padding: 3px 4px 3px 8px; font-size: 13px; }
   .spelling form { margin: 0; }
@@ -396,7 +411,16 @@
   .lane .name { display: flex; flex-direction: column; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
   .lane .name a { text-decoration: none; color: var(--ink); }
   .lane .name a:hover { color: var(--signal); }
+  /* No clipping here. It was added as a belt after points were found outside the axis, and the
+     other half of that same change put them inside it by construction — while the belt cut the
+     first and last year of the axis in half, since a mark is centred on its own year and the
+     outermost ones stand at the very edge. A guard that hides half the labels to catch a fault
+     that cannot happen any more is a worse page, not a safer one. */
   .lane .track { position: relative; display: block; height: 22px; }
+  /* A posted control that has to stand in a row of links and look like one of them. */
+  .buttons-in-a-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .as-a-button { display: inline; }
+  .as-a-button button.btn { font: inherit; cursor: pointer; }
   .lane .track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
   .lane.head .track { height: 14px; }
   .lane .tick { position: absolute; top: 0; color: var(--muted); transform: translateX(-50%); }
@@ -429,18 +453,34 @@
 
   /* One test over the years: printed numbers, printed ranges, nothing computed. */
   .chart { display: block; width: 100%; height: auto; margin: 14px 0 6px; overflow: visible; }
-  .chart .band { fill: color-mix(in srgb, var(--signal) 12%, transparent); }
+  /* Grey, not the signal colour. Everywhere else in this interface that colour means "look at
+     this" — a correction, a disagreement, a date to check — so a band drawn in it said something
+     about the values it covers, and the one thing the band must not do is say anything. */
+  .chart .band { fill: color-mix(in srgb, var(--ink) 7%, transparent); }
   .chart .grid { stroke: var(--line); stroke-width: 1; }
   .chart .tick { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
   .chart .line { fill: none; stroke: var(--ink); stroke-width: 1.5; }
   .chart .point { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
   .chart a:hover .point { fill: var(--signal); stroke: var(--signal); }
   .chart .point.corrected { stroke: var(--signal); }
+  /* The drawing is 900 units wide inside about 358px, a scale of 0.4: text specified at 11px
+     renders at about 4px and a point 4.5 units across is under 2px of finger. The units are the
+     drawing's own, so the way to fix both is to ask for more of them. */
+  @media (max-width: 720px) {
+    .chart .tick { font-size: 22px; }
+    .chart .point { r: 9; stroke-width: 4; }
+  }
+  /* One scanned page, with enough around it to know what it is. */
+  .page-walk { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 12px; }
+  .page-scan { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); background: var(--paper); }
   .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; border-top: 1px solid var(--ink); padding-top: 10px; }
   .chart-head h2 { margin: 0; font-size: 22px; }
   .chart-material { font-size: 12px; letter-spacing: .08em; color: var(--paper); background: var(--ink);
     padding: 2px 7px; vertical-align: middle; margin-left: 8px; }
   .chart-unit { font-family: var(--mono); font-size: 15px; color: var(--muted); margin-left: 6px; }
+  /* Whose archive, in the line under the drawing: quiet, because it is not what the chart is
+     about, and present, because the chart is what gets photographed and shown to somebody. */
+  .chart-whose { font-size: 12px; letter-spacing: .06em; color: var(--muted); margin-left: 8px; }
   .read-by-model { border-bottom: 1px dotted var(--signal); }
   .model-choice { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 300px); gap: 14px; align-items: start; }
   .model-choice select { font: 13px var(--mono); width: 100%; }
@@ -448,7 +488,12 @@
   .chart-what { margin: 10px 0 2px; font-size: 19px; font-weight: 700; line-height: 1.5; }
   .chart-what .chart-material { margin-left: 4px; }
   .materials-note { margin: 10px 0 0; max-width: 72ch; }
-  .chart-note { margin: 0 0 14px; }
+
+  /* Saying one thing about a page of values that arrived together. */
+  .settle-material { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 0;
+    padding: 10px 14px; border: 1px solid var(--ink); font-size: 12px; }
+  .settle-material select { font: 600 13px var(--mono); }
+  .settle-material small { flex-basis: 100%; }  .chart-note { margin: 0 0 14px; }
   .series-table { margin-top: 8px; }
 
   .feed-foot { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px 16px; padding: 12px 0; border-bottom: 1px solid var(--ink); }
@@ -472,6 +517,10 @@
   .owner-pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .owner-pick label { color: var(--muted); }
   .owner-pick select { font: 600 13px var(--mono); letter-spacing: .04em; max-width: 60vw; }
+  /* The two controls of the lock, drawn as the framed boxes every other control on this page is.
+     Their selector was lost in an edit and the declarations stood on their own for two versions. */
+  .lock-how { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+  .lock-how label { display: flex; flex-direction: column;
     gap: 4px; padding: 8px; background: var(--paper); border: 1px solid var(--ink); min-width: 160px; }
   .rename { display: inline-block; margin-left: 10px; vertical-align: middle; }
   .rename summary { font-size: 11px; color: var(--muted); cursor: pointer; list-style: none; border-bottom: 1px dotted var(--muted); }
@@ -499,7 +548,7 @@
   .copy-why { font-size: 11px; }
   .copy-pick { justify-self: end; }
   /* What a model could not read, in its own words, under the document it belongs to. */
-  .unreadable-row { display: block; padding: 0 0 8px; border-top: 0; }
+  .unreadable-row { display: block; min-width: 0; padding: 0 0 8px; border-top: 0; }
   .unreadable-parts { margin: 0; padding: 0 0 0 18px; list-style: none; }
   .unreadable-parts li { font-size: 12px; line-height: 1.5; color: var(--ink); padding: 1px 0;
     border-left: 2px solid var(--line); padding-left: 10px; margin-left: -18px; }
@@ -525,7 +574,29 @@
     .obs-row .page-links { display: block; margin-top: 4px; }
     .obs-row .other-value > span { display: inline; }
   }
-    background: none; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+
+  /* The same, for the four tables that still asked for a 700–940px drag inside their own frame.
+     On the findings page the verdict buttons are the last column, so they were off the screen on
+     every row, and overflow-x: hidden on the body meant they could not be dragged to. */
+  @media (max-width: 640px) {
+    .doc-table { overflow-x: visible; }
+    .doc-row { display: block !important; min-width: 0 !important; padding: 12px 0; }
+    .doc-row.head { display: none !important; }
+    .doc-row > span { display: inline; margin-right: 10px; color: var(--muted); }
+    .doc-row > span:first-child { display: block; margin: 0 0 2px; color: var(--ink); font-weight: 600; }
+    .doc-row .judge { display: flex; gap: 8px; margin-top: 6px; }
+    .doc-row .page-links { display: flex; }
+  }
+  /* The table of archives is not one of these. Its rows are divs, not spans, so the trick that
+     turns a row into a block with a heading does nothing to it — and its head row holds the only
+     names the five steps of the pipeline have, so hiding it left five unlabelled bars. It keeps
+     its sideways drag, and each step says what it is instead. */
+  @media (max-width: 640px) {
+    .table { overflow-x: auto; }
+    .row { min-width: 0; grid-template-columns: minmax(150px, 1.6fr) 60px repeat(5, minmax(72px, 1fr)); }
+    .row.head { font-size: 10px; }
+    .row.head span { overflow-wrap: anywhere; }
+  }
   .lock-how-to { padding: 4px 0 10px; }
   .lock-how-to p { margin: 0 0 8px; max-width: 70ch; font-size: 14px; }
 
@@ -583,3 +654,73 @@
 .rule-step { display: flex; align-items: center; gap: 10px; margin: 22px 0 2px; color: var(--muted);
   border-top: 1px solid var(--line); padding-top: 14px; }
 .rule-step:first-of-type { border-top: 0; padding-top: 0; margin-top: 8px; }
+/* What a rule has found, beside its switch: a rule nobody can count is a rule nobody can ever
+   delete, and that is how a set of checks turns into a set of checks nobody trusts. */
+.rule-found { margin-top: 4px; }
+
+/* Saying a finding was real or noise. Small and quiet: this sits on every row of a page a
+   person works down, and a button that shouts would be pressed to make it stop. */
+.judge { display: flex; gap: 6px; align-items: center; }
+.judge form { margin: 0; }
+.judge-button { background: none; border: 1px solid var(--line); color: var(--muted); cursor: pointer;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  padding: 3px 8px; }
+.judge-button:hover { border-color: var(--ink); color: var(--ink); }
+.judge-button.said { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+/* A rule's own thresholds, built from what its kind declares: a name the kind does not have
+   cannot be typed, and a number cannot be given as a word. */
+/* A threshold nobody can explain is a threshold nobody will ever change, and one changed
+   without understanding is worse than one left alone. So each says what it means, in a line. */
+.knobs { display: flex; flex-direction: column; gap: 10px; margin: 10px 0 2px 28px; max-width: 72ch; }
+.knobs label { display: grid; grid-template-columns: minmax(120px, auto) 8ch 1fr; gap: 10px;
+  align-items: baseline; color: var(--muted); }
+.knobs input[type="text"] { width: 8ch; padding: 3px 6px; font-family: var(--mono); font-size: 13px; }
+.knobs small { font-size: 12px; line-height: 1.45; color: var(--muted); }
+.knobs b { color: var(--ink); font-weight: 600; }
+@media (max-width: 640px) { .knobs label { grid-template-columns: 1fr 8ch; }
+  .knobs small { grid-column: 1 / -1; } }
+
+/* A small circle that explains the thing beside it. No script: it shows on hover and on focus,
+   so a mouse reveals it by pointing, a keyboard by tabbing to it, and a finger by touching it.
+   Used where the word on the page is exact but not obvious and there is no room to say more. */
+.explains { position: relative; display: inline-flex; vertical-align: middle; }
+.explains-mark { width: 15px; height: 15px; padding: 0; border: 1px solid var(--line); border-radius: 50%;
+  background: none; color: var(--muted); cursor: help; font: 600 10px/1 var(--mono); }
+.explains-mark:hover, .explains-mark:focus-visible { border-color: var(--ink); color: var(--ink); }
+.explains-text { display: none; position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 30;
+  width: max-content; max-width: min(46ch, 78vw); transform: translateX(-50%);
+  background: var(--paper); border: 1px solid var(--ink); border-top: 3px solid var(--signal);
+  box-shadow: 8px 8px 0 rgba(14, 14, 14, 0.12); padding: 10px 12px;
+  font: 13px/1.5 var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink); text-align: left; }
+.explains:hover .explains-text, .explains:focus-within .explains-text { display: block; }
+/* Near the left edge a centred card would hang off the page, and on a phone almost all of them
+   are near the left edge. */
+@media (max-width: 640px) { .explains-text { left: auto; right: -8px; transform: none; } }
+/* In the top bar there is no upward either: the bar is the first thing on the page, so a card that
+   opens above it opens past the top edge of the window and is simply cut off — which is what the
+   one beside the archive picker did. Downward, and pinned to the right edge of the bar rather than
+   centred on a mark that stands near it, so a long sentence cannot hang off the side. */
+.topbar .explains-text { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; transform: none; }
+/* Inside a table that scrolls sideways there is no upward: overflow-x: auto computes overflow-y
+   to auto as well, and what opens above the first row is clipped and not scrollable. These
+   circles stand in the head row, so downward puts the card over the rows, inside the frame. */
+.doc-table .explains-text, .table .explains-text { bottom: auto; top: calc(100% + 8px); }
+/* Trying a threshold before deciding on it. Deciding a number by typing it and hoping is not
+   deciding it, and the examples are what turn a count into a judgement. */
+.try-line { display: flex; align-items: center; gap: 12px; margin: 4px 0 0; color: var(--muted); }
+.try-line b { color: var(--ink); }
+.try-examples { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.try-examples li { overflow-wrap: anywhere; }
+/* Writing a rule of one's own: the same fields as tuning one, because it is the same thing at
+   the start of its life. */
+.write-rule textarea { width: 100%; max-width: 72ch; font: 13px/1.5 var(--mono); margin-top: 6px; }
+.write-rule .knobs label { grid-template-columns: minmax(120px, auto) minmax(22ch, 1fr) 1.2fr; }
+/* On a phone that row's minimum is about 120px + 22ch, wider than the screen, and
+   body { overflow-x: hidden } puts its right-hand end out of reach. This stands after the rule it
+   answers, which is the whole of what was wrong the first time: at equal weight a media query
+   decides nothing — order does, and the answer was written above the thing it answered. */
+@media (max-width: 640px) {
+  .write-rule .knobs label { grid-template-columns: 1fr; }
+  .write-rule .knobs input[type="text"], .write-rule .knobs select { min-width: 0; width: 100%; }
+}
+.write-rule .knobs input[type="text"], .write-rule .knobs select { width: 100%; }

@@ -4,8 +4,8 @@ Epicrisis Companion is published under the [Business Source License 1.1](LICENSE
 of it matters to most people reading this:
 
 > **A person keeping their own medical records, and the records of their household or of
-> relatives they help without payment, may use this program in earnest, for nothing, for as long
-> as they like.** That is written into the licence itself, not promised in a README.
+> relatives or friends they help without payment, may use this program in earnest, for nothing,
+> for as long as they like.** That is written into the licence itself, not promised in a README.
 
 Everything else needs a commercial licence. Concretely:
 
@@ -30,11 +30,18 @@ The licence text opens the door. What an organisation actually buys with it:
 
 ## What it is not
 
-This program stores and displays. It does not interpret: it never says whether a value is normal,
-never compares a value with anything but the reference range printed on its own form, never
-diagnoses and never advises. It is **not a medical device**, and a commercial licence does not
-turn it into one — an organisation putting it anywhere near a decision about a person's care is
-responsible for what its own product does under the rules that apply to that product.
+This program stores and displays. In its default mode it does not interpret: it never says whether
+a value is normal, never compares a value with anything at all, never diagnoses and never advises.
+
+The instance owner chooses, on their own Settings page, between three modes — from that default, to
+one where the model may read the values it is shown, to one with no limit set here at all. In that
+last mode, and only there, the application itself compares a number with the range printed beside it
+on its own form and counts what fell outside. Nothing else in this program compares anything, in any
+mode, and no mode makes it score, price, rank or decide.
+
+It is **not a medical device**, and a commercial licence does not turn it into one — an organisation
+putting it anywhere near a decision about a person's care is responsible for what its own product
+does under the rules that apply to that product.
 
 ## Four years
 

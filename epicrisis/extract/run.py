@@ -10,7 +10,6 @@ in the document's provenance so it runs only once.
 """
 
 import json
-import os
 import re
 import tempfile
 from collections import Counter
@@ -19,6 +18,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from epicrisis.invocation import CLI
 from epicrisis import layout
 from epicrisis.classify.backend import BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, document_payloads, page_refs
@@ -30,7 +30,8 @@ from epicrisis.printed_values import comparator_printed, number_tokens, squeezed
 from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
 from epicrisis.sources import Source, source_output_dir
 from epicrisis.suspects import provider_looks_like_a_person
-from epicrisis.runs import put_in_place, temporary_name
+from epicrisis.runs import one_at_a_time, write_whole
+from epicrisis.state import NoSpace, Unreadable, no_space
 
 LOCK_NAME = "extract.lock"
 MAX_PAGES_PER_CALL = 8
@@ -155,14 +156,20 @@ def extract_source(
     done = done_keys(output / layout.LEDGER, latest_pages(output / layout.CLASSIFY))
     stats = ExtractStats(total=len(documents))
 
-    lock = output / LOCK_NAME
-    lock.write_text(json.dumps({"pid": os.getpid(), "started_at": now()}), encoding="utf-8")
-    try:
+    with one_at_a_time(output / LOCK_NAME, "Reading the documents"):
         models = getattr(backend, "accepted_models", {backend.model})
         due = []
         for document in documents:
-            is_done = not redo and any((document.file_sha256, document.pages, model, PROMPT_VERSION) in done for model in models)
-            wants_close_ups = is_done and needs_close_ups(document, _stored(output, document), force=close_ups)
+            # A line in the ledger is a claim; the transcription on disk is the thing itself. They
+            # can part: a document written while two of these runs were going at once, or a file
+            # cut short by a machine losing power, leaves the claim and not the reading. Trusting
+            # the claim alone meant the document was never read again by anything — not by another
+            # update, not by extract run a second time — and it sat in the archive as "not
+            # transcribed" with nothing able to say why. So the file is asked as well.
+            stored = _stored(output, document)
+            is_done = not redo and stored is not None and any(
+                (document.file_sha256, document.pages, model, PROMPT_VERSION) in done for model in models)  # fmt: skip
+            wants_close_ups = is_done and needs_close_ups(document, stored, force=close_ups)
             if is_done and not wants_close_ups:
                 stats.already_done += 1
             elif limit is None or len(due) < limit:
@@ -182,8 +189,6 @@ def extract_source(
             return carry_on
 
         run_parallel(due, work, workers)
-    finally:
-        lock.unlink(missing_ok=True)
     return stats
 
 
@@ -403,7 +408,7 @@ def _close_up_pass(document: DocumentRef, output: Path, source: Source, backend,
         return False
     except (PageUnreadable, BackendError) as exc:
         current["provenance"]["close_up_pass"] = {"status": "failed", "reason": str(exc), "at": now()}
-        write_document(output / layout.EXTRACTED, document.file_sha256, current)
+        write_document(output / layout.EXTRACTED, document.file_sha256, current, first_reading=False)
         return True
 
     second = merge_document(document, parts, backend)
@@ -416,7 +421,7 @@ def _close_up_pass(document: DocumentRef, output: Path, source: Source, backend,
         "at": now(),
     }
     with STATE_LOCK:
-        write_document(output / layout.EXTRACTED, document.file_sha256, kept)
+        write_document(output / layout.EXTRACTED, document.file_sha256, kept, first_reading=False)
         stats.close_up_passes += 1
         stats.close_up_better += kept is second
     return True
@@ -494,39 +499,119 @@ def extracted_path(extracted_dir: Path, file_sha256: str) -> Path:
 
 
 def load_extracted(extracted_dir: Path, file_sha256: str) -> dict | None:
+    """One document's transcription, or None where it was never read.
+
+    A file that is there and will not parse is the third thing, and it was the one state nothing
+    answered: a card of that document said Internal Server Error, and `epicrisis index` and
+    `epicrisis validate` each ended in a hundred and twenty lines of traceback that never once named
+    the file — while every other file of state in this instance had been given a sentence. These are
+    the most expensive files here; they are what a model was paid to produce.
+
+    put_in_place says in its own words that a rename can reach the journal before the contents do,
+    so a machine that loses power can leave an empty file exactly where a whole one was. The way out
+    is cheap once the file is named: delete that one file and read that one document again.
+    """
     path = extracted_path(extracted_dir, file_sha256)
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as broken:
+        if no_space(broken):
+            raise NoSpace() from broken
+        raise Unreadable(
+            f"{layout.EXTRACTED}/{path.name}",
+            "Every other document is whole, and so is everything a person typed themselves: this is "
+            "one document's transcription and nothing else reads it.",
+            f"Delete that one file and run '{CLI} extract' — it reads that one document again "
+            f"and leaves the rest alone. A reading of it may also be in {layout.REPLACED}/.",
+        ) from broken
 
 
-def write_document(extracted_dir: Path, file_sha256: str, document: dict) -> None:
-    """Replace the document and any document overlapping its pages, then write atomically."""
+def write_document(extracted_dir: Path, file_sha256: str, document: dict, first_reading: bool = True) -> None:
+    """Replace the document and any document overlapping its pages, then write atomically.
+
+    first_reading is False where this run is saving a document it has already saved in this same
+    run — the close-up pass writes its result over its own first result. Without that, the reading
+    being displaced was the same reading, and a full copy of it went into replaced/ on every
+    document with an unreadable part: the largest layer of the archive doubled, and the folder
+    that should mean "somebody's earlier reading is in here" filled with noise.
+    """
     with STATE_LOCK:
-        _write_document(extracted_dir, file_sha256, document)
+        _write_document(extracted_dir, file_sha256, document, first_reading)
 
 
-def _write_document(extracted_dir: Path, file_sha256: str, document: dict) -> None:
+def _write_document(extracted_dir: Path, file_sha256: str, document: dict, first_reading: bool = True) -> None:
     extracted_dir.mkdir(parents=True, exist_ok=True)
     data = load_extracted(extracted_dir, file_sha256) or {"file_sha256": file_sha256, "documents": []}
     pages = set(document["pages"])
     kept = [existing for existing in data["documents"] if not pages & set(existing["pages"])]
+    if first_reading:
+        _keep_what_is_displaced(extracted_dir, file_sha256, document,
+                                [existing for existing in data["documents"] if pages & set(existing["pages"])])  # fmt: skip
     data["documents"] = sorted([*kept, document], key=lambda item: item["pages"][0])
     path = extracted_path(extracted_dir, file_sha256)
-    temporary = temporary_name(path)
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    put_in_place(temporary, path)
+    write_whole(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 
 
-def done_keys(ledger: Path, classify_pages: list[dict]) -> set[tuple]:
+def _keep_what_is_displaced(extracted_dir: Path, file_sha256: str, writing: dict, displaced: list[dict]) -> None:
+    """Put a reading that a later reading pushes out beside the archive rather than over it.
+
+    This layer is described everywhere as written once and never rewritten, and it very nearly is:
+    a document already read is skipped. But the skip is a key — the file, the pages, the model and
+    the version of the prompt — and the key stops matching whenever a person picks another model
+    on the settings page, whenever the prompt is raised, whenever `--redo` is given, and whenever
+    a page is classified again and the document is regrouped. Then the document is read afresh and
+    what was there is gone, with nothing to compare against; and a regrouping takes out every
+    document whose pages the new one touches, so one new reading of pages 1-2 removed two.
+
+    A model reads worse as well as better. The reading a person has already looked at, and may
+    have made corrections against, is theirs. This is what `forget` does with an archive and what
+    `recheck` does with a second opinion: keep it, next to the thing, and say when.
+    """
+    if not displaced:
+        return
+    aside = extracted_dir.parent / layout.REPLACED
+    aside.mkdir(parents=True, exist_ok=True)
+    for older in displaced:
+        append_line(aside / f"{file_sha256}.jsonl", {
+            "replaced_at": now(), "file_sha256": file_sha256,
+            "by": {"pages": writing["pages"], "model": (writing.get("provenance") or {}).get("model")},
+            "document": older,
+        })  # fmt: skip
+
+
+def earlier_readings(output: Path, file_sha256: str) -> list[dict]:
+    """Readings of this file that a later reading pushed aside, newest first.
+
+    Written since the day the folder existed and read by nothing at all: no page, no command, no
+    line in the documentation. The scenario it was written for is a person who changed the model on
+    the settings page, had the archive read again, and finds the new reading worse — and the whole
+    point of keeping the old one is that they can see it. They could not.
+    """
+    kept = output / layout.REPLACED / f"{file_sha256}.jsonl"
+    if not kept.exists():
+        return []
+    return sorted(read_records(kept), key=lambda item: item.get("replaced_at", ""), reverse=True)
+
+
+def done_keys(ledger: Path, classify_pages: list[dict], statuses: tuple[str, ...] = ("done", "unreadable")) -> set[tuple]:
     """(file, pages, model, prompt version) of documents extracted since their pages were last classified.
 
     A page classified again after extraction (its route changed) makes the document due again.
+
+    `statuses` narrows it to one kind of ending. Two questions are asked of this list and they are
+    not the same: "what will a run skip" counts a document the reading itself declared unreadable,
+    since reading it again gives the same answer; "what has a transcription on the disk" must not,
+    because no transcription is written for one — and counting it there made the status page report
+    a document as lost values for ever, on an archive where nothing was lost at all.
     """
     if not ledger.exists():
         return set()
     classified_at = {(page["file_sha256"], page["page"]): page.get("provenance", {}).get("classified_at", "") for page in classify_pages}
     keys = set()
     for entry in read_records(ledger):
-        if entry.get("step") != "extract" or entry.get("status") not in ("done", "unreadable"):
+        if entry.get("step") != "extract" or entry.get("status") not in statuses:
             continue
         if entry.get("at") and any(classified_at.get((entry["file_sha256"], page), "") > entry["at"] for page in entry["pages"]):
             continue

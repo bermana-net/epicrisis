@@ -19,16 +19,36 @@
     <p class="caps muted">Over the text of every document, its title, the institution and the printed names of values. Case, accents and Ukrainian or Russian letter pairs are matched as one.</p>
   </section>
 
-  {% if not query %}
+  {% if forgotten_question %}
+  {# The words of a question are kept on the server and the address carries only a key, so an
+     address older than this server's memory of it is not an empty search: it is a question that has
+     been forgotten. Answering it with "Type a word" would read as the words having found nothing. #}
+  <p class="empty">The words this address stands for are not in it &mdash; a question is kept on this server and never written into a link. This one is not held any more: the server was restarted, or a great many questions have been asked since. Nothing else was lost; type the word again above.</p>
+  {% elif not query %}
   <p class="empty">Type a word. For instance: an institution, a diagnosis, the name of a test, a year.</p>
   {% else %}
+
+  {# A test whose own name holds the words, in any language this archive is written in. The
+     indicators gather the spellings of one test across laboratories and languages, and this page
+     was the one that never asked them — so a word typed in Russian found nothing on a form printed
+     in English, though the archive knew perfectly well they were the same test. #}
+  {% if tests %}
+  <section class="card-section">
+    <h2>Test{{ "s" if tests | length != 1 }} of this archive by that name</h2>
+    <div class="name-hits">
+      {% for item in tests %}
+      <a class="name-hit" href="/tests/{{ item.id }}"><b>{{ item.label }}</b><span class="caps muted">printed as {{ item.names | join(", ") }}</span></a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   {% if names %}
   <section class="card-section">
     <h2>Printed names that match</h2>
     <div class="name-hits">
       {% for item in names %}
-      <a class="name-hit" href="/indicators?find={{ item.name }}"><b>{{ item.name }}</b><span class="caps muted">{{ item.times }} times &middot; {{ item.first_date[:4] if item.first_date else "" }}–{{ item.last_date[:4] if item.last_date else "" }}</span></a>
+      <a class="name-hit" href="/indicators?find={{ item.name | urlencode }}"><b>{{ item.name }}</b><span class="caps muted">{{ item.times }} times &middot; {{ item.first_date[:4] if item.first_date else "" }}–{{ item.last_date[:4] if item.last_date else "" }}</span></a>
       {% endfor %}
     </div>
   </section>
@@ -47,13 +67,56 @@
         </span>
       </a>
       {% else %}
-      <p class="empty">Nothing matched. Try a shorter word, or another language.</p>
+      {# Not a dead end. The advice here used to be "try a shorter word, or another language", and
+         somebody who typed the word people use — sugar, for what a laboratory prints as Glucose —
+         did both and was told the same thing twice, and concluded their archive does not hold it.
+         An empty answer has to say what was searched and where to go instead.
+
+         And it has to say only what is true. Where a test of this archive is named by the word, the
+         page printed "no test is named that in any of its languages" directly under the heading
+         that had just listed one, and offered a button to "the 0 tests this archive has" — a count
+         that is only counted when nothing matched at all. Both were written, and neither was ever
+         asked: the page said the words of a dead end above a page that was not one. #}
+      {% if nothing_matched %}
+      <p class="empty">No document of this archive holds that among the words printed on it, and no test is named that in any of its languages. That is not the same as the archive not holding the thing: laboratories print their own words for it.</p>
+      <p class="caps">
+        <a class="btn" href="/?view=indicators">The {{ tests_in_all }} tests this archive has</a>
+        <a class="btn" href="/indicators">Every printed name, grouped</a>
+        {% if stage().state == "ready" %}<a class="btn" href="/ask">Ask for it in your own words</a>{% endif %}
+      </p>
+      {% else %}
+      <p class="empty">No document of this archive holds that among the words printed on it &mdash; but what is above does: open a test to see its values, or a printed name to see where it stands.</p>
+      {% endif %}
       {% endfor %}
     </div>
-    {% if documents | length < total %}
+    {% if total > (documents | length) %}
+    {# Paged, not lengthened. Asking for a longer list stops working at the cap the index keeps, and
+       "show more" then asked for two hundred for ever: the same documents came back, and the rest
+       of the number printed above could not be reached at all. A place in the list can go as far as
+       the list does. Forms, not links, for the same reason as the search box: a link would carry
+       the words back into the address. #}
     <div class="feed-foot">
-      <span class="caps muted">Showing the first {{ documents | length }}</span>
-      <a class="caps" href="/search?q={{ query | urlencode }}{% if doc_type %}&doc_type={{ doc_type }}{% endif %}&limit={{ limit + 120 }}">show more &rarr;</a>
+      <span class="caps muted">Showing {{ offset + 1 }}–{{ offset + (documents | length) }} of {{ total }}</span>
+      <span class="feed-more">
+        {% if offset %}
+        <form method="post" action="/search" class="show-more">
+          <input type="hidden" name="q" value="{{ query }}">
+          {% if doc_type %}<input type="hidden" name="doc_type" value="{{ doc_type }}">{% endif %}
+          <input type="hidden" name="limit" value="{{ limit }}">
+          <input type="hidden" name="offset" value="{{ [offset - limit, 0] | max }}">
+          <button class="caps" type="submit">&larr; earlier page</button>
+        </form>
+        {% endif %}
+        {% if offset + (documents | length) < total %}
+        <form method="post" action="/search" class="show-more">
+          <input type="hidden" name="q" value="{{ query }}">
+          {% if doc_type %}<input type="hidden" name="doc_type" value="{{ doc_type }}">{% endif %}
+          <input type="hidden" name="limit" value="{{ limit }}">
+          <input type="hidden" name="offset" value="{{ offset + limit }}">
+          <button class="caps" type="submit">next {{ limit }} &rarr;</button>
+        </form>
+        {% endif %}
+      </span>
     </div>
     {% endif %}
   </section>

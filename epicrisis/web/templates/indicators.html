@@ -7,6 +7,9 @@
   {% set current = "indicators" %}
   {% include "_header.html" %}
 
+  {# Before the empty state, not inside its else: the one time this message matters most is when
+     the index could not be built at all, and that is exactly the branch that drew no page. #}
+  {% if trouble %}<div class="notice caps"><span class="alert">{{ trouble }}</span></div>{% endif %}
   {% if missing %}
   {{ nothing("Indicators") }}
   {% else %}
@@ -16,7 +19,7 @@
     <div class="docs-summary caps">
       <span>{{ printed_total }} printed names</span>
       <span>{{ rows|length }} indicators shown</span>
-      <span{% if waiting_total %} class="signal"{% endif %}>{{ waiting_total }} names in no indicator</span>
+      <span{% if waiting_total %} class="signal"{% endif %}>{{ waiting_total }} name{{ "s" if waiting_total != 1 }} in no indicator</span>
       <span{% if to_review %} class="signal"{% endif %}>{{ to_review }} not looked at yet</span>
       <span{% if related_loose %} class="signal"{% endif %}>{{ related_loose }} lookalikes in no indicator</span>
       {% if checked %}<span{% if disagreed %} class="signal"{% endif %}>{{ disagreed }} of {{ checked }} groups a second reader disagrees with</span>{% endif %}
@@ -40,6 +43,7 @@
   <details class="docs-year">
     <summary><span class="check-title">New indicator</span></summary>
     <form class="indicator-form" method="post" action="/indicators">
+      {% include "_where_i_was.html" %}
       <input type="hidden" name="action" value="save">
       <input name="label" placeholder="Label, for instance Creatinine" required>
       <textarea name="names" rows="3" placeholder="Printed names, one per line"></textarea>
@@ -83,6 +87,7 @@
         <span class="proposed-actions">
           {% for action, title in [("accept", "Add"), ("reject", "Not this")] %}
           <form method="post" action="/indicators">
+            {% include "_where_i_was.html" %}
             <input type="hidden" name="action" value="{{ action }}">
             <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
             <input type="hidden" name="names" value="{{ item.folded }}">
@@ -99,6 +104,7 @@
       {% for item in row.spellings %}
       <span class="spelling{% if item.elsewhere %} elsewhere{% endif %}"{% if item.elsewhere %} title="This archive has never printed this spelling; it is shown in the folded form the index keeps"{% endif %}>{{ item.name }} <span class="caps muted">{% if item.elsewhere %}not in this archive{% else %}{{ item.times }}{% endif %}</span>
         <form method="post" action="/indicators">
+          {% include "_where_i_was.html" %}
           <input type="hidden" name="action" value="drop">
           <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
           <input type="hidden" name="spelling" value="{{ item.folded }}">
@@ -108,6 +114,7 @@
       {% endfor %}
       {% if not indicator.reviewed %}
       <form method="post" action="/indicators" class="reviewed-form">
+        {% include "_where_i_was.html" %}
         <input type="hidden" name="action" value="reviewed">
         <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
         <button class="btn small" type="submit">Looks right</button>
@@ -117,12 +124,13 @@
 
     {% if row.related %}
     <details class="related">
-      <summary class="caps">{{ row.related|length }} names in the archive share a word with this one</summary>
+      <summary class="caps">{{ row.related|length }} name{{ "s" if row.related|length != 1 }} in the archive {{ "share" if row.related|length != 1 else "shares" }} a word with this one</summary>
       <div class="related-list">
         {% for item in row.related %}
         <div class="related-row">
-          <span>{{ item.name }} <span class="caps muted">{{ item.times }} values &middot; {% if item.in_label %}in {{ item.in_label }}{% else %}<span class="signal">in no indicator</span>{% endif %}</span></span>
+          <span>{{ item.name }} <span class="caps muted">{{ item.times }} value{{ "s" if item.times != 1 }} &middot; {% if item.in_label %}in {{ item.in_label }}{% else %}<span class="signal">in no indicator</span>{% endif %}</span></span>
           <form method="post" action="/indicators">
+            {% include "_where_i_was.html" %}
             <input type="hidden" name="action" value="assign">
             <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
             <input type="hidden" name="spelling" value="{{ item.folded }}">
@@ -135,6 +143,7 @@
     {% endif %}
 
     <form class="indicator-form" method="post" action="/indicators">
+      {% include "_where_i_was.html" %}
       <input type="hidden" name="action" value="save">
       <input type="hidden" name="indicator_id" value="{{ indicator.id }}">
       <input name="label" value="{{ indicator.label }}" required>
@@ -168,6 +177,7 @@
         <span class="caps muted">{{ (item.first_date or "")[:4] }}{% if item.last_date and item.last_date[:4] != (item.first_date or "")[:4] %}&ndash;{{ item.last_date[:4] }}{% endif %}</span>
         <span>
           <form method="post" action="/indicators" class="assign">
+            {% include "_where_i_was.html" %}
             <input type="hidden" name="action" value="assign">
             <input type="hidden" name="spelling" value="{{ item.folded }}">
             <input name="indicator_id" list="every-indicator" required placeholder="Indicator" autocomplete="off" aria-label="Indicator to put this spelling in">
@@ -183,7 +193,7 @@
   <div class="feed-foot">
     <span class="caps muted">Showing {{ rows | length }} of {{ rows_total }} groups</span>
     <span class="feed-more">
-      {% set query = "status=" ~ status ~ "&show=" ~ show ~ "&find=" ~ find %}
+      {% set query = "status=" ~ status ~ "&show=" ~ show ~ "&find=" ~ (find | urlencode) %}
       {% if skip %}<a class="caps" href="/indicators?{{ query }}&skip={{ [skip - page_size, 0] | max }}">&larr; back</a>{% endif %}
       {% if skip + (rows | length) < rows_total %}<a class="caps" href="/indicators?{{ query }}&skip={{ skip + page_size }}">next {{ page_size }} &rarr;</a>{% endif %}
     </span>

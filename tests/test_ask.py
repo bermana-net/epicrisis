@@ -12,11 +12,16 @@ from fastapi.testclient import TestClient
 from epicrisis import ask as ask_module
 from epicrisis import settings as settings_module
 from epicrisis import query
+from epicrisis.consent import record_consent
 from epicrisis.corrections import set_document_date
 from epicrisis.extract.run import extract_source, load_extracted, write_document
 from epicrisis.index.build import build_index, index_path
 from epicrisis.mcp_server import build_server
 from epicrisis.validate import validate_source
+from epicrisis import layout
+from epicrisis.classify.report import latest_pages
+from epicrisis.extract.run import document_refs, extracted_path
+from epicrisis.records import append_line, now as records_now, read_records
 from epicrisis.web.app import create_app
 from test_extract import FakeExtractBackend, setup  # noqa: F401
 from test_inventory import make_text_pdf
@@ -100,15 +105,19 @@ def test_mcp_tools_are_read_only_and_answer(archive_index):
 
 
 def test_ask_records_the_question_steps_and_answer(archive_index, monkeypatch, tmp_path):
-    data_dir, _, _ = archive_index
+    data_dir, source, _ = archive_index
 
-    def fake_stream(data_dir, prompt, mode="as_printed"):
+    def fake_stream(data_dir, prompt, mode="as_printed", pinned_to=None):
         assert "How did cystatin change?" in prompt and mode == "as_printed"
+        # Whose archive the tools are given, rather than left to read whichever is showing: an
+        # answer takes tens of seconds, and the dashboard can be switched to somebody else in
+        # another tab while it is being written.
+        assert pinned_to == source.id
         yield {"kind": "tool", "step": {"tool": "value_history", "input": {"name": "цистатин"}}}
         yield {"kind": "answer", "text": "0,85 мг/л on 08.07.2019, file 43cdf91f."}
 
     monkeypatch.setattr(ask_module, "_stream", fake_stream)
-    chat = ask_module.new_chat(data_dir)
+    chat = ask_module.new_chat(data_dir, source)
     # The background thread does nothing here; the answer is written in this thread instead.
     ask_module.ask(data_dir, chat["id"], "How did cystatin change?", run=lambda *args: None)
     ask_module.answer(data_dir, chat["id"])
@@ -130,7 +139,7 @@ def test_ask_page_is_off_until_turned_on(archive_index, monkeypatch):
 
     settings_module.set_ask_enabled(data_dir, True)
     assert "Model processing is not confirmed" in client.get("/ask").text
-    (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 2, "at": "now"}}))
+    record_consent(data_dir, "claude-code-subscription")  # by the one writer of it, so a version bump reaches here
     started = client.post("/ask", data={"question": "What is in the archive?"}, follow_redirects=False)
     assert started.status_code == 303 and started.headers["location"].startswith("/ask/")
     chat_id = started.headers["location"].rsplit("/", 1)[1]
@@ -152,11 +161,18 @@ def test_settings_switch_what_answers_may_contain(archive_index):
     # The freest mode still holds the model to the records: quoting, provenance, never from memory.
     assert "exactly as printed" in system_prompt("direct") and "Never answer from memory" in system_prompt("direct")
 
-    saved = client.post("/settings", data={"ask_page": "on", "mode": "with_meaning"}, follow_redirects=False)
+    saved = client.post("/settings", data={"ask_page": "on", "mode": "with_meaning", "shown": "ask_page"},
+                        follow_redirects=False)  # fmt: skip
     assert saved.status_code == 303
     assert answer_mode(data_dir) == "with_meaning"
-    page = client.get("/settings?saved=true").text
-    assert "Saved." in page and 'value="with_meaning" checked' in page.replace('" checked', '" checked')
+    # The address the page itself sends a person to, not an invented one: the message behind that
+    # key is read once, so a page asked for with any other word says nothing about a press at all.
+    page = client.get(saved.headers["location"]).text
+    # And the banner says what was stored. It used to be asked for at an invented address, where the
+    # key resolved to nothing and the page answered "Saved. Nothing on the page was different from
+    # what was already stored" — which passed this assertion while stating the opposite of the truth.
+    assert "Saved:" in page and "Nothing on the page was different" not in page
+    assert 'value="with_meaning" checked' in page.replace('" checked', '" checked')
     assert "not a medical device" in page
 
     # Bringing a test to one scale is a rule of its own, off unless asked for.
@@ -165,26 +181,27 @@ def test_settings_switch_what_answers_may_contain(archive_index):
 
     to_scale = rules.load(data_dir).get("one_scale_for_a_test")
     assert rule_on(data_dir, to_scale) is False
-    client.post("/settings", data={"ask_page": "on", "mode": "with_meaning", "rule_on": "one_scale_for_a_test"})
+    client.post("/settings", data={"ask_page": "on", "mode": "with_meaning", "rule_on": "one_scale_for_a_test",
+                                   "shown": ["one_scale_for_a_test", "ask_page"]})  # fmt: skip
     assert rule_on(data_dir, to_scale) is True
     assert 'value="one_scale_for_a_test" checked' in client.get("/settings").text
 
-    client.post("/settings", data={"ask_page": "on", "mode": "direct"})
+    client.post("/settings", data={"ask_page": "on", "mode": "direct", "shown": "ask_page"})
     assert answer_mode(data_dir) == "direct" and 'value="direct" checked' in client.get("/settings").text
 
-    client.post("/settings", data={"ask_page": "", "mode": "as_printed"})
+    client.post("/settings", data={"ask_page": "", "mode": "as_printed", "shown": "ask_page"})
     assert answer_mode(data_dir) == "as_printed" and "Answering questions is turned off" in client.get("/ask").text
 
 
 def test_answers_render_as_markdown_without_raw_html(archive_index, monkeypatch):
     data_dir, _, _ = archive_index
 
-    def fake_stream(data_dir, prompt, mode="as_printed"):
+    def fake_stream(data_dir, prompt, mode="as_printed", pinned_to=None):
         yield {"kind": "answer", "text": "| Date | Value |\n|---|---|\n| 08.07.2019 | 0,85 |\n\n<script>alert(1)</script>"}
 
     monkeypatch.setattr(ask_module, "_stream", fake_stream)
     settings_module.set_ask_enabled(data_dir, True)
-    (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 2, "at": "now"}}))
+    record_consent(data_dir, "claude-code-subscription")  # by the one writer of it, so a version bump reaches here
     chat = ask_module.new_chat(data_dir)
     ask_module.ask(data_dir, chat["id"], "table please", run=lambda *args: None)
     ask_module.answer(data_dir, chat["id"])
@@ -220,7 +237,7 @@ def test_a_question_carries_the_chat_only_when_the_box_is_ticked(archive_index, 
 
     monkeypatch.setattr(ask_module, "answer", finish)
     settings_module.set_ask_enabled(data_dir, True)
-    (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 2, "at": "now"}}))
+    record_consent(data_dir, "claude-code-subscription")  # by the one writer of it, so a version bump reaches here
     client = TestClient(create_app(data_dir), base_url="http://localhost:8050")
 
     started = client.post("/ask", data={"question": "First question"}, follow_redirects=False)
@@ -286,7 +303,9 @@ def test_the_timeline_shows_the_archive_four_ways_and_search_finds_a_document(ar
     assert "Sources" in client.get("/status").text or "source" in client.get("/status").text
 
     # A page that shows less than it holds says so, and the undated documents are never hidden.
-    assert "Showing" in feed and "carry no date" in feed
+    # "carries" where there is one of them: the line agrees with its number now, as a dozen lines
+    # of the same templates already did.
+    assert "Showing" in feed and "no date at all" in feed
     assert client.get("/", params={"skip": 120}).status_code == 200
     assert client.get("/", params={"undated": 1}).status_code == 200
     # The view by test shows a few tests and offers the rest, rather than everything at once.
@@ -297,7 +316,14 @@ def test_the_timeline_shows_the_archive_four_ways_and_search_finds_a_document(ar
     found = client.get("/search", params={"q": "Analyte"})
     assert found.status_code == 200 and labs[:8] in found.text
     assert "Type a word" in client.get("/search").text
-    assert "Nothing matched" in client.get("/search", params={"q": "zzzqqq"}).text
+    # An empty answer is not a dead end and is not "the archive does not hold it": it says what was
+    # looked through, and points at the tests, the printed names and the page that takes a question
+    # in a person's own words. Somebody who typed "sugar" for what a laboratory prints as "Glucose"
+    # used to be told "try a shorter word, or another language", did both, and got the same answer.
+    nothing = client.get("/search", params={"q": "zzzqqq"}).text
+    assert "No document of this archive holds that among the words printed on it" in nothing
+    assert "not the same as the archive not holding the thing" in nothing
+    assert "tests this archive has" in nothing and 'href="/indicators"' in nothing
 
 
 def test_a_question_in_one_language_finds_the_spellings_of_another(archive_index):
@@ -555,6 +581,13 @@ def test_a_chat_started_on_the_web_belongs_to_the_archive_it_was_asked_about(tmp
     assert client.get(f"/ask/{chat_id}/state").status_code == 404
     assert client.post(f"/ask/{chat_id}/delete", follow_redirects=False).status_code == 404
     assert "How is my creatinine?" not in client.get("/ask").text
+    # The page a person is left looking at knows what that 404 means and says the way back. It
+    # used to knock on every two seconds for ever, saying "answering" over an answer that was
+    # being written for somebody who had walked away from the page.
+    page = client.get("/ask").text
+    assert "answer.status === 404" in page
+    assert "this conversation is not on this page any more" in page
+    assert "choose that person again under" in page and "Archive of" in page
 
 
 def test_a_chat_from_before_owners_belongs_to_the_archive_that_was_there_then(tmp_path):
@@ -597,3 +630,177 @@ def test_a_question_that_cannot_reach_the_model_says_why():
     assert "not found on this server" in said and "claude" in said
     assert "cannot reach it" in why_it_failed(PermissionError(13, "Permission denied", "claude"))
     assert why_it_failed(ValueError("whatever the model said")) == "ValueError"
+
+
+def test_the_ask_page_says_what_this_instance_actually_allows(tmp_path):
+    """It said the strictest of the three modes whichever was chosen.
+
+    So an owner who had deliberately taken the limits off showed this page to somebody, who read
+    "it does not say whether a value is normal" above an answer that did exactly that — and
+    concluded that this is how the program works, rather than that its owner had allowed it.
+    """
+    from pathlib import Path
+
+    from jinja2 import Environment, FileSystemLoader
+
+    here = Path(__file__).parent.parent / "epicrisis" / "web" / "templates"
+    lead = (here / "ask.html").read_text(encoding="utf-8").split('<p class="lead caps">')[1].split("</p>")[0]
+    draw = Environment(loader=FileSystemLoader(str(here))).from_string('<p>' + lead + "</p>")
+
+    strict = draw.render(mode="as_printed")
+    assert "does not say whether a value is normal" in strict
+
+    middle = draw.render(mode="with_meaning")
+    assert "read the values as well as show them" in middle
+    assert "does not say whether a value is normal" not in middle
+
+    off = draw.render(mode="direct")
+    assert "limits on what the model may say are off" in off
+    assert "does not say whether a value is normal" not in off and "not a medical device" in off
+
+
+def test_the_three_tools_that_cut_in_silence_now_say_how_many_there_are(archive_index):
+    """"found" was the length of the page, not the number of matches.
+
+    Twenty-two matching documents answered as twenty, in an answer shaped exactly like the answer to
+    "that is all there is" — and a model then wrote about the archive from part of it, with no way to
+    ask for the rest. The count was already in this program's reach: the search page of the dashboard
+    has been showing it all along.
+    """
+    data_dir, source, labs = archive_index
+    server = build_server(data_dir)
+
+    def call(tool, **arguments):
+        return asyncio.run(server.call_tool(tool, arguments)).structured_content
+
+    # Two documents of this archive hold the word, and a page holding one of them says both that
+    # there are two and where the second begins. That is the whole finding: the answer used to be
+    # the same either way.
+    whole = call("search_documents", query_text="Synthetic", limit=200)
+    one = call("search_documents", query_text="Synthetic", limit=1)
+    assert whole["total"] == whole["returned"] == 2
+    assert one["total"] == 2 and one["returned"] == 1 and one["offset"] == 0 and one["next_offset"] == 1
+    # And the next page is the other document, so the offset is real rather than decoration.
+    following = call("search_documents", query_text="Synthetic", limit=1, offset=1)
+    assert following["result"] != one["result"] and following["offset"] == 1
+    assert "next_offset" not in following  # the last page says it is the last
+
+    names = call("value_names", limit=1)
+    assert names["kind"] == "printed_names" and names["total"] == 9 and names["returned"] == 1
+    assert names["next_offset"] == 1
+    assert call("value_names", limit=1, offset=1)["result"] != names["result"]
+
+    to_check = call("documents_to_check", limit=1)
+    assert to_check["total"] >= 1 and to_check["returned"] <= to_check["total"]
+
+    # Nothing matching at all is still its own answer, and not a page of nought.
+    nothing = asyncio.run(server.call_tool("search_documents", {"query_text": "никогдатакогонебыло"}))
+    assert "not evidence" in str(nothing)
+
+
+def test_every_tool_that_reads_the_archive_says_what_it_does_not_do(archive_index):
+    """The settings page promises it of all of them, and one of nine said it.
+
+    "An assistant you open this archive to over the network answers under its own rules, not these —
+    what holds there is that its tools only read, and that each one says what it does not do." That
+    sentence stands over the three modes, and it was the whole of what holds over the network. A
+    negative about its own boundary was in exactly one description of nine: flagged_values.
+    """
+    import asyncio
+
+    data_dir, _source, _labs = archive_index
+    server = build_server(data_dir)
+
+    reading_tools = {"archive_overview", "search_documents", "list_documents", "value_names",
+                     "value_history", "get_document", "documents_to_check", "list_indicators",
+                     "flagged_values"}  # fmt: skip
+    said = {tool.name: tool.description or "" for tool in asyncio.run(server.list_tools())}
+
+    assert reading_tools <= set(said)
+    for name in sorted(reading_tools):
+        # A sentence about what this tool is not for, in its own words rather than a formula: the
+        # point is that a model reading the description learns the boundary, not that a word matches.
+        boundary = said[name].lower()
+        assert any(word in boundary for word in
+                   ("never", "not ", "neither", "nothing", "only:")), f"{name} says nothing it does not do"  # fmt: skip
+
+
+def test_the_search_tool_counts_what_it_was_asked_for(archive_index):
+    """"22 documents", says the answer, over a page holding two of them.
+
+    The count was taken without the dates the page itself was narrowed by, so a search over a year
+    answered with the number of matches in the whole archive and offered a next page that came back
+    empty. The one reading it is a model writing about somebody's records from what it is told, and
+    it was told a number about a different question.
+    """
+    data_dir, _source, _labs = archive_index
+    server = build_server(data_dir)
+
+    whole = asyncio.run(server.call_tool("search_documents", {"query_text": "Synthetic"}))
+    narrowed = asyncio.run(server.call_tool("search_documents",
+                                            {"query_text": "Synthetic", "since": "2019-01-01", "until": "2019-12-31"}))  # fmt: skip
+
+    inside = narrowed.structured_content
+    assert inside["result"], "the narrowed page holds something"
+    # However the answer is shaped, the number in it is the number of the narrowed question.
+    assert inside["total"] == inside["returned"] == len(inside["result"])
+    assert "next_offset" not in inside, "and it does not offer a page that would come back empty"
+    assert whole.structured_content["total"] > inside["total"], "the whole archive answers differently"
+
+
+def test_a_history_says_how_many_match_the_question_it_was_asked(archive_index):
+    """"These are the 50 earliest of 89", where 185 matched.
+
+    The rows of a question by printed name are two sets put together: the values whose own name
+    holds the words, and the values of every indicator that name matched. The count was a sum taken
+    per indicator, which is neither — a value under the name alone was never counted, one under two
+    indicators was counted twice — and where the sum came out at or below the page, the note was
+    left off and a cut answer looked like a whole history.
+    """
+    data_dir, _source, _labs = archive_index
+    server = build_server(data_dir)
+
+    answer = asyncio.run(server.call_tool("value_history", {"name": "цистатин", "limit": 1}))
+    said = answer.structured_content
+    assert said["found"] == 1
+    # However many there are, the number is of the same question the rows came from.
+    with closing(query.open_index(data_dir)) as connection:
+        held = query.indicators_matching(connection, "цистатин")
+        union = query.count_values(connection, name="цистатин", indicators=tuple(item["id"] for item in held))
+    assert said.get("values_in_all", said["found"]) == union
+    assert union >= said["found"], "a page never holds more than there are"
+
+
+def test_a_document_the_reading_could_not_make_out_is_not_counted_as_values_lost(archive_index, tmp_path):
+    """A page saying values are gone, for ever, on an archive where nothing was lost.
+
+    A document the reading itself declared unreadable is finished with and carries no transcription
+    by design. The status page counted it among those that should have one, found none, and drew
+    the loudest warning it has — telling a person to read it again with a model, which ends the
+    same way, so the warning could never go.
+    """
+    from epicrisis.web.app import _extract_step
+    from epicrisis.web.jobs import InventoryJobs
+
+    data_dir, source, _labs = archive_index
+    output = jobs_path = InventoryJobs(data_dir).records_path(source.id).parent
+    records = list(read_records(jobs_path / layout.INVENTORY))
+    before = _extract_step(records, output)
+    assert before["state"] == "done", before
+
+    # One document the model looked at and could not make out: the ledger says so, and there is no
+    # transcription of it, which is how such a reading ends — it is never written.
+    pages = latest_pages(output / layout.CLASSIFY)
+    one = next(item for item in document_refs({r["sha256"]: r for r in records if "sha256" in r}, pages))
+    ledger = output / layout.LEDGER
+    kept = [entry for entry in read_records(ledger)
+            if not (entry.get("step") == "extract" and entry.get("file_sha256") == one.file_sha256)]  # fmt: skip
+    ledger.write_text("".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in kept), encoding="utf-8")
+    extracted_path(output / layout.EXTRACTED, one.file_sha256).unlink(missing_ok=True)
+    append_line(ledger, {"step": "extract", "status": "unreadable", "file_sha256": one.file_sha256,
+                         "pages": list(one.pages), "model": "a-model", "prompt_version": "x",
+                         "at": records_now()})  # fmt: skip
+
+    after = _extract_step(list(read_records(jobs_path / layout.INVENTORY)), output)
+    assert after["state"] != "partial", after
+    assert "are gone" not in (after.get("note") or ""), after

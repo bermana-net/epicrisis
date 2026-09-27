@@ -1,0 +1,1151 @@
+{
+ "about": [
+  "Every shape of printed text the readers of this program must understand, with what each one means.",
+  "",
+  "This exists because the way these readers were checked could not see the way they broke. Every",
+  "change to them was measured against the live archive — every printed range in it, read before and",
+  "after, diffed line by line — and that measurement is honest and was never enough: it can only show",
+  "what somebody has already been handed. In one day the reader of ranges was broken and repaired four",
+  "times over shapes this archive does not hold yet: a unit printed in capitals, a unit carrying a",
+  "power in front of its range, a word of direction after its number, a table of meanings whose first",
+  "threshold is a word. Both rulers reported no movement each time, correctly, because there was none",
+  "to report. A form printed in another town next year is not a rare case; it is the whole point.",
+  "",
+  "So the shapes are written down, in every language this archive is written in, and both the tests",
+  "and tools/reader-shapes.py read this one file. An entry with \"finding\" is one this program reads",
+  "wrongly today: the test expects it to fail, strictly, so that fixing it fails the suite until the",
+  "marker is cleared. A finding that cannot be run is a finding nobody can close."
+ ],
+ "ranges": [
+  {
+   "text": "3,5 - 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the plain shape, decimal comma"
+  },
+  {
+   "text": "3.5 - 5.5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the plain shape, decimal point"
+  },
+  {
+   "text": "( 10.0 - 18.0 )",
+   "expect": [
+    10.0,
+    18.0
+   ],
+   "why": "brackets a laboratory likes to add"
+  },
+  {
+   "text": "3,0-8,0 ммоль/л",
+   "expect": [
+    3.0,
+    8.0
+   ],
+   "why": "the unit after the range"
+  },
+  {
+   "text": "13.5 - 18",
+   "expect": [
+    13.5,
+    18.0
+   ],
+   "why": "one end whole, one end not"
+  },
+  {
+   "text": "0,1 - 0,95",
+   "expect": [
+    0.1,
+    0.95
+   ],
+   "why": "both ends below one"
+  },
+  {
+   "text": "1.005 - 1.030",
+   "expect": [
+    1.005,
+    1.03
+   ],
+   "why": "urine specific gravity: reads two ways and is still a range"
+  },
+  {
+   "text": "3,5 – 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "en dash"
+  },
+  {
+   "text": "3,5 — 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "em dash"
+  },
+  {
+   "text": "3.5 to 5.5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the word, English"
+  },
+  {
+   "text": "від 3,5 до 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the words, Ukrainian"
+  },
+  {
+   "text": "-0,5 - 2,5",
+   "expect": [
+    -0.5,
+    2.5
+   ],
+   "why": "a negative low end"
+  },
+  {
+   "text": "< 1.2",
+   "expect": [
+    null,
+    1.2
+   ],
+   "why": "a sign alone"
+  },
+  {
+   "text": "> 40",
+   "expect": [
+    40.0,
+    null
+   ],
+   "why": "a sign alone, the other way"
+  },
+  {
+   "text": "≤75 мкмоль/л",
+   "expect": [
+    null,
+    75.0
+   ],
+   "why": "no space between the sign and its number"
+  },
+  {
+   "text": "≥ 0,5",
+   "expect": [
+    0.5,
+    null
+   ],
+   "why": "the other sign"
+  },
+  {
+   "text": "до 10 в полі зору",
+   "expect": [
+    null,
+    10.0
+   ],
+   "why": "a word before the number, Ukrainian"
+  },
+  {
+   "text": "до 5",
+   "expect": [
+    null,
+    5.0
+   ],
+   "why": "a word before the number, Russian"
+  },
+  {
+   "text": "от 3",
+   "expect": [
+    3.0,
+    null
+   ],
+   "why": "a word before the number, Russian, the other way"
+  },
+  {
+   "text": "up to 5",
+   "expect": [
+    null,
+    5.0
+   ],
+   "why": "a word before the number, English"
+  },
+  {
+   "text": "less than 7",
+   "expect": [
+    null,
+    7.0
+   ],
+   "why": "two words before the number, English"
+  },
+  {
+   "text": "hasta 200",
+   "expect": [
+    null,
+    200.0
+   ],
+   "why": "a word before the number, Spanish"
+  },
+  {
+   "text": "menos de 30",
+   "expect": [
+    null,
+    30.0
+   ],
+   "why": "two words before the number, Spanish"
+  },
+  {
+   "text": "más de 30",
+   "expect": [
+    30.0,
+    null
+   ],
+   "why": "Spanish, the other way"
+  },
+  {
+   "text": "έως 5",
+   "expect": [
+    null,
+    5.0
+   ],
+   "why": "a word before the number, Greek, with its accent"
+  },
+  {
+   "text": "ΕΩΣ 5",
+   "expect": [
+    null,
+    5.0
+   ],
+   "why": "the same word in capitals, which lose the accent"
+  },
+  {
+   "text": "μέχρι 12",
+   "expect": [
+    null,
+    12.0
+   ],
+   "why": "another Greek word for the same"
+  },
+  {
+   "text": "άνω του 3",
+   "expect": [
+    3.0,
+    null
+   ],
+   "why": "Greek, the other way"
+  },
+  {
+   "text": "18 и более",
+   "expect": [
+    18.0,
+    null
+   ],
+   "why": "the word after the number, Russian"
+  },
+  {
+   "text": "5 і більше",
+   "expect": [
+    5.0,
+    null
+   ],
+   "why": "the word after the number, Ukrainian"
+  },
+  {
+   "text": "40 and above",
+   "expect": [
+    40.0,
+    null
+   ],
+   "why": "the word after the number, English"
+  },
+  {
+   "text": "20 or less",
+   "expect": [
+    null,
+    20.0
+   ],
+   "why": "the word after the number, English, the other way"
+  },
+  {
+   "text": "не менее 18",
+   "expect": [
+    18.0,
+    null
+   ],
+   "why": "a phrase that holds its own opposite, Russian"
+  },
+  {
+   "text": "не более 7",
+   "expect": [
+    null,
+    7.0
+   ],
+   "why": "the same, the other way"
+  },
+  {
+   "text": "не ниже 3",
+   "expect": [
+    3.0,
+    null
+   ],
+   "why": "another such pair"
+  },
+  {
+   "text": "не выше 9",
+   "expect": [
+    null,
+    9.0
+   ],
+   "why": "and its opposite"
+  },
+  {
+   "text": "не менше 4",
+   "expect": [
+    4.0,
+    null
+   ],
+   "why": "the Ukrainian pair"
+  },
+  {
+   "text": "не більше 6",
+   "expect": [
+    null,
+    6.0
+   ],
+   "why": "and its opposite"
+  },
+  {
+   "text": "не вище 5,0",
+   "expect": [
+    null,
+    5.0
+   ],
+   "why": "Ukrainian, missing from the lists of words"
+  },
+  {
+   "text": "не нижче 120",
+   "expect": [
+    120.0,
+    null
+   ],
+   "why": "Ukrainian, missing from the lists of words"
+  },
+  {
+   "text": "не  менее 18",
+   "expect": [
+    18.0,
+    null
+   ],
+   "why": "the phrase split by two spaces"
+  },
+  {
+   "text": "не\nменее 18",
+   "expect": [
+    18.0,
+    null
+   ],
+   "why": "the phrase split by a line break"
+  },
+  {
+   "text": "х10^9/л 4,0-9,0",
+   "expect": [
+    4.0,
+    9.0
+   ],
+   "why": "the unit, carrying a power, printed in front"
+  },
+  {
+   "text": "10⁹/л 4,0-9,0",
+   "expect": [
+    4.0,
+    9.0
+   ],
+   "why": "the same with a superscript"
+  },
+  {
+   "text": "x10^3/µL 150 - 400",
+   "expect": [
+    150.0,
+    400.0
+   ],
+   "why": "the same in Latin"
+  },
+  {
+   "text": "10*9/L 4.0-9.0",
+   "expect": [
+    4.0,
+    9.0
+   ],
+   "why": "the star spelling of a power"
+  },
+  {
+   "text": "< 20 Normal, 20 - 200 High",
+   "expect": null,
+   "why": "a table of what a result would mean, not a range"
+  },
+  {
+   "text": "< 20.0 Normal\n20.0 - 52.0 Suspicious\n> 52.0 Elevated",
+   "expect": null,
+   "why": "the same, on three lines"
+  },
+  {
+   "text": "<5.2 відсутність ризику 5.2-6.2 умовний ризик >6.2 високий ризик",
+   "expect": null,
+   "why": "the same, Ukrainian"
+  },
+  {
+   "text": "< 20 Φυσιολογική, 20 - 200 Μικροαλβουμινουρία",
+   "expect": null,
+   "why": "the same, Greek"
+  },
+  {
+   "text": "Норма до 20, 20 - 200 микроальбуминурия",
+   "expect": null,
+   "why": "a table whose first threshold is a word"
+  },
+  {
+   "text": "Normal up to 30, 30 - 300 microalbuminuria",
+   "expect": null,
+   "why": "the same, English"
+  },
+  {
+   "text": "не более 20 норма, 20 - 200 повышен",
+   "expect": null,
+   "why": "the same, a two-word threshold"
+  },
+  {
+   "text": "hasta 20 normal, 20 - 200 microalbuminuria",
+   "expect": null,
+   "why": "the same, Spanish"
+  },
+  {
+   "text": "до 20 норма, 20-52 сомнительно, свыше 52 повышено",
+   "expect": null,
+   "why": "the same, Russian, three bands"
+  },
+  {
+   "text": "20-52 Suspicious, > 52 Positive",
+   "expect": null,
+   "why": "a table that begins with the range itself"
+  },
+  {
+   "text": "40 - 130 > 15 ετών",
+   "expect": [
+    40.0,
+    130.0
+   ],
+   "why": "one range, qualified by the age it is for, Greek"
+  },
+  {
+   "text": "3,5 - 5,5 > 18 лет",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the same, Russian"
+  },
+  {
+   "text": "10 - 20 < 1 року",
+   "expect": [
+    10.0,
+    20.0
+   ],
+   "why": "the same, Ukrainian"
+  },
+  {
+   "text": "0.5 - 1.2 > 60 y.o.",
+   "expect": [
+    0.5,
+    1.2
+   ],
+   "why": "the same, English"
+  },
+  {
+   "text": "0.40-1.15 mg/L  18 - 60 y.o.\n0.40-1.25 mg/L  > 60 y.o.",
+   "expect": null,
+   "why": "two ranges, one per age: not one range with a qualifier"
+  },
+  {
+   "text": "≤75% від білірубіну загального",
+   "expect": null,
+   "why": "a share of another measurement, not a range of this one"
+  },
+  {
+   "text": "< 30% of total",
+   "expect": null,
+   "why": "the same, English"
+  },
+  {
+   "text": "0,2-1,0%",
+   "expect": [
+    0.2,
+    1.0
+   ],
+   "why": "a per-cent range that is a range of its own value"
+  },
+  {
+   "text": "19,0-37,0%",
+   "expect": [
+    19.0,
+    37.0
+   ],
+   "why": "the same"
+  },
+  {
+   "text": "150 000 - 400 000",
+   "expect": [
+    150000.0,
+    400000.0
+   ],
+   "why": "grouped thousands with a space: a space is never a decimal point, so this reads one way only and is the platelet range it looks like"
+  },
+  {
+   "text": "150,000 - 400,000",
+   "expect": [
+    150.0,
+    400.0
+   ],
+   "why": "grouped thousands with a comma: the band is the decimal reading, and the text is marked as reading two ways so that nothing is judged against it"
+  },
+  {
+   "text": "Ч. 0,05-0,11 мМ/л Ж. 0,045-0,097 мМ/л",
+   "expect": null,
+   "why": "one range for men and one for women"
+  },
+  {
+   "text": "1:40",
+   "expect": null,
+   "why": "a titer, not a range"
+  },
+  {
+   "text": "отрицательный",
+   "expect": null,
+   "why": "a word where a range would stand"
+  },
+  {
+   "text": "",
+   "expect": null,
+   "why": "nothing printed at all"
+  },
+  {
+   "text": "5,5 - 3,5",
+   "expect": null,
+   "why": "printed backwards: a finding for a person, not something to sort quietly"
+  },
+  {
+   "text": "Норма: 0,55 - 1,02",
+   "expect": [
+    0.55,
+    1.02
+   ],
+   "why": "a label before the range, Russian"
+  },
+  {
+   "text": "Референсні значення: 53 - 115",
+   "expect": [
+    53.0,
+    115.0
+   ],
+   "why": "the same, Ukrainian"
+  },
+  {
+   "text": "Reference range: 4.0 - 9.0",
+   "expect": [
+    4.0,
+    9.0
+   ],
+   "why": "the same, English"
+  },
+  {
+   "text": "Valores de referencia: 0,5 - 1,2",
+   "expect": [
+    0.5,
+    1.2
+   ],
+   "why": "the same, Spanish"
+  },
+  {
+   "text": "Τιμές αναφοράς: 12,0 - 16,0",
+   "expect": [
+    12.0,
+    16.0
+   ],
+   "why": "the same, Greek"
+  },
+  {
+   "text": "Норма до: 20",
+   "expect": [
+    null,
+    20.0
+   ],
+   "why": "a label carrying the word of direction itself"
+  },
+  {
+   "text": "Титр 1:160",
+   "expect": null,
+   "why": "a titer with its word"
+  },
+  {
+   "text": "1:40 - 1:80",
+   "expect": null,
+   "why": "two titers, which is not a range either"
+  },
+  {
+   "text": "М: <5 Ж: <7",
+   "expect": null,
+   "why": "one range for men and another for women"
+  },
+  {
+   "text": "< 20 Норма: 20 - 200 микроальбуминурия",
+   "expect": null,
+   "why": "a table of meanings whose label carries a colon"
+  },
+  {
+   "text": "Норма: < 20; 20 - 200",
+   "expect": null,
+   "why": "two bands in one line, semicolon between them"
+  },
+  {
+   "text": "1,001 - 1,040",
+   "expect": [
+    1.001,
+    1.04
+   ],
+   "why": "a urine specific gravity, which is the same shape and means the decimals"
+  },
+  {
+   "text": "4,0 - 9,0",
+   "expect": [
+    4.0,
+    9.0
+   ],
+   "why": "an ordinary decimal comma, two digits: never a group"
+  }
+ ],
+ "units_named_inside_a_range": [
+  {
+   "text": "60 - 80 г/л",
+   "expect": "g/l",
+   "why": "grams per litre, lower case"
+  },
+  {
+   "text": "180,0-320,0 Г/л",
+   "expect": "10^9/l",
+   "why": "giga per litre: the capital is the unit"
+  },
+  {
+   "text": "4,0-9,0 Г/Л",
+   "expect": "10^9/l",
+   "why": "the same, all capitals"
+  },
+  {
+   "text": "10,0-25,0 МГ/Л",
+   "expect": "mg/l",
+   "why": "milligrams in capitals: the giga spelling is inside it"
+  },
+  {
+   "text": "3 - 8 МКГ/Л",
+   "expect": "ug/l",
+   "why": "micrograms in capitals, likewise"
+  },
+  {
+   "text": "0,5-2,0 MG/L",
+   "expect": "mg/l",
+   "why": "the same in Latin"
+  },
+  {
+   "text": "53-115 мкмоль/л",
+   "expect": "umol/l",
+   "why": "micromoles"
+  },
+  {
+   "text": "3,5-5,5 mmol/L",
+   "expect": "mmol/l",
+   "why": "millimoles in Latin"
+  },
+  {
+   "text": "0,5 - 1,5 мг/дл",
+   "expect": "mg/dl",
+   "why": "milligrams per decilitre"
+  },
+  {
+   "text": "19,0-37,0%",
+   "expect": "%",
+   "why": "a range that is nothing but numbers and a per-cent sign"
+  },
+  {
+   "text": "3,5 - 5,5",
+   "expect": null,
+   "why": "no unit named at all"
+  }
+ ],
+ "unit_keys": [
+  {
+   "text": "г/л",
+   "expect": "g/l",
+   "why": "grams per litre"
+  },
+  {
+   "text": "Г/л",
+   "expect": "10^9/l",
+   "why": "giga per litre: one letter apart and a billion apart"
+  },
+  {
+   "text": "G/L",
+   "expect": "10^9/l",
+   "why": "the same in Latin capitals"
+  },
+  {
+   "text": "g/l",
+   "expect": "g/l",
+   "why": "and in Latin lower case"
+  },
+  {
+   "text": "µmol/L",
+   "expect": "umol/l",
+   "why": "the micro sign"
+  },
+  {
+   "text": "μmol/L",
+   "expect": "umol/l",
+   "why": "the Greek mu, which is a different character"
+  },
+  {
+   "text": "мкмоль/л",
+   "expect": "umol/l",
+   "why": "the same unit in Cyrillic"
+  },
+  {
+   "text": "кл/мкл",
+   "expect": "/ul",
+   "why": "cells per microlitre, abbreviated without a full stop"
+  },
+  {
+   "text": "кл./мкл",
+   "expect": "/ul",
+   "why": "the same with a full stop"
+  },
+  {
+   "text": "клітин/мкл",
+   "expect": "/ul",
+   "why": "the same written out, Ukrainian"
+  },
+  {
+   "text": "cells/µL",
+   "expect": "/ul",
+   "why": "the same, English"
+  },
+  {
+   "text": "mm/hr",
+   "expect": "mm/h",
+   "why": "an hour abbreviated two ways"
+  },
+  {
+   "text": "мм/год",
+   "expect": "mm/h",
+   "why": "the same, Ukrainian"
+  },
+  {
+   "text": "Од/л",
+   "expect": "u/l",
+   "why": "units per litre, Ukrainian"
+  },
+  {
+   "text": "Е/л",
+   "expect": "u/l",
+   "why": "the same with the other letter"
+  },
+  {
+   "text": "U/L",
+   "expect": "u/l",
+   "why": "the same in Latin"
+  },
+  {
+   "text": "κύτταρα/μL",
+   "expect": "/ul",
+   "why": "Greek cells per microlitre: the word of cells was in four languages and not in the fifth"
+  },
+  {
+   "text": "μονάδες/L",
+   "expect": "u/l",
+   "why": "Greek units per litre; the leading mu is a letter of the word, not the micro sign"
+  },
+  {
+   "text": "μονάδες/λίτρο",
+   "expect": "u/l",
+   "why": "and the same with the litre written out in Greek"
+  },
+  {
+   "text": "/οπτικό πεδίο",
+   "expect": "hpf",
+   "why": "Greek for a field of view under a microscope"
+  },
+  {
+   "text": "κ.ο.π.",
+   "expect": "hpf",
+   "why": "its Greek abbreviation, which a form prints more often than the words"
+  },
+  {
+   "text": "μmol/L",
+   "expect": "umol/l",
+   "why": "the Greek mu before a unit is still the micro sign"
+  }
+ ],
+ "dates": [
+  {
+   "text": "08.07.2019",
+   "expect": "2019-07-08",
+   "why": "day first, which is how this archive's forms print"
+  },
+  {
+   "text": "8 липня 2019",
+   "expect": "2019-07-08",
+   "why": "the month named, Ukrainian genitive"
+  },
+  {
+   "text": "8 июля 2019",
+   "expect": "2019-07-08",
+   "why": "the month named, Russian genitive"
+  },
+  {
+   "text": "8 de mayo de 2019",
+   "expect": "2019-05-08",
+   "why": "the month named, Spanish"
+  },
+  {
+   "text": "8-jul-2019",
+   "expect": "2019-07-08",
+   "why": "the month abbreviated, English"
+  },
+  {
+   "text": "8 ΜΑΙΟΥ 2019",
+   "expect": "2019-05-08",
+   "why": "the month named in Greek capitals"
+  },
+  {
+   "text": "8 ΜΑΪΟΥ 2019",
+   "expect": "2019-05-08",
+   "why": "the same, with the diaeresis capitals require"
+  },
+  {
+   "text": "8 Μαΐου 2019",
+   "expect": "2019-05-08",
+   "why": "the same in lower case, with its diaeresis"
+  },
+  {
+   "text": "2019-07-08",
+   "expect": "2019-07-08",
+   "why": "the way a machine writes it"
+  }
+ ],
+ "printed_numbers": [
+  {
+   "text": "4,5",
+   "expect": [
+    4.5
+   ],
+   "why": "a decimal comma, which is how four of the five languages print it"
+  },
+  {
+   "text": "0,033",
+   "expect": [
+    0.033
+   ],
+   "why": "three decimals after a lone zero: no form groups thousands there"
+  },
+  {
+   "text": "0.93",
+   "expect": [
+    0.93
+   ],
+   "why": "the same with a dot"
+  },
+  {
+   "text": "1,011",
+   "expect": [
+    1.011,
+    1011.0
+   ],
+   "why": "a urine specific gravity on one form and a thousand and eleven on another; the text cannot say"
+  },
+  {
+   "text": "150,000",
+   "expect": [
+    150.0,
+    150000.0
+   ],
+   "why": "a platelet count the English way, or a hundred and fifty"
+  },
+  {
+   "text": "150.000",
+   "expect": [
+    150.0,
+    150000.0
+   ],
+   "why": "the same question with a dot, the Spanish way"
+  },
+  {
+   "text": "1,234.56",
+   "expect": [
+    1234.56
+   ],
+   "why": "the comma groups and the dot marks the decimal: no question left"
+  },
+  {
+   "text": "1.234,56",
+   "expect": [
+    1234.56
+   ],
+   "why": "the same the other way round"
+  },
+  {
+   "text": "1,234,567",
+   "expect": [
+    1234567.0
+   ],
+   "why": "two groups can be nothing but thousands"
+  },
+  {
+   "text": "1 234",
+   "expect": [
+    1234.0
+   ],
+   "why": "a space between thousands, as a form typesets it"
+  },
+  {
+   "text": "12,5",
+   "expect": [
+    12.5
+   ],
+   "why": "a decimal comma with two digits before it"
+  },
+  {
+   "text": ",5",
+   "expect": [
+    0.5
+   ],
+   "why": "a decimal comma with nothing in front of it"
+  }
+ ],
+ "reads_two_ways": [
+  {
+   "text": "150,000 - 400,000",
+   "expect": true,
+   "why": "a platelet range with commas: nothing judged against it"
+  },
+  {
+   "text": "150.000 - 400.000",
+   "expect": true,
+   "why": "the same with dots"
+  },
+  {
+   "text": "1,005 - 1,025",
+   "expect": true,
+   "why": "a specific gravity range, which reads at two scales too"
+  },
+  {
+   "text": "4,0 - 9,0",
+   "expect": false,
+   "why": "two decimals: one reading only"
+  },
+  {
+   "text": "0,020 - 0,300",
+   "expect": false,
+   "why": "three decimals after a lone zero: one reading only"
+  },
+  {
+   "text": "62 - 106",
+   "expect": false,
+   "why": "whole numbers with no separator in them at all"
+  },
+  {
+   "text": "150 000 - 400 000",
+   "expect": false,
+   "why": "a space groups thousands and nothing else, so this range settles the scale of a value beside it"
+  }
+ ],
+ "tokens_of_a_printed_value": [
+  {
+   "text": "0,0035",
+   "expect": [
+    "0,0035"
+   ],
+   "why": "four decimals after a comma, which is how a small result prints on a Ukrainian or Russian form; cut into two tokens, the check that a stored number is the printed one switches itself off in silence"
+  },
+  {
+   "text": "1,2345",
+   "expect": [
+    "1,2345"
+   ],
+   "why": "the same with a leading digit that is not zero"
+  },
+  {
+   "text": "150,000",
+   "expect": [
+    "150,000"
+   ],
+   "why": "thousands grouped by a comma stay one token, ambiguous but whole"
+  },
+  {
+   "text": "1,234.56",
+   "expect": [
+    "1,234.56"
+   ],
+   "why": "grouped one way, the tail written the other — an American form"
+  },
+  {
+   "text": "1.234,56",
+   "expect": [
+    "1.234,56"
+   ],
+   "why": "and the Spanish form of the same number"
+  },
+  {
+   "text": "1 234",
+   "expect": [
+    "1 234"
+   ],
+   "why": "thousands grouped by a space, which a PDF writes non-breaking"
+  },
+  {
+   "text": "0,0120 - 0,0035",
+   "expect": [
+    "0,0120",
+    "0,0035"
+   ],
+   "why": "a range is two tokens and no more"
+  },
+  {
+   "text": "0.033",
+   "expect": [
+    "0.033"
+   ],
+   "why": "three decimals after a lone zero is not a group of thousands"
+  },
+  {
+   "text": "12,345,678",
+   "expect": [
+    "12,345,678"
+   ],
+   "why": "two groups of thousands in one number"
+  },
+  {
+   "text": "Hb 117 g/L",
+   "expect": [
+    "117"
+   ],
+   "why": "a number among words is the only token in it"
+  }
+ ],
+ "comparators": [
+  {
+   "text": "ΕΩΣ 5",
+   "expect": true,
+   "why": "a Greek ceiling in capitals: capitals lose the accents the lower-case word carries"
+  },
+  {
+   "text": "ΜΕΧΡΙ 5",
+   "expect": true,
+   "why": "the other Greek ceiling, in capitals"
+  },
+  {
+   "text": "ΚΑΤΩ ΑΠΟ 5",
+   "expect": true,
+   "why": "two Greek words in capitals"
+  },
+  {
+   "text": "ΑΝΩ ΤΟΥ 5",
+   "expect": true,
+   "why": "a Greek floor in capitals"
+  },
+  {
+   "text": "έως 5",
+   "expect": true,
+   "why": "and the same word as a form usually prints it"
+  },
+  {
+   "text": "ДО 5",
+   "expect": true,
+   "why": "a Russian ceiling in capitals"
+  },
+  {
+   "text": "не більше 7",
+   "expect": true,
+   "why": "a Ukrainian ceiling of two words"
+  },
+  {
+   "text": "LESS THAN 5",
+   "expect": true,
+   "why": "English in capitals"
+  },
+  {
+   "text": "hasta 5",
+   "expect": true,
+   "why": "Spanish"
+  },
+  {
+   "text": "< 5",
+   "expect": true,
+   "why": "the sign, which needs no words"
+  },
+  {
+   "text": "5",
+   "expect": false,
+   "why": "a bare number is not a comparator"
+  },
+  {
+   "text": "5 mg",
+   "expect": false,
+   "why": "a unit after the number is not a comparator either"
+  }
+ ],
+ "dates_of_birth": [
+  {
+   "text": "Ημερομηνία γέννησης: 14.03.1961",
+   "expect": "1961-03-14",
+   "why": "the Greek label as a form prints it, ending in a final sigma"
+  },
+  {
+   "text": "ΗΜΕΡΟΜΗΝΙΑ ΓΕΝΝΗΣΗΣ: 14.03.1961",
+   "expect": "1961-03-14",
+   "why": "the same label in capitals, which have no accents"
+  },
+  {
+   "text": "Έτος γέννησης 1961",
+   "expect": "1961-01-01",
+   "why": "the Greek year of birth, which is a year and not a day"
+  },
+  {
+   "text": "Дата рождения: 14.03.1961",
+   "expect": "1961-03-14",
+   "why": "Russian"
+  },
+  {
+   "text": "Дата народження 14.03.1961",
+   "expect": "1961-03-14",
+   "why": "Ukrainian"
+  },
+  {
+   "text": "Fecha de nacimiento: 14/03/1961",
+   "expect": "1961-03-14",
+   "why": "Spanish"
+  },
+  {
+   "text": "Date of birth: 14 March 1961",
+   "expect": "1961-03-14",
+   "why": "English"
+  },
+  {
+   "text": "D.O.B. 14.03.1961",
+   "expect": "1961-03-14",
+   "why": "the English abbreviation with its full stops"
+  }
+ ]
+}

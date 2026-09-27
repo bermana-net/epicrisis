@@ -163,3 +163,138 @@ def test_the_lock_is_set_up_turned_on_and_off_from_the_command_line(tmp_path, mo
     assert CliRunner().invoke(app, ["mcp-lock", "clear", *data]).exit_code == 0
     assert CliRunner().invoke(app, ["mcp-lock", "off", *data]).exit_code == 0
     assert "Lock: off" in CliRunner().invoke(app, ["mcp-lock", "status", *data]).output
+
+
+def test_an_archive_can_be_added_the_way_the_readme_says(tmp_path):
+    """The command the README, the site and this program's own messages all named did not exist.
+
+    A person who had installed everything and liked the demo typed it, got "No such command", and
+    was told the same command again by the program itself when they tried update.
+    """
+    from typer.testing import CliRunner
+
+    from epicrisis.cli import app
+    from epicrisis.sources import SourceRegistry
+
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    (folder / "a-form.txt").write_text("a page", encoding="utf-8")
+    data = tmp_path / "data"
+    runner = CliRunner()
+
+    # Whose records these are is asked for, because every page carries the name.
+    refused = runner.invoke(app, ["sources", "add", str(folder), "--data-dir", str(data)])
+    assert refused.exit_code == 2 and "whose records" in refused.output
+
+    added = runner.invoke(app, ["sources", "add", str(folder), "--owner", "A Person", "--data-dir", str(data)])
+    assert added.exit_code == 0 and "A Person" in added.output
+    assert "Nothing has been read yet" in added.output
+
+    registry = SourceRegistry(data)
+    assert [source.owner for source in registry.list()] == ["A Person"]
+    assert registry.active() is not None, "the first archive added is the one that is open"
+
+    listed = runner.invoke(app, ["sources", "list", "--data-dir", str(data)])
+    assert listed.exit_code == 0 and "A Person" in listed.output and "(open)" in listed.output
+
+
+def test_the_secret_that_stands_in_the_served_path_can_be_made(tmp_path):
+    """mcp --http refuses to start without one, and there was no way to make it.
+
+    The README described the lock and named no command, so a person had to work out that a file
+    of at least thirty-two characters was wanted, and invent it themselves.
+    """
+    from typer.testing import CliRunner
+
+    from epicrisis.cli import app
+    from epicrisis.mcp_server import MIN_SECRET
+
+    out = tmp_path / "etc" / "mcp-token"
+    runner = CliRunner()
+    made = runner.invoke(app, ["mcp-secret", str(out)])
+    assert made.exit_code == 0
+    assert len(out.read_text(encoding="utf-8").strip()) >= MIN_SECRET
+    assert out.read_text(encoding="utf-8").strip() not in made.output, "the secret is not printed"
+
+    again = runner.invoke(app, ["mcp-secret", str(out)])
+    assert again.exit_code == 2 and "already there" in again.output
+
+
+def test_the_command_a_page_prints_can_be_typed_from_another_folder():
+    """`uv run epicrisis …` finds the project by walking up, so it worked in one folder only.
+
+    Every page and every message of this program prints a command for somebody to copy. From
+    anywhere but the checkout itself — a home directory, the disk the scans are on, wherever a
+    person happened to open a terminal — the answer was `error: Failed to spawn: epicrisis`. The
+    folder picker's refusal is the worst of them: it names the typed command as the one way to add
+    a disk the picker will not offer, to somebody who has nowhere else to go.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    from epicrisis import __version__, invocation
+
+    printed = invocation.run("--version")
+    project = Path(sys.prefix).resolve().parent
+    assert f"--project {project}" in printed, printed
+
+    if shutil.which("uv") is None:  # pragma: no cover - a machine without uv cannot be asked
+        pytest.skip("uv is not on the path of this run")
+    # The proof is the shell's, not the assertion's: the words as printed, typed somewhere else.
+    typed = subprocess.run(printed, shell=True, cwd="/tmp", capture_output=True, text=True, timeout=300)
+    assert typed.returncode == 0, typed.stdout + typed.stderr
+    assert __version__ in typed.stdout
+
+
+def test_a_page_never_prints_a_command_without_the_instance_it_acts_on():
+    """--data-dir defaults to "data" beside whoever is standing there, and the pages said nothing.
+
+    A person who had followed the demo (--data-dir /tmp/demo/data) and stood in the program's own
+    folder copied a line off a page and turned Ask on, or built an index, in another instance — or
+    in one this made on the spot — and was told it had worked. The lock's own advice on the
+    settings page was given the folder for exactly this reason; the rest of the pages were not.
+    """
+    import re
+
+    commands = re.compile(r"\{\{ cli \}\}([^<]*)")
+    templates = Path(__file__).parent.parent / "epicrisis" / "web" / "templates"
+    for page in sorted(templates.glob("*.html")):
+        for printed in commands.findall(page.read_text(encoding="utf-8")):
+            assert "--data-dir" in printed, f"{page.name} prints '{printed.strip()}' for no instance"
+
+
+def test_the_advice_a_command_prints_names_the_folder_it_acted_on(tmp_path):
+    """The same defect on the command line: advice printed by one instance about another."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    data = ["--data-dir", str(data_dir)]
+
+    empty = CliRunner().invoke(app, ["index", *data])
+    assert empty.exit_code == 2
+    assert f"--data-dir {data_dir}" in empty.output, empty.output
+
+    added = CliRunner().invoke(app, ["sources", "add", str(folder), "--owner", "A Person", *data])
+    assert added.exit_code == 0, added.output
+    assert f"serve --data-dir {data_dir}" in added.output, added.output
+
+
+@pytest.mark.parametrize("command", (["index"], ["update"], ["validate"], ["sources", "list"],
+                                     ["forget", "whatever"]))  # fmt: skip
+def test_a_command_in_the_wrong_folder_says_so_instead_of_offering_a_second_archive(command, tmp_path):
+    """Run from anywhere but the instance's folder, every one of them said "No archive here yet".
+
+    Which is an invitation to add the archive a second time, under a new id, leaving every hour of
+    reading under the old one. The folder being somewhere else is the whole of what happened, and
+    it is what the answer has to say. The guard existed and was on two commands out of seven.
+    """
+    missing = tmp_path / "not-an-instance"
+
+    answer = CliRunner().invoke(app, [*command, "--data-dir", str(missing)])
+
+    assert answer.exit_code == 2, answer.output
+    assert "no data folder" in answer.output and str(missing) in answer.output
+    assert "Traceback" not in answer.output
+    assert not missing.exists(), "a folder that is not an instance is not made into one"

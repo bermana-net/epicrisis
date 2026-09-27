@@ -19,6 +19,22 @@ def latest_pages(path: Path) -> list[dict]:
     return [pages[key] for key in sorted(pages)]
 
 
+def document_keys(output: Path) -> set[tuple]:
+    """Which documents this archive holds now, as (file, pages) — the key everything hangs on.
+
+    A date put in by hand, the choice of which copy answers, and a person's verdict on a finding are
+    all kept against the pages the classification grouped. A page read again can be grouped
+    differently, and then such a key matches nothing. Each of the three needs the same answer to
+    "does that document still exist", and it was written out twice and missing for the third.
+    """
+    from epicrisis import layout
+
+    return {
+        (group[0]["file_sha256"], tuple(page["page"] for page in group))
+        for group in group_documents(latest_pages(Path(output) / layout.CLASSIFY))
+    }  # fmt: skip
+
+
 def group_documents(pages: list[dict]) -> list[list[dict]]:
     """Consecutive pages of a file form a document; "first" starts a new one. No model involved."""
     documents: list[list[dict]] = []

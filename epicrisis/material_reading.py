@@ -21,6 +21,8 @@ would be worse than leaving them alone.
 
 import hashlib
 import json
+
+from epicrisis import layout
 from pathlib import Path
 
 from epicrisis.engines import engine_name
@@ -28,7 +30,10 @@ from epicrisis.classify.backend import SMALL_MODEL, BackendError
 from epicrisis.records import append_line, now, read_records
 from epicrisis.runs import one_at_a_time
 
-FILE_NAME = "materials.jsonl"
+# The name lives in layout.py with every other file this program writes: it is named in the
+# list of what the index and the checks are built from, and two spellings of one name is how a
+# step comes to be told it is up to date when it is not.
+FILE_NAME = layout.MATERIALS
 BATCH = 25
 TIMEOUT_SECONDS = 600
 MATERIALS = ("blood", "urine", "stool", "semen", "swab", "csf", "saliva", "sputum", "none", "unclear")
@@ -118,6 +123,29 @@ def load_materials(output: Path, sure_only: bool = True) -> dict[str, dict]:
         for key, line in latest.items()
         if line.get("material") not in (None, "unclear", "none") and (line.get("sure") or not sure_only)
     }
+
+
+# Why a panel has no material, where that is known. Both of these used to be thrown away with the
+# answer, and then a keratometry reading — measured on a person, in no sample at all — sat in the
+# same bucket as a urea that lost its label because its form held two specimens. One bucket, one
+# label, "Not said", for 846 values of which 707 were not a question.
+NOT_A_SAMPLE, MIXED = "not_a_sample", "mixed"
+
+
+def why_no_material(output: Path) -> dict[str, str]:
+    """For each panel a model answered and could not name a material for, which of the two it is.
+
+    "none" is an answer: measured on the person rather than in a sample — a size on an ultrasound
+    report, a refraction, a blood pressure. "unclear" is the other thing entirely: the panel holds
+    more than one specimen, so it cannot answer as a panel, and the values under it are lab results
+    whose material is genuinely unknown. A person can settle those; nobody needs to settle the first.
+    """
+    path = Path(output) / FILE_NAME
+    if not path.exists():
+        return {}
+    latest = {line["panel"]: line for line in read_records(path) if line.get("panel")}
+    said = {"none": NOT_A_SAMPLE, "unclear": MIXED}
+    return {key: said[line["material"]] for key, line in latest.items() if line.get("material") in said}
 
 
 def answered(output: Path) -> set[str]:

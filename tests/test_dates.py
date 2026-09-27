@@ -110,3 +110,30 @@ def test_a_time_or_a_page_number_printed_before_the_date_is_not_part_of_it():
 
     # And the separators have to be the same on both sides: 12.05 2020 is two numbers and a year.
     assert read_printed_date("Палата 12 05.06.2020", "ru", today).value == date(2020, 6, 5)
+
+
+def test_a_date_written_with_hyphens_keeps_its_day_and_its_month():
+    """DD-MON-YYYY is what a laboratory system prints, and both parts were lost.
+
+    The document went quietly to the first of January with no flag to say the date had been read
+    more roughly than it was printed. And the Greek genitive of May failed for a different
+    reason: casefold splits ΐ into a letter and two combining marks, and a pattern of letters
+    stops at the first mark it cannot take — so the month in capitals read perfectly and the
+    month in lower case did not.
+    """
+    from epicrisis.dates import read_printed_date
+
+    for text, expected in (("10-NOV-2021", "2021-11-10"), ("8-ago-2019", "2019-08-08"),
+                           ("8-лип-2019", "2019-07-08"), ("08/JUL/2019", "2019-07-08"),
+                           ("8 Μαΐου 2019", "2019-05-08"), ("8 ΜΑΙΟΥ 2019", "2019-05-08"),
+                           ("1º de marzo de 2019", "2019-03-01")):  # fmt: skip
+        got = read_printed_date(text)
+        assert got and str(got.value) == expected, f"{text} -> {got}"
+        assert got.precision == "day", text
+
+    # What was already read stays read, and what is not a date stays not a date: a printed range
+    # is two numbers with a dash between them, and the hyphen must not make it a date.
+    assert str(read_printed_date("12.05.2020").value) == "2020-05-12"
+    assert str(read_printed_date("08:30 12.05.2020").value) == "2020-05-12"
+    assert read_printed_date("3,89-5,84").value is None
+    assert read_printed_date("менее 5").value is None

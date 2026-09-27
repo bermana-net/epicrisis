@@ -17,6 +17,26 @@
     {# Whose numbers these are, said where they stand: the table under them lists every archive
        on this server, and a total of several people is a number about nobody. #}
     {% if whose_totals %}<p class="caps muted">Of the archive of {{ whose_totals }}</p>{% endif %}
+    {# A line of one of this archive's own files that could not be read. They are skipped rather
+       than raised, because one of them must not take every page down — but a record skipped in
+       silence is a record lost in silence, so it is said here. #}
+    {% if torn %}
+    <div class="notice caps"><span class="alert">Lines this server could not read: {% for one in torn %}{{ one.lines }} in {{ one.file }}{% if not loop.last %}, {% endif %}{% endfor %}. Each one is a record lost &mdash; a page that was classified, a value that was read, a correction that was made. They are skipped so that the rest of the archive still opens. A file of readings can be made again by reading the documents again; <code>corrections.jsonl</code> and <code>judgements.jsonl</code> hold what a person typed themselves, and a line lost from those is lost.</span></div>
+    {% endif %}
+    {# Three things this page looked perfectly healthy through, and each of them is why a person
+       came here. A folder that is not where it was showed as "Files 43 · Damaged 0" beside a path
+       to nothing; a settings file that cannot be read drew every switch at its default without
+       saying so; and a disk with no room left made every button answer with the words Internal
+       Server Error while these numbers stood unchanged. #}
+    {% if gone_folders %}
+    <div class="notice caps"><span class="alert">{% for one in gone_folders %}The folder of the archive of {{ one.whose }} is not where it was, or cannot be read by this server{% if not loop.last %}; {% endif %}{% endfor %}. Nothing has been lost: everything read from it is kept here, beside this instance, and the corrections are too. Check whether the disk it is on is mounted. If the folder has moved, point this archive at the new place &mdash; <code>{{ cli }} sources set-path {{ gone_folders[0].id }} /the/new/folder --data-dir {{ data_dir }}</code> &mdash; which keeps every reading and every correction. Adding the folder again instead makes a second archive of the same person and reads it all from nothing.</span></div>
+    {% endif %}
+    {% if settings_unreadable %}
+    <div class="notice caps"><span class="alert"><code>settings.json</code> is there and cannot be read, so this instance is running on its defaults: the switches on the Settings page are showing defaults rather than what is in the file, and the lock on the network is closed rather than open, because that is the safe way to fail. Repair it, or copy back <code>settings.json.previous</code> beside it &mdash; the version before the last change. Moving the file aside instead starts every switch from its default, and each has to be answered again.</span></div>
+    {% endif %}
+    {% if disk.little %}
+    <div class="notice caps"><span class="alert">There is little room left on the disk this instance writes to: {{ (disk.free / 1048576)|round|int }} MB free of {{ (disk.total / 1073741824)|round(1) }} GB. Nothing written here is damaged by a full disk &mdash; every file is written whole and renamed into place &mdash; but nothing new can be written either, and reading documents needs room.</span></div>
+    {% endif %}
     <div class="stats">
       <div class="stat"><span class="caps">Files</span><span class="value">{{ totals.files|thousands }}</span></div>
       <div class="stat"><span class="caps">Pages</span><span class="value">{{ totals.pages|thousands }}</span></div>
@@ -39,16 +59,41 @@
     {% elif here.state == "scanning" %}
     <h2>Next: wait for the folder to be looked through</h2>
     <p>Every file is being opened to see what it is and how many pages it holds. No model is involved in this and nothing leaves the server.</p>
+    {% elif here.state == "nothing_to_read" and not update_running %}
+    {# The one page that knew this archive holds nothing — it prints Files 0 / Pages 0 below — and
+       it went on advising the most expensive step in the program for those nought documents.
+
+       Behind the lock, though. A lock that says a reading is going is the thing stopping anything
+       else from starting, and it has to be named where it is: what the folder holds is a statement
+       about the folder and it keeps. The two fixes met here — one added this state, the other gave
+       the lock its sentence — and read in the other order a person with a forgotten lock over an
+       empty folder was told to check the folder, which is not what was in their way. #}
+    <h2>Next: check the folder of this archive</h2>
+    <p>It was looked through to the end and holds nothing this program can read: no PDF, no photograph or scan, no document or spreadsheet, in it or in any folder under it. There is nothing to read, so nothing is offered to be sent to a model. The likeliest cause is the folder itself &mdash; one level too high, one too low, or a folder of something else. Where it points is on its row below.</p>
     {% elif update_running %}
     <h2>The documents are being read</h2>
     <p>This takes a while &mdash; minutes for a few files, hours for decades of them &mdash; and it carries on if you close this page. The bars below move as it goes.</p>
+    {# What says a reading is going is a file, and that file outlives the run that wrote it: a
+       machine restarted in the middle of an update leaves the number in update.lock to whatever
+       daemon holds that number now. This page then promised for a day that the documents were
+       being read, the button below did nothing at all when pressed, and neither of them named the
+       file — the one lock in the program whose sentence about itself reached nobody. #}
+    <p class="caps muted">What says so is the lock <code>{{ data_dir }}/update.lock</code>. If nothing is running &mdash; the machine was restarted in the middle of a reading, or that number belongs to something else now &mdash; that file is left over and this page is wrong: deleting it lets the reading be started again. A lock older than a day is ignored by itself.</p>
     {% elif not model_consent %}
     <h2>Next: decide about the model</h2>
     <p>The documents are found but not read. Reading them means sending each page to a model: that is the step that turns scans into values, dates and text you can search. Nothing is sent until you have read what goes and agreed to it.</p>
     <p><a class="btn" href="/consent">See what would be sent</a></p>
     {% elif not model_ready %}
     <h2>The program that talks to the model is missing</h2>
-    <p>The documents are found, but this server has no way to reach a model, so they cannot be read yet.</p>
+    {# It used to stop here: no name, no second way, and one button that came back to this page.
+       A person who had installed everything, added their folder and agreed to what would be sent
+       met a program they had not chosen, could not name and could not find. #}
+    <p>The documents are found, but this server has no way to reach a model, so they cannot be read yet. There are two ways to give it one:</p>
+    <ul>
+      <li><b>Claude Code</b> &mdash; the <span class="mono">claude</span> command, installed for the account this server runs as, signed in with your own Claude subscription.</li>
+      <li><b>A key of your own</b> &mdash; <span class="mono">ANTHROPIC_API_KEY</span> in a <span class="mono">.env</span> file beside the data folder, and the engine changed in Settings. That one is billed to you by the provider.</li>
+    </ul>
+    <p><a class="btn" href="/settings">Settings</a></p>
     {% else %}
     <h2>Next: read the documents</h2>
     <p>{{ everyone.pages|thousands }} pages are waiting{% if everyone.archives > 1 %}, across all {{ everyone.archives }} archives on this server{% endif %}. Reading them sends each page to a model and is the slowest and costliest step there is &mdash; minutes for a few files, hours for decades of them. It can be stopped and continued; what is already read is skipped.</p>

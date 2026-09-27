@@ -18,8 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from epicrisis import records
-from epicrisis.runs import put_in_place, temporary_name
-from epicrisis.settings import ANSWER_MODES, answer_mode, ask_enabled, settings_path  # noqa: F401
+from epicrisis.runs import write_whole
+from epicrisis.settings import answer_mode
 
 CHATS_DIR = "chats"
 TIMEOUT_SECONDS = 600
@@ -195,7 +195,12 @@ def answer(data_dir: Path, chat_id: str) -> None:
         return
     started = datetime.now(UTC)
     try:
-        for event in _stream(data_dir, _prompt(chat), chat["messages"][-1].get("mode", "as_printed")):
+        # The archive this conversation belongs to, handed to the tools rather than looked up by
+        # them. A question takes tens of seconds to answer, and the archive can be switched from
+        # any page in another tab meanwhile — after which the rest of the answer was read out of
+        # somebody else's records and written into a conversation filed under the first person.
+        for event in _stream(data_dir, _prompt(chat), chat["messages"][-1].get("mode", "as_printed"),
+                             pinned_to=chat.get("archive_id") or None):  # fmt: skip
             chat = load_chat(data_dir, chat_id) or chat
             message = chat["messages"][-1]
             if event["kind"] == "tool":
@@ -220,12 +225,29 @@ def answer(data_dir: Path, chat_id: str) -> None:
     _save(data_dir, chat)
 
 
-def _stream(data_dir: Path, prompt: str, mode: str = "as_printed"):
-    config = {
-        "mcpServers": {
-            "epicrisis": {"command": _executable(), "args": ["mcp", "--data-dir", str(Path(data_dir).resolve())]}
-        }
-    }
+def _stream(data_dir: Path, prompt: str, mode: str = "as_printed", pinned_to: str | None = None):
+    """Whichever engine this instance is set to. Both yield the same events.
+
+    The page that draws a conversation never learns which one answered it, and the task given to
+    the model is the same words either way: where a question may be answered, and what may be
+    said about a value, is decided in one place.
+    """
+    from epicrisis import engines
+
+    if engines.chosen_engine(data_dir) == engines.ANTHROPIC_API:
+        from epicrisis.conversing import through_the_api
+
+        call = engines.a_call(data_dir, "strong")
+        yield from through_the_api(data_dir, prompt, system_prompt(mode), call, pinned_to=pinned_to)
+        return
+    yield from _through_claude_code(data_dir, prompt, mode, pinned_to=pinned_to)
+
+
+def _through_claude_code(data_dir: Path, prompt: str, mode: str = "as_printed", pinned_to: str | None = None):
+    served = ["mcp", "--data-dir", str(Path(data_dir).resolve())]
+    if pinned_to:
+        served += ["--source", pinned_to]
+    config = {"mcpServers": {"epicrisis": {"command": _executable(), "args": served}}}
     command = [
         "claude", "-p",
         "--model", _answering_model(data_dir),
@@ -235,9 +257,8 @@ def _stream(data_dir: Path, prompt: str, mode: str = "as_printed"):
         "--tools", "", "--allowedTools", "mcp__epicrisis",
         "--system-prompt", system_prompt(mode),
     ]  # fmt: skip
-    # This page runs Claude Code, whichever engine the instance is set to, because a question
-    # needs a conversation with tools and the API engine has no such loop yet. So a key meant for
-    # that other engine is kept out of here too: a question must not quietly bill the key.
+    # A key meant for the other engine is kept out of here: a question asked under a
+    # subscription must not quietly bill a key that happens to be on the machine.
     from epicrisis.engines import KEYS_THE_OTHER_ENGINE_USES
 
     environment = {
@@ -312,9 +333,7 @@ def _executable() -> str:
 
 def _save(data_dir: Path, chat: dict) -> None:
     path = chats_dir(data_dir) / f"{_safe(chat['id'])}.json"
-    temporary = temporary_name(path)
-    temporary.write_text(json.dumps(chat, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    put_in_place(temporary, path)
+    write_whole(path, json.dumps(chat, ensure_ascii=False, indent=1) + "\n")
 
 
 def _safe(chat_id: str) -> str:

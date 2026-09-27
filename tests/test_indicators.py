@@ -84,6 +84,23 @@ def test_an_unsure_group_waits_for_a_person(archive_index):  # noqa: F811
     assert counts["waiting"] == 1 and indicator.proposed_names == ["analyte 2"] and "analyte 2" not in indicator.names
 
 
+def test_a_name_with_an_accent_finds_its_group(archive_index):  # noqa: F811
+    """The page says accents and the Ukrainian and Russian letter pairs are matched as one.
+
+    The Find box matched what was typed, with the case dropped, against names already folded —
+    so a printed name carrying an acute accent found nothing, while stripping the accent by hand
+    found the group. Most printed names in this archive carry one, which made most of the chips
+    on the search page dead.
+    """
+    data_dir, _, _ = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    store.upsert(data_dir, None, "Albúmina", ["Albúmina", "Цистатин С"], "approved")
+
+    for typed in ("Albúmina", "albumina", "ALBÚMINA", "Цистатін С"):
+        assert 'class="docs-year indicator' in client.get("/indicators", params={"find": typed}).text, typed
+    assert 'class="docs-year indicator' not in client.get("/indicators", params={"find": "нет такого"}).text
+
+
 def test_indicators_page_edits_and_decides(archive_index):  # noqa: F811
     data_dir, _, _ = archive_index
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")

@@ -7,6 +7,7 @@ inventory -> classify -> extract -> validate -> index.
 import signal
 import os
 import sys
+from datetime import UTC, datetime
 from contextlib import closing
 from collections.abc import Callable
 from pathlib import Path
@@ -14,14 +15,57 @@ from pathlib import Path
 import typer
 
 from epicrisis import layout
-from epicrisis import __version__, engines
+from epicrisis import __version__, engines, invocation
 from epicrisis.inventory.report import render
-from epicrisis.inventory.run import OutputInsideArchive, write_inventory
+from epicrisis.inventory.run import NothingWhereTheArchiveWas, OutputInsideArchive, write_inventory
+from epicrisis.invocation import CLI
 
 app = typer.Typer(
     help="Turn an archive of scanned medical documents into structured data, kept as printed.",
     no_args_is_help=True,
 )
+
+
+def run() -> None:
+    """The entry point. One place where trouble a person can act on is answered in a sentence.
+
+    Every command that stores a choice can meet a file of state that is there and will not parse,
+    and every command that writes can meet a lock left behind by a run that died. Unanswered,
+    both came out as a traceback with the path to the file in it — over a machine whose paths are
+    not for showing, and to a person who needs one sentence, not a stack. The page says the
+    sentence; the terminal said nothing of the kind.
+
+    SystemExit and not typer.Exit: typer.Exit is caught by Click inside app(), and raised out here
+    it was caught by nobody, so the sentence was followed by thirty-five lines of traceback with
+    the path printed a second time, and the process left with status 1 where a script was looking
+    for 2.
+    """
+    from epicrisis.runs import Busy
+    from epicrisis.state import NoSpace, Unreadable, no_space
+
+    try:
+        # The program's own name, so that usage lines say "epicrisis" and not the name of whatever
+        # file happened to start it — "root ask [OPTIONS]" under a console script run as root.
+        app(prog_name="epicrisis")
+    except Unreadable as broken:
+        typer.echo(str(broken), err=True)
+        raise SystemExit(2) from broken
+    except Busy as busy:
+        typer.echo(str(busy), err=True)
+        raise SystemExit(3) from busy
+    except NoSpace as full:
+        typer.echo(str(full), err=True)
+        raise SystemExit(4) from full
+    except OSError as trouble:
+        if not no_space(trouble):
+            raise
+        typer.echo(
+            "There is no space left on the disk this instance writes to. Nothing was changed: "
+            "every file here is written whole and renamed into place, so the ones already on disk "
+            "are whole. Free some space and run the command again.",
+            err=True,
+        )
+        raise SystemExit(4) from trouble
 
 
 def _version_callback(value: bool) -> None:
@@ -64,6 +108,11 @@ def inventory(
     except OutputInsideArchive:
         typer.echo("Refusing to write inside the archive: the archive is read-only.", err=True)
         raise typer.Exit(code=2)
+    except NothingWhereTheArchiveWas as gone:
+        # This message names no path and was written to be read by a person; the usual rule of
+        # showing only the type of an exception is about messages that can quote a document.
+        typer.echo(str(gone), err=True)
+        raise typer.Exit(code=2) from gone
     if show_progress:
         typer.echo("", err=True)
 
@@ -116,9 +165,61 @@ def serve(
 SOURCE_OPTION = typer.Option(None, "--source", help="Source id. Defaults to the only registered source.")
 YEARS_OPTION = typer.Option(None, "--years", help="Only files whose folder year is listed, e.g. 1992-2003 or 1992-2003,2025.")
 DATA_DIR_OPTION = typer.Option(Path("data"), "--data-dir", help="Where sources and results are kept.")
+
+
+def _an_instance(data_dir: Path) -> Path:
+    """The data directory of an instance that exists, resolved, or a refusal saying it does not.
+
+    --data-dir defaults to the relative path "data", so a command run from anywhere else means a
+    folder next to wherever the person is standing. For a command that reads, a folder that is not
+    there is harmless. For one that writes a setting it was not: somebody whose phone had been lost
+    typed the line the settings page gives them, from their home directory, and were told "The lock
+    is off." What had happened was that a new ./data/ had been made beside them holding one setting,
+    which no server would ever read, while the lock stayed shut over their archive — and `status`
+    from the same place reported confidently on that instance-of-nothing, down to the line about the
+    secret, which is read from /etc and is set whatever folder one is in.
+
+    Two of the three commands in that same piece of advice write to /etc and work from anywhere, so
+    expecting the third to was reasonable. This does not refuse a folder that is merely empty: an
+    instance where the lock is set up before the first archive is added is a real instance, and its
+    folder exists. What it refuses is making one.
+    """
+    resolved = Path(data_dir).expanduser().resolve()
+    if resolved.is_dir():
+        return resolved
+    typer.echo(
+        f"There is no data folder at {resolved}, so there is no instance of this program there. "
+        "Nothing was changed, and no folder was made: one made here would hold a setting no server "
+        "of yours would read, or an index of no archive.\n"
+        "Say which instance with --data-dir, pointing at the folder the server runs on — the one "
+        f"'{CLI} serve' was given. Run from inside that folder, plain 'data' is it. If you have no "
+        "instance yet, adding an archive makes one: "
+        + invocation.run("sources add <folder> --owner <name>", resolved),
+        err=True,
+    )  # fmt: skip
+    raise typer.Exit(code=2)
 WORKERS_OPTION = typer.Option(
     3, "--workers", min=1, max=8, help="Model calls at once. More is faster and uses the subscription limit sooner."
 )
+
+
+def _say_what_was_lost(cover: dict) -> None:
+    """Lines of this archive's own files that could not be read at all, said out loud.
+
+    A torn line is skipped so that the rest of an archive still opens, and it is counted. Nobody
+    asked for the count outside one page of the dashboard, so a run from a terminal reported an
+    archive that had quietly become smaller, with every number agreeing with every other.
+    """
+    lost = cover.get("lines_not_read") or {}
+    if not lost:
+        return
+    for name, count in sorted(lost.items()):
+        typer.echo(f"  {count} line{'s' if count != 1 else ''} of {name} could not be read, and "
+                   f"{'they are' if count != 1 else 'it is'} not counted above.", err=True)  # fmt: skip
+    typer.echo("  Each one is a record: a page that was classified, a value that was read, a "
+               "correction somebody made. What a model wrote can be read again; corrections.jsonl "
+               "and judgements.jsonl hold what a person typed, and a line lost from those is lost.",
+               err=True)  # fmt: skip
 
 
 def _read_index(data_dir: Path, source):
@@ -128,7 +229,7 @@ def _read_index(data_dir: Path, source):
     try:
         return open_index(data_dir, source.id if source else None)
     except IndexMissing:
-        typer.echo("Nothing is indexed yet. Run: epicrisis index", err=True)
+        typer.echo(f"Nothing is indexed yet. Run: {invocation.run('index', data_dir)}", err=True)
         raise typer.Exit(code=2) from None
 
 
@@ -180,13 +281,22 @@ def _require_consent(data_dir: Path, backend_name: str) -> None:
     Every step that sends anything — pages, or only the printed names of values — asks this.
     A step that asked nothing would make the promise on the consent page untrue.
     """
-    from epicrisis.consent import has_consent
+    from epicrisis.consent import has_consent, not_covered
 
     if not has_consent(data_dir, backend_name):
+        # Two reasons, and they read differently to somebody who pressed the button a year ago:
+        # nothing has been agreed to, or an archive has been added since and the agreement was given
+        # for the archives it named. Counted rather than named — a terminal's scrollback is not a
+        # page of this program, and a name here is a person's.
+        added = not_covered(data_dir, backend_name)
         typer.echo(
-            "Model processing is not confirmed. Review and confirm it in the dashboard: http://localhost:8050/consent",
+            (f"Model processing is confirmed, but not for {len(added)} archive"
+             f"{'s' if len(added) != 1 else ''} added to this instance since. " if added else
+             "Model processing is not confirmed. ")
+            + "Review and confirm it once, on the page that says exactly what would go and where, "
+              f"for every archive on the list: run {CLI} serve and open /consent on it.",
             err=True,
-        )
+        )  # fmt: skip
         raise typer.Exit(code=2)
 
 
@@ -401,6 +511,40 @@ def _let_the_server_read(file: Path) -> None:
         pass
 
 
+@app.command(name="mcp-secret")
+def mcp_secret(
+    out: Path = typer.Argument(Path("/etc/epicrisis/mcp-token"), help="Where to keep it. Only root and the server's group read it."),
+    force: bool = typer.Option(False, "--force", help="Replace a secret that is already there."),
+) -> None:  # fmt: skip
+    """Make the secret that stands in the served path, for reaching this archive over the network.
+
+    `mcp --http` refuses to start without one, and there was no way to make it: the README
+    described the lock and named no command, so a person had to work out for themselves that a
+    file of at least thirty-two characters was wanted, and invent it.
+
+    This is the first of the three locks and the weakest of them: it says where a request came
+    from and nothing about who sent it. Set the code from an authenticator up as well
+    (`epicrisis mcp-lock init`), which is the part a stranger cannot copy out of an address bar.
+    """
+    from epicrisis.mcp_lock import write_secret
+    from epicrisis.mcp_server import new_path_secret
+
+    if out.exists() and not force:
+        typer.echo(f"{out} is already there. Use --force to replace it — every address made from "
+                   "the old one stops working.", err=True)  # fmt: skip
+        raise typer.Exit(code=2)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        written = write_secret(new_path_secret(), out)
+        _let_the_server_read(written)
+    except OSError as problem:
+        typer.echo(f"Cannot write {out}: {problem}. Run this as root.", err=True)
+        raise typer.Exit(code=2) from problem
+    typer.echo(f"Kept in {written}. Start the server with: {CLI} mcp --http --secret-file {written}")
+    typer.echo("The secret is the address. It is not printed here; read it out of that file when "
+               "you set the connector up, and send it nowhere else.")  # fmt: skip
+
+
 @app.command(name="mcp-lock")
 def mcp_lock_command(
     action: str = typer.Argument("status", help="status, init, on, off, scope, window or clear."),
@@ -430,41 +574,77 @@ def mcp_lock_command(
             raise typer.Exit(code=2) from problem
         typer.echo("Read this line into your authenticator. It is the secret itself: do not send it anywhere.\n")
         typer.echo(uri(secret))
-        typer.echo(f"\nKept in {written}. Turn the lock on with: epicrisis mcp-lock on")
+        typer.echo(f"\nKept in {written}. Turn the lock on with: {CLI} mcp-lock on")
         return
     if action == "clear":
-        typer.echo("Wrong-code waits are kept by the running server, so clearing them restarts it.")
-        typer.echo("Run: sudo systemctl restart epicrisis-mcp.service")
+        from epicrisis.mcp_lock import WRONG_CODES_FILE
+
+        data_dir = _an_instance(data_dir)
+        kept = data_dir / WRONG_CODES_FILE
+        existed = kept.exists()
+        kept.unlink(missing_ok=True)
+        typer.echo(f"The run of wrong codes is cleared in {data_dir}." if existed
+                   else f"There was no wait to clear in {data_dir}.")  # fmt: skip
+        typer.echo("The server reads this file on the next code; no restart needed.")
         return
     if action in ("on", "off"):
         if action == "on" and not read_secret():
-            typer.echo("No secret yet. Run: epicrisis mcp-lock init", err=True)
+            typer.echo(f"No secret yet. Run: {CLI} mcp-lock init", err=True)
             raise typer.Exit(code=2)
+        data_dir = _an_instance(data_dir)
         set_mcp_lock(data_dir, action == "on")
-        typer.echo(f"The lock is {'on' if action == 'on' else 'off'}. The server reads this on the next call; no restart needed.")
+        typer.echo(f"The lock is {'on' if action == 'on' else 'off'} in {data_dir}. "
+                   "The server reads this on the next call; no restart needed.")  # fmt: skip
         return
     if action == "scope":
         if value not in SCOPES:
             typer.echo(f"Say one of: {', '.join(SCOPES)}. conversation: a code opens the conversation it was given in."
                        " server: one code opens everything until the window runs out.", err=True)  # fmt: skip
             raise typer.Exit(code=2)
+        data_dir = _an_instance(data_dir)
         set_mcp_lock_scope(data_dir, value)
-        typer.echo(f"A code now opens: {value}.")
+        typer.echo(f"A code now opens: {value}, in {data_dir}.")
         return
     if action == "window":
+        data_dir = _an_instance(data_dir)
         try:
             set_mcp_lock_minutes(data_dir, int(value))
         except (TypeError, ValueError) as problem:
             typer.echo("Say the window in minutes, from 1 to 10080.", err=True)
             raise typer.Exit(code=2) from problem
-        typer.echo(f"A code now opens the archive for {mcp_lock_minutes(data_dir)} minutes.")
+        typer.echo(f"A code now opens the archive for {mcp_lock_minutes(data_dir)} minutes, in {data_dir}.")
         return
     if action != "status":
         typer.echo("Say one of: status, init, on, off, scope, window, clear.", err=True)
         raise typer.Exit(code=2)
-    typer.echo(f"Lock: {'on' if mcp_lock_on(data_dir) else 'off'}")
-    typer.echo(f"A code opens: {mcp_lock_scope(data_dir)}, for {mcp_lock_minutes(data_dir)} minutes")
+    data_dir = _an_instance(data_dir)
+    typer.echo(f"Of the instance in {data_dir}")
+    # Whether anything below was chosen here at all. Over a settings file that will not parse every
+    # reader in this program answers with its own default, which is right — and this command printed
+    # those defaults as a calm report and said nothing about the file. An owner working out why the
+    # lock is behaving as it is (a lost phone, a clock that drifted) read "a code opens the
+    # conversation, for 240 minutes" over a file that says 120 and is not being read by anybody. The
+    # settings page has said this in full all along; settings.unreadable() answers it in one call.
+    from epicrisis.settings import SETTINGS_FILE
+    from epicrisis.settings import unreadable as settings_unreadable
+
+    on_its_defaults = settings_unreadable(data_dir)
+    if on_its_defaults:
+        typer.echo(f"{SETTINGS_FILE} is there and cannot be read, so what this instance was told is "
+                   "not being read by anything: the two lines below are this program's own "
+                   "defaults and not what was chosen here, and nothing can be stored until that "
+                   "file is put right. The lock itself stays on wherever a code was ever set up, "
+                   "because reading it fails closed. "
+                   f"Repair it, or copy back {SETTINGS_FILE}.previous beside it — the version "
+                   "before the last change.")  # fmt: skip
+    default = " (a default: the file above cannot be read)" if on_its_defaults else ""
+    typer.echo(f"Lock: {'on' if mcp_lock_on(data_dir) else 'off'}{default}")
+    typer.echo(f"A code opens: {mcp_lock_scope(data_dir)}, for {mcp_lock_minutes(data_dir)} minutes{default}")
     typer.echo(f"Secret: {'set' if read_secret() else 'not set'} ({SECRET_FILE})")
+    # The clock, so that a code refused as wrong can be told from a code refused because this
+    # machine does not know what time it is. Comparing it with the phone takes a glance.
+    typer.echo(f"This server's clock: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC — compare it "
+               "with the phone that makes the codes; a code from a clock that has drifted is refused.")  # fmt: skip
     typer.echo("Over stdio the lock does not apply: that is a program on this machine.")
 
 
@@ -512,13 +692,19 @@ def recheck(
 def validate(source_id: str | None = SOURCE_OPTION, data_dir: Path = DATA_DIR_OPTION) -> None:
     """Check transcriptions without a model and list what to look at. Changes no data."""
     from epicrisis.sources import SourceRegistry, source_output_dir
-    from epicrisis.validate import CHECKS, PRIORITY, validate_source
+    from epicrisis.validate import validate_source, vocabulary
 
-    registry = SourceRegistry(data_dir)
+    registry = SourceRegistry(_an_instance(data_dir))
     sources = registry.list()
     source = registry.get(source_id) if source_id else (sources[0] if len(sources) == 1 else None)
     if source is None:
-        typer.echo("Choose a source with --source: " + ", ".join(s.id for s in sources), err=True)
+        if not sources:
+            # An instance that is there and holds nothing is a different answer from a folder that
+            # is not an instance at all, and neither one is "choose a source with --source: ".
+            typer.echo("No archive here yet. Add one: "
+                       + invocation.run("sources add <folder> --owner <name>", registry.data_dir), err=True)  # fmt: skip
+        else:
+            typer.echo("Choose a source with --source: " + ", ".join(s.id for s in sources), err=True)
         raise typer.Exit(code=2)
     output = source_output_dir(registry.data_dir, source.id)
     if not (output / layout.CLASSIFY).exists():
@@ -531,13 +717,14 @@ def validate(source_id: str | None = SOURCE_OPTION, data_dir: Path = DATA_DIR_OP
         f"not classified {cover['pages_not_classified']}; documents due {cover['documents_due']}, "
         f"not transcribed {len(cover['documents_not_transcribed'])}"
     )
+    _say_what_was_lost(cover)
     for gap in cover["files_not_read"]:
         typer.echo(f"  file {gap['file_id']} not read: {gap['reason']}")
     typer.echo(f"Documents checked: {result['documents_checked']}, with findings: {len(result['documents'])}")
-    for code in PRIORITY:
+    for code, said in vocabulary(data_dir).items():
         documents = sum(1 for document in result["documents"] if code in document["findings"])
         if documents:
-            typer.echo(f"  {CHECKS[code][1]}: {documents} documents, {result['totals'][code]} findings")
+            typer.echo(f"  {said['label']}: {documents} documents, {result['totals'][code]} findings")
 
 
 @app.command()
@@ -601,13 +788,17 @@ def mcp(
     allow_from: str = typer.Option(
         "160.79.104.0/21",
         help="Networks allowed to reach it through the tunnel, comma separated. The default is the range Anthropic publishes for its connectors; this machine and private networks are always allowed. An empty value lets anyone in.",
+    ),
+    source_id: str = typer.Option(
+        None, "--source",
+        help="Serve this one archive, whatever the dashboard is showing. For a question asked about one person, so that switching archive while it is being answered cannot move it to another.",
     ),  # fmt: skip
 ) -> None:
     """Serve the archive as read-only MCP tools: over stdio for Claude Code, or over HTTP for a connector."""
     from epicrisis.mcp_server import read_path_secret, run, run_http
 
     if not http:
-        run(data_dir)
+        run(data_dir, pinned_to=source_id)
         return
     if secret_file is None:
         typer.echo("--http needs --secret-file: the secret is what keeps the archive closed.", err=True)
@@ -623,18 +814,220 @@ def mcp(
     run_http(data_dir, secret, host=host, port=port, public_host=public_host, allow_from=allow_from)
 
 
+sources = typer.Typer(help="The archives this instance holds. Adding one reads nothing and sends nothing.")
+app.add_typer(sources, name="sources")
+
+
+@sources.command("add")
+def sources_add(
+    folder: Path = typer.Argument(..., help="The folder of documents. It is only ever read."),
+    owner: str = typer.Option("", "--owner", help="Whose records these are. Every page carries the name."),
+    data_dir: Path = DATA_DIR_OPTION,
+) -> None:  # fmt: skip
+    """Add a folder of documents as an archive. Nothing in it is renamed, moved or changed.
+
+    The dashboard does this too, with a folder picker, and that is the easier way. This is here
+    because it is the way the README and this program's own messages have always named — and for
+    two versions it named a command that did not exist, which left a person who had installed
+    everything and liked the demo with nowhere to go.
+    """
+    from epicrisis.sources import SourceError, SourceRegistry
+
+    registry = SourceRegistry(data_dir)
+    if not owner.strip():
+        # Whose records these are is not decoration: every page carries the name and every answer
+        # the tools give says it. An archive added without one reads as nobody's.
+        typer.echo("Say whose records these are: --owner \"Their name\".", err=True)
+        raise typer.Exit(code=2)
+    try:
+        # Typed, not picked: the folders a page may wander in do not bound a path somebody wrote
+        # out themselves. A disk of scans of its own is the ordinary case, and this is the line the
+        # dashboard's own refusal now names.
+        added = registry.add(str(folder), owner, typed=True)
+    except SourceError as wrong:
+        typer.echo(str(wrong), err=True)
+        raise typer.Exit(code=2) from wrong
+    if len(registry.list()) == 1:
+        registry.set_active(added.id)
+    typer.echo(f"Added the archive of {added.owner}: {added.path}")
+    typer.echo(f"Nothing has been read yet. Next: {invocation.run('serve', registry.data_dir)}, "
+               "and say yes on the page that says what would be sent.")  # fmt: skip
+
+
+@sources.command("set-path")
+def sources_set_path(
+    source_id: str = typer.Argument(..., help=f"The id of the archive, as '{CLI} sources list' prints it."),
+    folder: Path = typer.Argument(..., help="Where that folder is now. It is only ever read."),
+    data_dir: Path = DATA_DIR_OPTION,
+) -> None:  # fmt: skip
+    """Point an archive at the folder it has moved to, keeping everything already read from it.
+
+    For a disk remounted somewhere else, documents carried to a bigger drive, a machine rebuilt.
+    Use this rather than adding the folder again: adding it again makes a second archive of the
+    same person under a new id, leaves the first one on the list pointing at nothing, and puts
+    every hour of reading — the classification, the transcriptions, the checks, the index and the
+    corrections you typed by hand — under an id the new archive cannot see.
+
+    Nothing read is tied to where the folder is: a file is known by the sha256 of its contents, and
+    where it sits is stored relative to the root of the archive. So this is the whole of what
+    moving an archive costs.
+    """
+    from epicrisis.sources import SourceError, SourceRegistry
+
+    registry = SourceRegistry(data_dir)
+    try:
+        moved = registry.set_path(source_id, str(folder), typed=True)
+    except SourceError as wrong:
+        typer.echo(str(wrong), err=True)
+        raise typer.Exit(code=2) from wrong
+    if moved is None:
+        typer.echo(f"No archive of this instance has the id {source_id}. "
+                   f"The ids are in: {invocation.run('sources list', registry.data_dir)}", err=True)  # fmt: skip
+        raise typer.Exit(code=2)
+    typer.echo(f"The archive of {moved.whose} is now read from {moved.path}")
+    typer.echo("Everything already read from it is kept, and so are the corrections. "
+               f"Next: {invocation.run('update', registry.data_dir)}, which walks the folder again "
+               "and reads only what is new.")  # fmt: skip
+
+
+@app.command()
+def backup(
+    into: Path = typer.Argument(..., help="A folder outside this instance to copy into."),
+    data_dir: Path = DATA_DIR_OPTION,
+) -> None:  # fmt: skip
+    """Copy out the part of this instance that nothing can rebuild. A few megabytes, not the scans.
+
+    The index rebuilds in seconds and the checks with it. The readings rebuild only by paying a
+    model to read every document again, differently. What rebuilds by nothing at all is what you
+    typed yourself: your corrections against your own printed lines, your verdicts on findings, the
+    groups of spellings you approved one at a time, the earlier readings kept when a later one
+    displaced them, and your conversations. Those are what this copies, into a folder you name,
+    outside this instance.
+
+    The scans are not copied: they are yours already, in the folder you pointed this at, which
+    nothing here ever writes to.
+    """
+    from epicrisis.backup import UNREADABLE_SUFFIX as BACKUP_UNREADABLE, back_up
+
+    resolved = _an_instance(data_dir)
+    from epicrisis.state import no_space
+
+    try:
+        copied = back_up(resolved, into)
+    except OSError as trouble:
+        if no_space(trouble):
+            raise  # run() says what a full disk means, in a sentence, and leaves with 4
+        typer.echo(f"The copy could not be made: {trouble.strerror or trouble}. Nothing was changed.", err=True)
+        raise typer.Exit(code=2) from trouble
+    except ValueError as wrong:
+        typer.echo(str(wrong), err=True)
+        raise typer.Exit(code=2) from wrong
+    if copied.unreadable:
+        # Loud, and before the list of what went: this is the one thing a person must not miss.
+        typer.echo("These files of this instance no longer read as what they are:", err=True)
+        for name in copied.unreadable:
+            typer.echo(f"  {name}", err=True)
+        if copied.kept_instead:
+            typer.echo("The whole copy already in that folder was kept for each of them; the "
+                       "unreadable one is beside it, ending in " + BACKUP_UNREADABLE + ", so that "
+                       "nothing of either is lost. Put the whole copy back rather than this one.", err=True)  # fmt: skip
+        else:
+            typer.echo("Nothing of them was in that folder yet, so they went as they are. A copy of "
+                       "a file that will not read is still better than none, and it is not the copy "
+                       "to put back.", err=True)  # fmt: skip
+    if not copied.files:
+        typer.echo(f"Nothing to copy: this instance holds none of the files a person makes by hand yet. "
+                   f"They appear under {resolved} as soon as you correct a line, judge a finding or "
+                   "approve a group of spellings.")  # fmt: skip
+        return
+    typer.echo(f"Copied {copied.files} files, {copied.bytes / 1024:.0f} KB, into {Path(into).expanduser().resolve()}")
+    for taken in copied.took:
+        typer.echo(f"  {taken}")
+    # Said from the same lists the copy is chosen by, so that a file moved from one list to the
+    # other cannot leave this sentence describing the arrangement before last.
+    typer.echo("Left behind on purpose: " + ", ".join(layout.MADE_AGAIN_BY_CODE)
+               + " and the index, which code makes again in seconds; and " + ", ".join(layout.MADE_AGAIN_BY_A_MODEL)
+               + ", which only a model makes again — for money, for hours, and differently. "
+               + ", ".join(layout.ASKED_FOR_AGAIN) + " is left because a restored copy should ask, not assume.")  # fmt: skip
+    if copied.missing:
+        typer.echo("None of these in this instance yet: " + ", ".join(copied.missing))
+    typer.echo("Putting it back: copy these files into the data folder of an instance, keeping the "
+               f"folders they are in, and run '{invocation.run('update')} --data-dir <that folder>'. "
+               "sources.json goes back with them, "
+               "which is what makes the rest of it findable: the folder each archive's work sits in "
+               "is named by an id that lives only in that file. No version of this program is needed "
+               "to read any of it.")  # fmt: skip
+
+
+@sources.command("list")
+def sources_list(data_dir: Path = DATA_DIR_OPTION) -> None:
+    """The archives this instance holds, and which one is open."""
+    from epicrisis.sources import SourceRegistry
+
+    data_dir = _an_instance(data_dir)
+    registry = SourceRegistry(data_dir)
+    listed = registry.list()
+    if not listed:
+        typer.echo("No archive here yet. Add one: "
+                   + invocation.run("sources add <folder> --owner <name>", data_dir))
+        # Said here too, and here most of all: a list that came back empty over folders full of
+        # work is the state somebody reaches by putting back a copy older than they thought.
+        _work_no_archive_names(data_dir, listed)
+        return
+    open_now = registry.active()
+    for source in listed:
+        here = " (open)" if open_now and open_now.id == source.id else ""
+        typer.echo(f"{source.id}  {source.owner or 'nobody named'}{here}  {source.path}")
+    _work_no_archive_names(data_dir, listed)
+
+
+def _work_no_archive_names(data_dir: Path, listed: list) -> None:
+    """Folders of work under sources/ that no archive on the list names, said rather than left.
+
+    The list is the only thing that ties a random id to somebody's folder, and it is one file. Put
+    back from sources.json.previous — which is the version before the last change, and the way out
+    this program itself recommends — it comes back without an archive added since then, and the
+    hours of reading and the corrections under that archive's id stay on disk with nothing naming
+    them. Taking an archive off the list does the same on purpose, and says so at the time.
+    Nothing said it afterwards: not this command, and not the copy `backup` takes, which walks the
+    list and therefore skips exactly the folder nobody would think to look for.
+    """
+    from epicrisis.sources import OUTPUT_DIR_NAME
+
+    output = data_dir / OUTPUT_DIR_NAME
+    if not output.is_dir():
+        return
+    named = {source.id for source in listed}
+    strays = sorted(folder.name for folder in output.iterdir() if folder.is_dir() and folder.name not in named)
+    if not strays:
+        return
+    typer.echo("")
+    typer.echo(f"Read from archives this list does not name, under {output}: " + ", ".join(strays))
+    typer.echo("Each is the work of an archive taken off the list, or of one that was on a list "
+               "since put back from an older copy. The folder of documents it was read from is not "
+               "named in it. Add that folder again and move what is inside this folder into the "
+               "folder of its new id, and the reading and the corrections are back.")  # fmt: skip
+
+
 @app.command()
 def update(data_dir: Path = DATA_DIR_OPTION) -> None:
     """Process new or changed files in every source: all steps, skipping what is done."""
     from epicrisis.sources import SourceRegistry
-    from epicrisis.update import run_update, update_running
+    from epicrisis.update import run_update
 
+    data_dir = _an_instance(data_dir)
     if not SourceRegistry(data_dir).list():
-        typer.echo("No archive here yet. Add one: epicrisis sources add <folder> --owner <name>", err=True)
+        typer.echo("No archive here yet. Add one: "
+                   + invocation.run("sources add <folder> --owner <name>", data_dir)
+                   + ", or run " + invocation.run("serve", data_dir)
+                   + " and add it on the Archive status page.", err=True)  # fmt: skip
         raise typer.Exit(code=2)
-    if update_running(data_dir.resolve()):
-        typer.echo("An update is already running.", err=True)
-        raise typer.Exit(code=2)
+    # Asked for, and then left to the lock itself. This used to answer "An update is already
+    # running." and stop — five words, no pid, no file, no way out — for the commonest lock in the
+    # program: the machine restarted in the middle of an update, and the number in update.lock now
+    # belongs to some live daemon. Busy is the sentence that names the file and says that deleting
+    # it lets the step run again, and taking the lock is the only thing that raises it, so the
+    # check standing in front of the lock was the reason nobody ever heard it.
     signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     run_update(data_dir, say=typer.echo)
 
@@ -648,14 +1041,19 @@ def index(data_dir: Path = DATA_DIR_OPTION) -> None:
     """
     from epicrisis.index.build import build_index, index_path
     from epicrisis.sources import SourceRegistry, source_output_dir
+    from epicrisis.records import torn_under
     from epicrisis.validate import validate_source, validation_state
 
+    data_dir = _an_instance(data_dir)
     registry = SourceRegistry(data_dir)
     sources = registry.list()
     if not sources:
         # Silence and a zero exit read as "done"; there is nothing here to index, and saying so
         # is the answer.
-        typer.echo("No archive here yet. Add one: epicrisis sources add <folder> --owner <name>", err=True)
+        typer.echo("No archive here yet. Add one: "
+                   + invocation.run("sources add <folder> --owner <name>", data_dir)
+                   + ", or run " + invocation.run("serve", data_dir)
+                   + " and add it on the Archive status page.", err=True)  # fmt: skip
         raise typer.Exit(code=2)
     for source in sources:
         output = source_output_dir(registry.data_dir, source.id)
@@ -668,6 +1066,9 @@ def index(data_dir: Path = DATA_DIR_OPTION) -> None:
             f"{totals['observations']} values, {totals['copy_groups']} groups of copies"
         )
         typer.echo(f"  written to {index_path(registry.data_dir, source.id)}")
+        # Built from the same files, so anything this run could not read is missing from the
+        # numbers just printed, and the numbers agree with each other regardless.
+        _say_what_was_lost({"lines_not_read": torn_under(output)})
     older = index_path(registry.data_dir)
     if older.exists() and sources:
         # The single index of an instance built before archives had owners; each archive now has
@@ -678,7 +1079,7 @@ def index(data_dir: Path = DATA_DIR_OPTION) -> None:
 
 @app.command()
 def forget(
-    source_id: str = typer.Argument(..., help="The archive's id, as `epicrisis serve` shows it on /status."),
+    source_id: str = typer.Argument(..., help=f"The archive's id, as `{CLI} serve` shows it on /status."),
     data_dir: Path = DATA_DIR_OPTION,
     yes: bool = typer.Option(False, "--yes", help="Do it without asking."),
 ) -> None:
@@ -690,10 +1091,10 @@ def forget(
     """
     from epicrisis.sources import SourceRegistry
 
-    registry = SourceRegistry(data_dir.resolve())
+    registry = SourceRegistry(_an_instance(data_dir))
     source = registry.get(source_id)
     if source is None:
-        typer.echo(f"No archive with the id {source_id}. Run `epicrisis serve` and open /status to see them.", err=True)
+        typer.echo(f"No archive with the id {source_id}. Run `{CLI} serve` and open /status to see them.", err=True)
         raise typer.Exit(code=2)
     if not yes and not typer.confirm(f"Read {source.whose} again from nothing? Nothing is deleted."):
         raise typer.Exit(code=1)
@@ -702,7 +1103,7 @@ def forget(
         typer.echo(f"Nothing had been read from {source.whose} yet.")
         return
     typer.echo(f"Moved aside to {aside}")
-    typer.echo("Run `epicrisis update` to read the archive again.")
+    typer.echo(f"Run `{invocation.run('update', registry.data_dir)}` to read the archive again.")
 
 
 @app.command("read-materials")
@@ -737,7 +1138,7 @@ def read_materials_command(
     typer.echo(f"Settled: {stats['decided']} tables, {stats['values']} values")
     typer.echo(f"Waiting for a person (the model was unsure): {stats['waiting']}")
     typer.echo(f"Could not tell: {stats['unclear']}")
-    typer.echo("Run `epicrisis index` to put them in the index.")
+    typer.echo(f"Run `{invocation.run('index', data_dir)}` to put them in the index.")
 
 
 @app.command("check-indicators")
@@ -795,7 +1196,7 @@ def apply_agreed_command(data_dir: Path = DATA_DIR_OPTION) -> None:
     if counts["in_use_a_reference_doubts"]:
         typer.echo(f"In use, but a reference says they are no test: {counts['in_use_a_reference_doubts']}"
                    " — nothing was changed; the reason is on each of them.")  # fmt: skip
-    typer.echo("Run `epicrisis index` to put them in the index.")
+    typer.echo(f"Run `{invocation.run('index', data_dir)}` to put them in the index.")
 
 
 @app.command("settle-names")
@@ -817,7 +1218,7 @@ def settle_names_command(
 
     import tempfile
 
-    from epicrisis.indicator_web_check import WebCheckBackend, names_to_settle, settle_names
+    from epicrisis.indicator_web_check import names_to_settle, settle_names, web_backend
     from epicrisis.models import model_for
     from epicrisis.sources import SourceRegistry
 
@@ -830,8 +1231,10 @@ def settle_names_command(
     if not yes and not typer.confirm("Send them?"):
         raise typer.Exit(code=1)
 
-    _require_consent(data_dir, WebCheckBackend.name)
-    backend = WebCheckBackend(model=model or model_for(data_dir, "strong"))
+    # The backend first, then consent for it: the consent is recorded against the destination,
+    # and the destination is what changes when the engine does.
+    backend = web_backend(registry.data_dir, model or model_for(data_dir, "strong"))
+    _require_consent(data_dir, backend.name)
     # A folder of its own, not the archive's: this is the one pass allowed to reach the open web,
     # and it has no business standing inside the transcriptions while it does.
     with tempfile.TemporaryDirectory(prefix="epicrisis-web-") as workdir:
@@ -865,7 +1268,7 @@ def look_up_names_command(
 
     import tempfile
 
-    from epicrisis.indicator_web_check import WebCheckBackend, look_up_names, tests_to_look_up
+    from epicrisis.indicator_web_check import look_up_names, tests_to_look_up, web_backend
     from epicrisis.models import model_for
     from epicrisis.sources import SourceRegistry
 
@@ -878,8 +1281,10 @@ def look_up_names_command(
     if not yes and not typer.confirm("Look them up?"):
         raise typer.Exit(code=1)
 
-    _require_consent(data_dir, WebCheckBackend.name)
-    backend = WebCheckBackend(model=model or model_for(data_dir, "strong"))
+    # The backend first, then consent for it: the consent is recorded against the destination,
+    # and the destination is what changes when the engine does.
+    backend = web_backend(registry.data_dir, model or model_for(data_dir, "strong"))
+    _require_consent(data_dir, backend.name)
     # A folder of its own, not the archive's: this is the one pass allowed to reach the open web,
     # and it has no business standing inside the transcriptions while it does.
     with tempfile.TemporaryDirectory(prefix="epicrisis-web-") as workdir:
@@ -912,4 +1317,4 @@ def demo(
     typer.echo(f"{made['documents']} documents, {made['observations']} values")
     for archive in made["archives"]:
         typer.echo(f"Scans:  {archive}")
-    typer.echo(f"Look at it with: epicrisis serve --data-dir {made['data_dir']}")
+    typer.echo(f"Look at it with: {CLI} serve --data-dir {made['data_dir']}")

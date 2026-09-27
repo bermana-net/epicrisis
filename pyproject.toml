@@ -1,10 +1,10 @@
 [project]
 name = "epicrisis"
-version = "0.2.0"
+version = "0.3.0"
 description = "A self-hosted archive: scanned medical documents as structured data, every value as printed."
 readme = "README.md"
 license = "BUSL-1.1"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "COMMERCIAL.md"]
 requires-python = ">=3.14"
 dependencies = [
     "cryptography>=50.0.1",
@@ -25,12 +25,15 @@ dependencies = [
 ]
 
 [project.scripts]
-epicrisis = "epicrisis.cli:app"
+epicrisis = "epicrisis.cli:run"
 
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
     "pytest>=8.4",
+    # The suite alone takes minutes and this machine has cores to spare: `pytest -n 4`. Nothing in
+    # the suite depends on the order tests run in, and each writes under its own tmp_path.
+    "pytest-xdist>=3.6",
     "xlwt>=1.3.0",
 ]
 

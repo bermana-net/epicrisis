@@ -7,24 +7,67 @@
   {% include "_header.html" %}
 
   <section class="rule" style="padding-top: 18px;">
-    <h1>Before pages go to a model</h1>
+    <h1>Model processing</h1>
+    <p class="lead caps">What goes to a model, where it goes, and what is never sent. Nothing leaves this server before you say so here.</p>
     <dl>
       <dt class="caps">What is sent</dt>
-      <dd>The full image of a page, or all of its text, with everything printed on it, including names, dates of birth and results. {% if pages %}This run will send {{ pages|thousands }} pages from {{ files|thousands }} files, one page per request{% if archives|length > 1 %}, out of every archive on this server &mdash; {{ archives|join(", ") }}{% endif %}.{% else %}No pages are ready to send yet.{% endif %} Epicrisis removes the file name, folder names, paths and image metadata. It does not remove anything from the page itself.</dd>
+      <dd>The full image of a page, or all of its text, with everything printed on it, including names, dates of birth and results. {% if pages %}This run will send {{ pages|thousands }} pages from {{ files|thousands }} files, each in a request of its own, and some of them more than once &mdash; a page whose reading a check did not agree with is read again by a stronger model{% if archives|length > 1 %}, out of every archive on this server &mdash; {{ archives|join(", ") }}{% endif %}.{% else %}No pages are ready to send yet.{% endif %} Epicrisis removes the file name, folder names, paths and image metadata. It does not remove anything from the page itself.</dd>
 
+      {# By the engine this instance is set to, because that is what decides the transport, the
+         terms and the bill — and consent is recorded against it, so changing the engine asks
+         again. Said one way for both, this page told somebody using their own key that their
+         pages went through a consumer subscription. #}
       <dt class="caps">Where it goes</dt>
+      {% if engine == "anthropic-api" %}
+      <dd>To Anthropic, straight from this server to the API, with a key of your own from a <span class="mono">.env</span> file beside the data folder. Your own account, your own bill.</dd>
+      {% else %}
       <dd>To Anthropic, through Claude Code signed in with your own Claude subscription on this server. This mode is meant for personal use.</dd>
+      {% endif %}
 
       <dt class="caps">What happens to it there</dt>
+      {% if engine == "anthropic-api" %}
+      <dd>The terms of the account the key belongs to apply &mdash; commercial terms for an organisation account, consumer terms for a personal one &mdash; and they decide how long data is kept, whether it may be used for training, and what review is possible. Read the terms of your own account, and the <a href="https://www.anthropic.com/legal/privacy" rel="noreferrer noopener" target="_blank">Privacy Policy</a>.</dd>
+      {% else %}
       <dd>Anthropic's consumer terms apply: how long the data is kept, whether it can be used for model training, and when people can review content flagged by safety systems. Consumer plans come without a data processing agreement. Read the <a href="https://www.anthropic.com/legal/consumer-terms" rel="noreferrer noopener" target="_blank">Consumer Terms</a> and the <a href="https://www.anthropic.com/legal/privacy" rel="noreferrer noopener" target="_blank">Privacy Policy</a>.</dd>
+      {% endif %}
+
+      <dt class="caps">What it costs</dt>
+      {% if engine == "anthropic-api" %}
+      {# No number, and no promise about money. This said "every page is a request billed to your
+         key, and this reading sends <the page count> of them", which reads as the whole bill and is
+         a floor: reading an archive asks a model in six ways — one call for each page classified,
+         one for each document transcribed, a second reading by the strongest model where a check did
+         not agree, a search for a date where none was read, a reading of what a table measured, and
+         suggestions of new spellings for the vocabulary. Somebody with a budget to get approved read
+         that number, wrote it in, and would have been billed more than twice it. A number this
+         program cannot honour it should not print: what it owes the reader is that model calls cost
+         money, that nothing here limits them, and where the limit can be set. #}
+      <dd class="alert">Reading documents calls a model, and every call is billed to the key you set. Nothing in this program limits that, and it cannot tell you what it will come to: it depends on the archive, on which models are chosen on the Settings page, and on prices that are not ours. Watch the spend on the account the key belongs to &mdash; a cap is usually set there rather than here &mdash; and start with one folder rather than thirty years of them.</dd>
+      {% else %}
+      <dd>Nothing in money: the reading runs under your subscription. It stops at the usage limit and continues where it left off, so a large archive is read over several runs rather than in one.</dd>
+      {% endif %}
 
       <dt class="caps">Your control</dt>
-      <dd>The model training setting for your account is at claude.ai/settings/data-privacy-controls. A change to it does not apply to data sent before the change. Nothing is sent before you confirm here. A run stops at the subscription usage limit and continues where it left off.</dd>
+      <dd>{% if engine != "anthropic-api" %}The model training setting for your account is at claude.ai/settings/data-privacy-controls. A change to it does not apply to data sent before the change. {% endif %}Nothing is sent before you confirm here. What you confirm is this one way of reaching a model, out of the archives named above &mdash; change the way, or add the archive of another person, and this page asks again. You can take it back here at any time, and then nothing is sent by this server at all: not by a page, not by a command, not by anything in a crontab.</dd>
     </dl>
 
     {% if consented %}
     <p class="confirmed caps">Model processing is on.</p>
+    {# Given by one press, taken back by one. The button opposite says "Turn on model processing",
+       which promises a switch, and there was none: no button, no command, no line of documentation,
+       only editing consent.json by hand. #}
+    <form method="post" action="/consent">
+      <input type="hidden" name="action" value="off">
+      <button class="btn" type="submit">Turn model processing off</button>
+      <small class="caps muted">Nothing more is sent after this, by any part of this server. What was already read stays where it is; taking this back does not unsend anything.</small>
+    </form>
     {% else %}
+    {% if added_since %}
+    {# An archive added after the agreement. The person whose it is was not named on this page when
+       somebody pressed the button, and often never sees this program: the licence takes for granted
+       that one person holds the server for another. #}
+    <div class="notice caps"><span class="alert">The archive of {{ added_since | join(", ") }} was added after this was agreed to, so nothing of {% if added_since | length > 1 %}theirs{% else %}theirs{% endif %} has been sent and nothing will be. Read what is above again &mdash; it now names every archive on this server &mdash; and agree again to cover {% if added_since | length > 1 %}them{% else %}it{% endif %} too.</span></div>
+    {% endif %}
     <form method="post" action="/consent">
       <label class="check">
         <input type="checkbox" name="understood" value="yes" required>

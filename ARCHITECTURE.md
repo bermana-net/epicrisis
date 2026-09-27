@@ -25,6 +25,8 @@ Read the two tables before adding anything.
 | `reference.py` | Reading a printed reference range. One reader for the whole program. |
 | `dates.py`, `document_dates.py` | Reading a printed date, and settling which date a document carries. |
 | `indicators.py` | Which printed spellings are one test, and the corrections a person made to that. |
+| `conversing.py` | A question answered through a conversation with this archive's tools, over the API: the loop Claude Code has built in. |
+| `judgements.py` | What a person said about a finding: that it was real, or that it was noise. Appended, never rewritten. |
 | `corrections.py` | What a person changed by hand, kept apart from what a model wrote and laid over it, and which printed fields they may change at all. |
 | `validate.py` | The checks that need no model, and what goes to review. |
 | `rules/` | What a rule is, which kinds of check exist, and the rules that ship. A rule is a file; a kind is code. How to write one, including one that needs a model: `rules/README.md`. |
@@ -63,13 +65,21 @@ Read the two tables before adding anything.
 | A column or a question of the index | `query.py`, and the index schema in `index/build.py`. |
 | A tool an assistant can call | `mcp_server.py`, read-only, with `archive_of` on the answer. |
 | A step of the pipeline | Its own package under `epicrisis/`, with the model reached through `engines.py` and the run through `runs.py`. |
+| A way of telling a rule it was right or wrong | `judgements.py`, and the count beside the switch in `rules/tally.py`. |
 | A file written beside an archive | Its name in `layout.py`, written through `runs.put_in_place`. |
 
 ## Two rules that hold everywhere
 
-**The program stores and shows.** Nothing added here may interpret a value, decide what is
-normal, average, score or advise. A check may mark a line for a person to look at; that is the
-furthest it goes (MDCG 2019-11).
+**The program stores and shows.** Nothing added here may decide what is normal, average, score
+or advise. A kind of check that `marks` may only say "look at this"; a kind that `places` may
+only say what scale or unit something was printed in. There is no third one — see
+`rules/kinds.py`, which says this as code rather than as a promise (MDCG 2019-11).
+
+One door exists, and naming it is part of the rule. Where a person has turned every limit off on
+their own instance, the application will compare a number with the range printed beside it on its
+own form and count what fell outside. That is arithmetic on what one form printed, it is off
+unless somebody switches it on, and `reference.py` is the only place in this program that does
+it.
 
 **Nothing of a real archive leaves this repository.** No value, no name, no institution — not in
 code, not in tests, not in commit messages. `tools/nothing-of-yours.py` refuses the push when it

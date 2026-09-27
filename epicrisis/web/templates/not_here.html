@@ -1,0 +1,22 @@
+{% extends "_page.html" %}
+{% block title %}{{ heading or "Not in this archive" }}{% endblock %}
+{% block page %}
+
+  {% include "_header.html" %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>{{ heading or "That is not in this archive" }}</h1>
+    <p class="empty">{{ what }}</p>
+    {# The ordinary reason an address leads nowhere, and the one a bare line of text never gave: one
+       server holds several archives and shows one at a time, so an address from the archive before
+       this one stops leading anywhere the moment it is switched — here or in another tab left open.
+
+       Only where that is what happened. A date typed wrongly and a step that could not run were
+       answered with this page too, under the heading "That is not in this archive" and this
+       paragraph about several archives underneath — which told a person their archive was gone when
+       it was open in front of them. #}
+    {% if not heading %}<p class="caps muted">One server can hold several archives and shows one of them at a time. When the open archive changes, an address from another one stops leading anywhere, and nothing of it is shown under this name.</p>{% endif %}
+    <p><a class="btn" href="{{ back }}">{{ back_label }}</a></p>
+  </section>
+
+{% endblock %}

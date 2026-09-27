@@ -1,0 +1,24 @@
+{% extends "_page.html" %}
+{% block title %}{{ heading }}{% endblock %}
+{% block page %}
+
+  {# A page and not the words "Internal Server Error". Everything a person can act on is here:
+     which file, what has not been lost, and the one thing that puts it right. The header is
+     included only when there is an archive to name — the trouble may be the very file that says
+     which archives there are. #}
+  {% if named_archive %}{% include "_header.html" %}{% endif %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>{{ heading }}</h1>
+    <p class="empty">{{ what }}</p>
+    {% if safe %}<p>{{ safe }}</p>{% endif %}
+    {% if mend %}<p class="caps">{{ mend }}</p>{% endif %}
+    <p class="caps muted">Nothing was sent anywhere by this, and nothing in the archive folder was written to. The files this program keeps are written whole and renamed into place, so the ones already on disk are whole.</p>
+    {% if where %}<p class="caps muted">Inside the data folder of this instance: <code>{{ where }}</code></p>{% endif %}
+    {# A way on, where there is one. Where there is not, the page says so in words rather than
+       offering a button that leads back to itself. #}
+    {% if nowhere_to_go is defined and nowhere_to_go %}<p class="caps">{{ nowhere_to_go }}</p>{% endif %}
+    {% if back %}<p><a class="btn" href="{{ back }}">{{ back_label }}</a></p>{% endif %}
+  </section>
+
+{% endblock %}

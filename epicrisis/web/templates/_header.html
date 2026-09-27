@@ -1,16 +1,20 @@
+{% from "_explains.html" import explains %}
 {# A page appears in the menu when it has something to show. A new instance offers one thing to
    do; the rest arrive as the documents do. Typing an address still reaches any page, and the
    page then says which step is missing. #}
 {% set here = stage() %}
+{# The order is the order a person uses them: the archive itself first, because the timeline is
+   what this is for and what the front page shows; then the two ways of asking it something; then
+   the pages that are about the reading rather than about the records. #}
 {% set all_pages = [
-  ("/status", "status", "Archive status", "Archives and progress", "always"),
-  ("/documents", "documents", "Documents", "What each page is", "scanned"),
-  ("/consent", "consent", "Model processing", "What is sent and where", "scanned"),
   ("/", "timeline", "Timeline", "The archive by its own dates", "read"),
   ("/search", "search", "Search", "One line over every document", "read"),
-  ("/review", "review", "To check", "Findings of the validation", "read"),
   ("/ask", "ask", "Ask", "Questions about the archive", "read"),
+  ("/documents", "documents", "Documents", "What each page is", "scanned"),
+  ("/review", "review", "To check", "Findings of the validation", "read"),
   ("/indicators", "indicators", "Indicators", "Printed names grouped by test", "read"),
+  ("/status", "status", "Archive status", "Archives and progress", "always"),
+  ("/consent", "consent", "Model processing", "What is sent and where", "scanned"),
   ("/settings", "settings", "Settings", "What this instance allows", "scanned"),
 ] %}
 {# A brand new instance offers the one thing there is to do, because nine pages that all say
@@ -18,21 +22,42 @@
    stays whole: with two archives on one server, a menu that shrank when a person switched to
    the one not read yet would read as the interface breaking. A page with nothing to show says
    so where it stands. #}
-{% set reached = {"no_archive": ["always"],
-                  "scanning": ["always", "scanned", "read"],
-                  "unread": ["always", "scanned", "read"],
-                  "ready": ["always", "scanned", "read"]} %}
+{% set whole = ["always", "scanned", "read"] %}
+{% set reached = {"no_archive": ["always"], "scanning": whole, "unread": whole,
+                  "nothing_to_read": whole, "unindexed": whole, "ready": whole} %}
 {# Whatever page a person typed their way to stays in the menu, so they can see where they are
    and get back out of it. #}
 {% set menu = [] %}
-{% for page in all_pages %}{% if page[4] in reached[here.state] or page[1] == current %}{% set _ = menu.append(page) %}{% endif %}{% endfor %}
+{% set here_reaches = reached.get(here.state, whole) %}
+{% for page in all_pages %}{% if page[4] in here_reaches or page[1] == current %}{% set _ = menu.append(page) %}{% endif %}{% endfor %}
 {% set who = owners() %}
 <header class="topbar">
-  {# The name, and under it in small letters what this is not. It is a standing statement about
-     the program, not a label on the bar, and it belongs with the name it qualifies. #}
+  {# The mark, then the name, and under it in small letters what this is not. That last line is a
+     standing statement about the program, not a label on the bar, and it belongs with the name it
+     qualifies.
+
+     The mark is the same one the browser tab and the site carry, drawn here rather than loaded:
+     the letter is rectangles, so it looks the same on a machine with none of this page's fonts,
+     and it costs no request. #}
   <span class="brand-block">
-    <a class="brand" href="/">Epicrisis Companion</a>
-    <small class="caps not-a-device">Not a medical device</small>
+    {# Hidden from a screen reader on purpose: the name beside it is the same link, and a reader
+       announcing "Epicrisis, link. Epicrisis Companion, link." twice over says nothing twice. #}
+    <a class="brand-mark" href="/" aria-hidden="true" tabindex="-1">
+      <svg viewBox="0 0 64 64">
+        <rect width="64" height="64" fill="#0e0e0e"/>
+        <g fill="#f3f2ee">
+          <rect x="13" y="12" width="10" height="40"/>
+          <rect x="13" y="12" width="30" height="9"/>
+          <rect x="13" y="27" width="25" height="9"/>
+          <rect x="13" y="43" width="30" height="9"/>
+        </g>
+        <rect x="46" y="42" width="10" height="10" fill="#d9502a"/>
+      </svg>
+    </a>
+    <span class="brand-words">
+      <a class="brand" href="/">Epicrisis Companion</a>
+      <small class="caps not-a-device">Not a medical device</small>
+    </span>
   </span>
   <div class="topbar-right">
     <button type="button" class="menu-button" id="menu-button" aria-label="Menu" aria-expanded="false" aria-controls="menu-panel">
@@ -56,6 +81,16 @@
         {% endfor %}
       </select>
       <button class="btn small" type="submit" id="owner-go">Show</button>
+      {# What this control reaches, said beside it and not in a title= a phone never shows. One
+         archive is open at a time and that is one state for the whole server: somebody who changed
+         it here had the tab they had left open on another person's records answering about this one
+         the moment they reloaded it, and the tools over the network moved with it too.
+
+         Behind the same mark as every other explanation in this interface, because the bar is one
+         line: written out, it wrapped the picker onto a second row and moved the owner's name and
+         the control out of the place a person had learned them in. #}
+      {{ explains("Switching here changes the archive for this whole server: every tab open on it,
+         and the tools answering over the network. One archive is open at a time.", "this control") }}
     </form>
     {% else %}
     <span class="caps owner-name" title="Whose archive this is">Archive of <b>{{ who.whose }}</b></span>
@@ -68,6 +103,36 @@
     {% endfor %}
   </nav>
 </header>
+{# Said under the bar of every page, because the page a person is standing on when it matters is
+   the card they just corrected, and the page it matters on is the chart they open next. The card
+   is drawn from this archive's own files and the chart is drawn from the index, and until the
+   index is built again the two disagree. That used to be silent. #}
+{% set catch = catching_up() %}
+{% if catch %}
+<div class="notice caps catching-up">
+  {# Short, because it is drawn in capitals at the top of every page and three lines of that is a
+     wall nobody reads. What a person needs is which of the two it is and what to press. #}
+  {% if catch.trouble %}
+  <span class="alert">{{ catch.trouble }} The charts and the search still answer as they were
+    built.</span>
+  {% elif catch.building %}
+  <span>{% if catch.corrected %}Your correction is{% else %}A change is{% endif %} being built in
+    &mdash; the charts and the search will have it in a few seconds.</span>
+  {% else %}
+  <span>{% if catch.corrected %}A correction here is not in the charts yet.{% else %}This index is
+    older than the files it is built from.{% endif %} Cards show it; the charts, the search and the
+    tools answer from the index.</span>
+  {% endif %}
+  {# The button belongs to the failure as much as to the waiting: a build that could not be done is
+     exactly the case where a person has something to press and nothing is going to press it for
+     them. Only while nothing is running, so two presses are not two builds. #}
+  {% if not catch.building %}
+  <form method="post" action="/index/{{ catch.archive }}/build">
+    <button class="btn small" type="submit">{% if catch.trouble %}Try again{% else %}Build it in{% endif %}</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
 <script>
   (() => {
     // Choosing a name is the whole act; pressing a button after it is a second one. The button

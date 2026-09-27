@@ -33,6 +33,7 @@ be looked up somewhere else is an answer nobody looks up. Where the two disagree
 refused, so they cannot drift apart.
 """
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,17 @@ class Rule:
     # quietly change what an archive had already chosen. Remove it once nobody can still be
     # carrying the old answer.
     was_called: str
+    # What a person is being asked to do about a finding, where it hangs, and where it stands in
+    # the queue. A list of findings without these is a wall: it says a check failed and leaves
+    # the reader to work out whether it is their problem and what would settle it.
+    settles: str
+    attaches: str  # "value" or "document", and empty for a rule that finds nothing
+    # What turning this one off does, where that is more than "it stops reporting". A rule that
+    # marks copies decides which document of a group answers, so switching it off makes every copy
+    # answer separately — the same measurement two or three times in every series, on every chart
+    # and in every answer over the network. Nothing said that anywhere, and the page invited it.
+    switching_off: str
+    order: int
     settings: dict
     about: str  # the Markdown body, for the person deciding whether to turn it on
     shipped: bool
@@ -149,12 +161,22 @@ def read(path: Path, shipped: bool) -> Rule:
         raise RuleFileProblem(f"this rule says it runs at {header['at']} and {kind.name} runs at {kind.at}")
     if not about:
         raise RuleFileProblem("nothing is written about what this rule does or how it can be wrong")
+    # A rule that sends something to be looked at has to say what would settle it, and where the
+    # finding hangs. Without the first, a person is given a wall; without the second, nothing
+    # knows whether to show it against a value or against the whole document.
+    if header["does"] == "marks":
+        if not str(header.get("settles", "")).strip():
+            raise RuleFileProblem("settles is missing: a rule that marks has to say what settles it")
+        if header.get("attaches") not in ("value", "document"):
+            raise RuleFileProblem("attaches should be value or document")
     settings = _settings(header.get("settings", {}), kind)
     return Rule(
         id=header["id"], name=header["name"], summary=header["summary"].strip(),
         kind=header["kind"], does=header["does"], at=header["at"],
         on_by_default=bool(header.get("on_by_default", True)),
-        was_called=str(header.get("was_called", "")), settings=settings,
+        was_called=str(header.get("was_called", "")), settles=str(header.get("settles", "")).strip(),
+        attaches=str(header.get("attaches", "")), switching_off=str(header.get("switching_off", "")).strip(),
+        order=int(header.get("order", 99)), settings=settings,  # fmt: skip
         about=about, shipped=shipped, path=path,
     )  # fmt: skip
 
@@ -195,3 +217,64 @@ def load(data_dir: Path | None = None, shipped_dir: Path | None = None) -> Rules
                 continue
             loaded.rules.append(rule)
     return loaded
+
+
+def slug(name: str) -> str:
+    """A name a person typed, as a file can be called: lowercase, words joined by hyphens."""
+    made = re.sub(r"[^a-z0-9]+", "-", name.strip().casefold()).strip("-")
+    return made or "a-rule"
+
+
+def _as_toml(text: str) -> str:
+    """One string, written so that what it says cannot become part of the file's own grammar.
+
+    These lines used to be built by putting the typed name between three quotes. A name holding
+    three quotes of its own closed the string there and the rest of it was read as more keys of
+    the rule's header — enough to set a rule on by default that nobody turned on. It could go no
+    further than that (the id is a slug, the kind is checked against the ones that exist, and a
+    header that will not parse throws the file away), but a name is a thing a person types, and
+    nothing a person types should be able to reach the shape of the file.
+    """
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = "".join(ch if ch >= " " and ch != "\x7f" else f"\\u{ord(ch):04x}" for ch in escaped)
+    return f'"{escaped}"'
+
+
+def write_one(data_dir: Path, header: dict, about: str, kinds: dict) -> tuple[str, str]:
+    """A rule of this archive's own. Returns its id, or an empty id and what is wrong with it.
+
+    Written, then read back before it is allowed to stay. A file the registry cannot take would
+    otherwise sit in the folder saying so on every page, and the person who wrote it would be
+    told at some later moment, about something they had stopped thinking about.
+    """
+    kind = kinds.get(header.get("kind", ""))
+    if kind is None:
+        return "", "Choose a kind of check."
+    if not str(header.get("name", "")).strip():
+        return "", "A rule needs a name."
+    rule_id = slug(header.get("id") or header["name"])
+    folder = Path(data_dir) / FOLDER_NAME
+    folder.mkdir(parents=True, exist_ok=True)
+    if load(data_dir).get(rule_id) or (folder / f"{rule_id}.md").exists():
+        return "", f"There is already a rule called {rule_id!r}."
+
+    lines = [FENCE, f"id = {_as_toml(rule_id)}", f"name = {_as_toml(header['name'].strip())}",
+             f"summary = {_as_toml((header.get('summary') or header['name']).strip())}",
+             f"kind = {_as_toml(kind.name)}", f"does = {_as_toml(kind.does)}", f"at = {_as_toml(kind.at)}",
+             "on_by_default = false  # somebody else's archive has not agreed to this one"]  # fmt: skip
+    if kind.does == "marks":
+        lines += [f"attaches = {_as_toml(header.get('attaches') or 'document')}",
+                  f"settles = {_as_toml((header.get('settles') or 'Open the page and see.').strip())}"]  # fmt: skip
+    written = "\n".join(lines) + f"\n{FENCE}\n\n" + (about.strip() or "# Written here\n\nNo more was said.") + "\n"
+
+    path = folder / f"{rule_id}.md"
+    path.write_text(written, encoding="utf-8")
+    try:
+        read(path, shipped=False)
+    except RuleFileProblem as wrong:
+        path.unlink(missing_ok=True)
+        return "", str(wrong)
+    from epicrisis.runs import belongs_to_the_folder
+
+    belongs_to_the_folder(path)
+    return rule_id, ""

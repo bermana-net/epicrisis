@@ -27,7 +27,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
-from epicrisis import mcp_access, mcp_lock, query
+from epicrisis import mcp_access, mcp_lock, query, rules
+from epicrisis.rules import kinds
 
 # Whose archive this is comes first, before anything about how to read it: a person reading a
 # conversation should be able to see at a glance whose records were being talked about. The name
@@ -100,7 +101,7 @@ def _found_nothing(connection, words: str | None) -> dict[str, Any]:
     }
 
 
-def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
+def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str | None = None) -> MCPServer:
     """The tools of one archive. The lock is asked for only where this server is reachable.
 
     The code exists because `--http` puts the archive on an address the internet can reach. Over
@@ -113,9 +114,26 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
     from epicrisis.sources import showing as showing_archive
 
     opened = showing_archive(data_dir)
-    head = INSTRUCTIONS_HEAD.format(whose=opened.whose if opened else "someone whose name is not set")
-    server = MCPServer(name="epicrisis", instructions=f"{head}\n\n{INSTRUCTIONS}", version="0.2")
-    lock = mcp_lock.Lock(secret=mcp_lock.read_secret())
+    # Whose archive it is, only where saying so gives nothing away. These instructions are handed
+    # over in the answer to `initialize`, which is the first thing a client asks and which needs no
+    # code at all — so on a locked server this sentence told whoever held the address the one fact
+    # the lock exists to keep, and the docstring of guard() a few lines down says exactly that
+    # about its own refusals. Over stdio the lock does not apply and the process is started by
+    # somebody who already has the files; with the lock off nothing is being kept from anybody.
+    from epicrisis.settings import mcp_lock_on
+
+    kept_back = over_the_network and mcp_lock_on(data_dir)
+    head = INSTRUCTIONS_HEAD.format(
+        whose="the person whose archive this instance holds" if kept_back
+        else (opened.whose if opened else "someone whose name is not set")
+    )  # fmt: skip
+    # The version this program is, not a second version written down beside it: a string here
+    # would go on telling a connector 0.2 for as long as nobody remembered it existed.
+    from epicrisis import __version__
+
+    server = MCPServer(name="epicrisis", instructions=f"{head}\n\n{INSTRUCTIONS}", version=__version__)
+    lock = mcp_lock.Lock(secret=mcp_lock.read_secret(),
+                         remembers=Path(data_dir) / mcp_lock.WRONG_CODES_FILE)  # fmt: skip
 
     def guard(ticket: str | None) -> dict[str, Any] | None:
         """Every tool asks this first. With the lock off it returns nothing and nothing changes.
@@ -182,9 +200,21 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
 
     def showing() -> tuple[str | None, str]:
         """The archive being served and whose it is. Every answer says the name, so that one
-        person's records can never be read as another's."""
+        person's records can never be read as another's.
+
+        Asked afresh every call, because the archive can be switched while a client is connected —
+        except where this server was started for one archive and told which. The Ask page of the
+        dashboard starts one per question, and a question takes tens of seconds: switching archive
+        in another tab meanwhile had the rest of that answer read from somebody else's records and
+        written into a conversation filed under the first person. Over the network the same case
+        is refused, and well — the pass ends rather than quietly continuing over another's records.
+        """
+        from epicrisis.sources import SourceRegistry
         from epicrisis.sources import showing as the_archive
 
+        if pinned_to:
+            held = SourceRegistry(Path(data_dir)).get(pinned_to)
+            return (held.id, held.whose) if held else (pinned_to, "")
         active = the_archive(data_dir)
         return (active.id, active.whose) if active else (None, "")
 
@@ -218,7 +248,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
             "files may have been written by another account than the one the server runs as."
         )
 
-    @server.tool(description="What the archive holds: counts of documents and values, the span of dates, types and languages.")
+    @server.tool(description="What the archive holds: counts of documents and values, the span of dates, types and languages. Counts only: nothing here says whether anything in it is normal.")
     def archive_overview(ticket: TICKET = None) -> dict[str, Any]:
         notice = guard(ticket)
         if notice is not None:
@@ -226,25 +256,33 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
         with index() as connection:
             return {"archive_of": whose(), **query.overview(connection)}
 
-    @server.tool(description="Documents whose text, title, institution or value names match the words. Returns a piece of the original text around the match.")
+    @server.tool(description="Documents whose text, title, institution or value names match the words. Returns a piece of the original text around the match, as printed. Matching is literal: it does not rank documents by importance and an empty answer is not evidence the archive lacks the subject.")
     def search_documents(
         query_text: Annotated[str, Field(description="Words to look for, in any of the archive's languages")],
         limit: Annotated[int, Field(description="How many documents", ge=1, le=200)] = 20,
         since: Annotated[str | None, Field(description="Earliest document date, YYYY-MM-DD")] = None,
         until: Annotated[str | None, Field(description="Latest document date, YYYY-MM-DD")] = None,
         doc_type: Annotated[str | None, Field(description="lab_panel, imaging_report, consultation, discharge, prescription, referral, admin, insurance, other")] = None,
+        offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None,
     ) -> dict[str, Any]:
         notice = guard(ticket)
         if notice is not None:
             return notice
         with index() as connection:
-            rows = query.search(connection, query_text, limit=limit, since=since, until=until, doc_type=doc_type)
-            if not rows:
+            rows = query.search(connection, query_text, limit=limit, since=since, until=until,
+                                doc_type=doc_type, offset=offset)  # fmt: skip
+            if not rows and not offset:
                 return {"archive_of": whose(), **_found_nothing(connection, query_text)}
-            return {"archive_of": whose(), "result": rows, "found": len(rows)}
+            # Through _page, whose own words are "nothing is cut without the caller being told" —
+            # which this tool did not do. "found" was the length of the page: twenty-two matches
+            # answered as twenty, in an answer shaped exactly like the answer to "that is all there
+            # is", and a model then wrote about the archive from part of it. The count was already
+            # in this file's reach, and the page of the dashboard has been showing it all along.
+            total = query.count_search(connection, query_text, since=since, until=until, doc_type=doc_type)
+            return {"archive_of": whose(), **_page(rows, "documents", total, offset)}
 
-    @server.tool(description="Documents by their own printed date, newest first. Returns a page and says how many there are in all.")
+    @server.tool(description="Documents by their own printed date, newest first. Returns a page and says how many there are in all. The dates are the ones printed on the documents; nothing here groups them into episodes or decides which of them matter.")
     def list_documents(
         since: Annotated[str | None, Field(description="Earliest document date, YYYY-MM-DD")] = None,
         until: Annotated[str | None, Field(description="Latest document date, YYYY-MM-DD")] = None,
@@ -261,22 +299,25 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
             total = query.count_documents(connection, since=since, until=until, doc_type=doc_type)
             return {"archive_of": whose(), **_page(rows, "documents", total, offset)}
 
-    @server.tool(description="How a test is printed across the archive: every printed name matching the words, with how often it appears and over which years.")
+    @server.tool(description="How a test is printed across the archive: every printed name matching the words, with how often it appears and over which years. Spellings, not meanings: it does not say that two printed names are the same test unless a person has said so.")
     def value_names(
         query_text: Annotated[str | None, Field(description="Part of a name, in any language")] = None,
         limit: Annotated[int, Field(description="How many names", ge=1, le=200)] = 50,
         include_derived: Annotated[bool, Field(description="Include values the lab calculated, such as filtration rates")] = False,
+        offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None
     ) -> dict[str, Any]:
         notice = guard(ticket)
         if notice is not None:
             return notice
         with index() as connection:
-            rows = query.value_names(connection, query_text, limit=limit, include_derived=include_derived)
+            rows = query.value_names(connection, query_text, limit=limit,
+                                     include_derived=include_derived, offset=offset)  # fmt: skip
             indicators = query.indicators_matching(connection, query_text)
-            if not rows and not indicators:
+            if not rows and not indicators and not offset:
                 return {"archive_of": whose(), **_found_nothing(connection, query_text)}
-            answer: dict[str, Any] = {"archive_of": whose(), "result": rows, "found": len(rows)}
+            total = query.count_value_names(connection, query_text, include_derived=include_derived)
+            answer: dict[str, Any] = {"archive_of": whose(), **_page(rows, "printed_names", total, offset)}
             if indicators:
                 # The names printed in other languages sit under the same indicator as these ones.
                 answer["indicators_holding_these_words"] = [
@@ -284,7 +325,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
                 ]
             return answer
 
-    @server.tool(description="Indicators: one label over the many ways a test is printed across laboratories and languages. Use an indicator id with value_history to get a whole history at once. Returns a page; ask for the next with offset.")
+    @server.tool(description="Indicators: one label over the many ways a test is printed across laboratories and languages. Use an indicator id with value_history to get a whole history at once. Returns a page; ask for the next with offset. A label is a grouping of spellings that a person approved, not a judgement about the test or about anybody's results.")
     def list_indicators(
         status: Annotated[str | None, Field(description="approved, proposed, or null for all")] = "approved",
         limit: Annotated[int, Field(description="How many indicators in this page", ge=1, le=200)] = 50,
@@ -299,7 +340,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
             rows = query.indicator_list(connection, status=status, brief=not with_spellings, limit=limit, offset=offset)
             return {"archive_of": whose(), **_page(rows, "indicators", query.count_indicators(connection, status=status), offset)}
 
-    @server.tool(description="Every value of one indicator, or whose printed name contains the words, as printed, oldest first, with unit, reference range, flag and the document it comes from.")
+    @server.tool(description="Every value of one indicator, or whose printed name contains the words, as printed, oldest first, with unit, reference range, flag and the document it comes from. Nothing is converted, averaged or compared: values in different units stay in the units their forms printed, and none of them is marked high or low here.")
     def value_history(
         name: Annotated[str | None, Field(description="Words of the printed name, for instance 'цистатин' or 'cistatina'")] = None,
         indicator: Annotated[str | None, Field(description="Indicator id from list_indicators: every spelling at once")] = None,
@@ -339,7 +380,35 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
                     ]}  # fmt: skip
             if not rows:
                 return {"archive_of": whose(), **_found_nothing(connection, name)}
-            return {"archive_of": whose(), "result": rows, "found": len(rows), **searched}
+            # How many there are under the same question, not how many fitted. The rows come back
+            # oldest first and the cap takes them from the top, so a test with more values than
+            # the cap answered with its oldest and said nothing about the rest — and a history
+            # that stops years ago reads like a history that stops years ago, not like a page of
+            # one. Counted with the same period as the list, or the note would fire on a question
+            # that was narrowed on purpose and tell the model to narrow it again.
+            answer = {"archive_of": whose(), "result": rows, "found": len(rows), **searched}
+            # The same set the rows were gathered from, counted once. Summing a count per indicator
+            # answered a different question twice over: a value printed under a name this question
+            # matched, but under no indicator, was not counted at all, and a value under two of them
+            # was counted twice. On the live archive the note said "50 earliest of 89" where 185
+            # matched — and where the sum came out at or below the page, the note was left off
+            # altogether and a cut answer looked like the whole of a history.
+            spellings = tuple(item["id"] for item in (searched.get("searched_every_spelling_of") or []))
+            if indicator:
+                answer["values_in_all"] = query.count_values(
+                    connection, indicator=indicator, material=material, include_derived=include_derived,
+                    all_copies=all_copies, since=since, until=until)  # fmt: skip
+            elif name:
+                answer["values_in_all"] = query.count_values(
+                    connection, name=name, indicators=spellings, material=material,
+                    include_derived=include_derived, all_copies=all_copies, since=since, until=until)  # fmt: skip
+            held = answer.get("values_in_all")
+            if held is None or held <= len(rows):
+                answer.pop("values_in_all", None)
+            else:
+                answer["note"] = (f"These are the {len(rows)} earliest of {held} that match. Narrow the "
+                                  "period with since and until to reach the later ones.")  # fmt: skip
+            return answer
 
     @server.tool(description="Values a laboratory itself marked on the form (H, L, an asterisk, an arrow), over a period. The archive never adds a mark of its own. Where the instance allows it, compare_with_printed_range instead compares each value with the range printed beside it on that same form, and says how many could not be compared at all.")
     def flagged_values(
@@ -356,7 +425,7 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
         notice = guard(ticket)
         if notice is not None:
             return notice
-        from epicrisis.settings import answer_mode
+        from epicrisis.settings import answer_mode, rules_on
 
         # Only the last mode, where the person has taken every limit off their own instance, lets
         # the application itself compare a value with a range. In the middle mode the model may
@@ -364,18 +433,38 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
         if compare_with_printed_range and answer_mode(data_dir) != "direct":
             return {
                 "archive_of": whose(),
-                "refused": "This instance shows values as printed and does not compare them with their ranges itself.",
-                "how_to_allow": "The person whose archive this is can take every limit off on the Settings page.",
-                "instead": "Ask without compare_with_printed_range for the marks the laboratories themselves printed, or read the reference printed beside each value and compare it yourself.",
+                # Not "you may have this if you take every limit off". That sentence sent people
+                # to switch off the last of their own limits for something they did not need it
+                # for: the range is printed beside every value in the answer, and reading it is
+                # reading the form. What is refused here is the application doing the arithmetic
+                # and calling the result a finding.
+                "refused": "This instance shows values as printed and does not compare them with their ranges itself. This is about what the application will compute, not about what may be said.",
+                "instead": "Ask without compare_with_printed_range: every value comes back with the range printed beside it on its own form, and you can compare them yourself. Or ask for the marks the laboratories themselves printed.",
+                "how_to_allow": "Only an instance with every limit taken off on the Settings page has the application compare them. That setting is about more than this, and it is not needed to read a printed range.",
             }
         with index() as connection:
             rows, counts = query.flagged_values(
                 connection, since=since, until=until, flag=flag, indicator=indicator,
                 include_derived=include_derived, compare_with_printed_range=compare_with_printed_range,
                 limit=limit, offset=offset,
+                # The same rules the charts are drawn with: a list that judged a value against a
+                # range printed at another scale would report the scale as an excursion.
+                placing=rules_on(data_dir, rules.load(data_dir), kinds.CHARTS),
             )  # fmt: skip
             answer = {"archive_of": whose(), **_page(rows, "values", None, offset)}
             answer["compared_with_printed_range"] = bool(compare_with_printed_range)
+            if not rows:
+                # The emptiest answer in this program and the most easily misread: asked whether
+                # anything was flagged and handed a bare list, a model says the laboratories
+                # marked nothing, and a person reads that as "nothing was wrong with them". The
+                # archive holds no mark of its own — only the ones printed on the forms — so an
+                # empty list here is a fact about what was printed and about nothing else.
+                answer["this_is_not_evidence_of_absence"] = (
+                    "No value in this archive carries a mark of the kind asked for. The archive never"
+                    " adds a mark of its own: these are the ones laboratories printed on their forms,"
+                    " and a form that printed none is not a form that found nothing. This says nothing"
+                    " about the person, and nothing about values the question did not reach."
+                )
             if compare_with_printed_range:
                 # The two sides are not symmetric, and saying so is part of the answer: a value
                 # outside a printed range is a fact about that laboratory's range, while a value
@@ -385,12 +474,14 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
                     "Each number was compared with the range printed beside it on its own form."
                     f" {counts['outside']} fell outside, {counts['inside']} did not, and {counts['range_not_read']}"
                     " could not be compared because their printed range cannot be read plainly."
-                    " A laboratory's range is for a general population and may not fit this person;"
-                    " inside it is not the same as fine, and this is never a count of everything."
+                    f" A further {counts.get('no_range_printed', 0)} are not in any of those three:"
+                    " their form printed no range beside them at all, so there was nothing to compare"
+                    " them with. A laboratory's range is for a general population and may not fit this"
+                    " person; inside it is not the same as fine, and this is never a count of everything."
                 )
             return answer
 
-    @server.tool(description="One document: header and counts of every part, then the parts asked for, a page at a time. A long document does not fit in one answer, so 'counts' says what the document holds and 'more' says what is left; ask again with offset, or with parts=['sections','text'] for the words rather than the table.")
+    @server.tool(description="One document: header and counts of every part, then the parts asked for, a page at a time. A long document does not fit in one answer, so 'counts' says what the document holds and 'more' says what is left; ask again with offset, or with parts=['sections','text'] for the words rather than the table. Parts of a document as it was transcribed; it neither summarises the document nor says what it means.")
     def get_document(
         file_id: Annotated[str | None, Field(description="Short file id, eight characters")] = None,
         first_page: Annotated[int | None, Field(description="First page of the document within the file")] = None,
@@ -414,18 +505,20 @@ def build_server(data_dir: Path, over_the_network: bool = False) -> MCPServer:
             )  # fmt: skip
             return {"archive_of": whose(), **found} if found else None
 
-    @server.tool(description="Documents the validation flagged for a person to check: incomplete transcriptions, dates, copies, parts that could not be read.")
+    @server.tool(description="Documents the validation flagged for a person to check: incomplete transcriptions, dates, copies, parts that could not be read. Every one of these is about the reading of a page, never about the health of the person the page is about.")
     def documents_to_check(
         code: Annotated[str | None, Field(description="One check code, for instance date_to_check or transcription_incomplete")] = None,
         limit: Annotated[int, Field(description="How many documents", ge=1, le=200)] = 50,
+        offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None,
     ) -> dict[str, Any]:
         notice = guard(ticket)
         if notice is not None:
             return notice
         with index() as connection:
-            rows = query.to_check(connection, code=code, limit=limit)
-            return {"archive_of": whose(), "result": rows, "found": len(rows)}
+            rows = query.to_check(connection, code=code, limit=limit, offset=offset)
+            total = query.count_to_check(connection, code=code)
+            return {"archive_of": whose(), **_page(rows, "documents_to_check", total, offset)}
 
     return server
 
@@ -459,15 +552,48 @@ def caller_of(headers: dict, peer: str) -> tuple[str, bool]:
     """Who is really calling, and whether the tunnel brought them.
 
     The tunnel connects from this machine, so the socket says nothing; it puts the caller's own
-    address at the end of X-Forwarded-For and marks the request as its own. The header is trusted
-    only on a request the tunnel marked, and only its last entry: anyone may send the header, but
-    only the tunnel may add to it, and what it adds is the address it saw.
+    address at the end of X-Forwarded-For and marks the request as its own. Only the last entry is
+    read: anyone may send the header, but only what stands in front of us may add to it, and what
+    it adds is the address it saw.
+
+    Two kinds of tunnel put a caller in front of us. Funnel marks its requests; `tailscale serve`
+    marks nothing, and a request through it used to arrive looking like a call from this machine —
+    which made it welcome before --allow-from was so much as consulted, so the one setting that
+    says "only the connectors may reach this" did nothing at all in that arrangement. A request
+    from the loopback address carrying a forwarding header can only have been forwarded by
+    something on this machine, so its last entry is read the same way. Nothing is given away by
+    that: a caller who can reach us from loopback was already welcome, and all this can do is
+    narrow who they are taken for.
     """
     through_tunnel = bool(headers.get("tailscale-funnel-request"))
     forwarded = [part.strip() for part in (headers.get("x-forwarded-for") or "").split(",") if part.strip()]
-    if through_tunnel and forwarded:
+    passed_on_from_here = allowed_source(peer, _networks("127.0.0.0/8, ::1/128"))
+    if forwarded and (through_tunnel or passed_on_from_here):
         return forwarded[-1], True
     return peer, through_tunnel
+
+
+def how_it_arrived(headers: dict, peer: str) -> dict:
+    """What the log needs beyond the address: where the connection itself came from, and who says so.
+
+    The address above is taken from a header when the request came through a tunnel, which is
+    right — the socket says only that the tunnel is on this machine. But anything on this machine
+    can send that header too, so a process on the loopback could sign its calls with the published
+    address of a connector, and the log is the only thing that ever says who read the archive: a
+    person going back to it would have seen "the connector" and believed it.
+
+    Nothing is refused because of this. What changes is that the line says where the connection
+    actually came from and on whose word the address was taken, so the two can be told apart.
+    """
+    if not (headers.get("x-forwarded-for") or "").strip():
+        return {}
+    if headers.get("tailscale-funnel-request"):
+        return {"arrived_from": peer, "address_claimed_by": "tailscale-funnel"}
+    if allowed_source(peer, _networks("127.0.0.0/8, ::1/128")):
+        # Said plainly: this address is what the request asked to be called, and the request came
+        # from this machine. Anything here could have written it.
+        return {"arrived_from": peer, "address_claimed_by": "a header, from this machine"}
+    return {"arrived_from": peer, "address_claimed_by": "a header"}
 
 
 def allowed_source(address: str, allow: list) -> bool:
@@ -509,9 +635,16 @@ class RecordAccess:
         address, through_tunnel = caller_of(headers, (scope.get("client") or ("", 0))[0])
         from_here = not through_tunnel and allowed_source(address, _networks(",".join(OWN_NETWORKS)))
         welcome = from_here or not self.allow or allowed_source(address, self.allow)
-        # The path holds the secret, so it is compared the way a secret is compared.
-        allowed = welcome and hmac.compare_digest(scope.get("path") or "", self.allowed_path)
-        facts = mcp_access.request_facts(scope, allowed, None if allowed else ("address" if not welcome else "path"))
+        # The path holds the secret, so it is compared the way a secret is compared — and a secret
+        # of this program is made of letters and digits, so anything else in the path is a wrong
+        # path and not a question. compare_digest refuses a string holding anything but ASCII by
+        # raising, which happened before the request was written down at all: one accented letter
+        # in the address and the server answered 500 to a scanner, told it something is there, and
+        # kept no record of having been asked.
+        asked_for = scope.get("path") or ""
+        allowed = welcome and asked_for.isascii() and hmac.compare_digest(asked_for, self.allowed_path)
+        facts = {**mcp_access.request_facts(scope, allowed, None if allowed else ("address" if not welcome else "path")),
+                 **how_it_arrived(headers, (scope.get("client") or ("", 0))[0])}  # fmt: skip
         called = self._called(first.get("body", b"") if first.get("type") == "http.request" else b"")
         if not welcome:
             # Refused before the path is looked at, so a wrong address learns nothing about it.
@@ -579,8 +712,8 @@ def http_app(data_dir: Path, secret: str, public_host: str | None = None, allow_
     return RecordAccess(served, data_dir, f"/mcp/{secret}", allow_from)
 
 
-def run(data_dir: Path) -> None:
-    build_server(data_dir).run(transport="stdio")
+def run(data_dir: Path, pinned_to: str | None = None) -> None:
+    build_server(data_dir, pinned_to=pinned_to).run(transport="stdio")
 
 
 def run_http(data_dir: Path, secret: str, host: str = "127.0.0.1", port: int = 8051, public_host: str | None = None,

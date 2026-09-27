@@ -11,15 +11,16 @@ from epicrisis import layout
 from epicrisis.classify.pages import page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.classify.run import is_running
-from epicrisis.corrections import load_corrections, load_value_corrections, value_key
+from epicrisis.corrections import line_key, load_corrections, load_value_corrections
 from epicrisis.datesearch import load_search_results
 from epicrisis.document_dates import document_date, provider_key, source_day_first
-from epicrisis.extract.run import load_extracted
+from epicrisis.extract.run import earlier_readings, load_extracted
 from epicrisis.indicators import approved_names
 from epicrisis.printed_values import fold
 from epicrisis.records import read_records
-from epicrisis.validate import ASKS, CHECKS, PRIORITY, load_validation, validation_state
-from epicrisis.sources import Source
+from epicrisis.validate import load_validation, validation_state, vocabulary
+from epicrisis import judgements
+from epicrisis.sources import data_dir_of, Source
 from epicrisis.values import is_result
 
 DOC_TYPE_LABELS = {
@@ -82,7 +83,7 @@ def _corrected(document: dict, output: Path, file_sha256: str, pages: list[int],
     known = approved_names(data_dir) if data_dir else {}
     shown = []
     for observation in document["observations"]:
-        key = value_key(observation["provenance"]["page"], observation["name_as_printed"], observation["value_as_printed"])
+        key = line_key(observation)
         correction = corrections.get((file_sha256, tuple(pages), key))
         item = {**observation, "key": key, "correction": None,
                 "indicator_id": known.get(fold(observation["name_as_printed"]))}  # fmt: skip
@@ -195,8 +196,11 @@ _VIEWS: dict[tuple, tuple[float, dict]] = {}
 
 def _last_change(output: Path) -> float:
     """When anything this view is built from last changed, so a built view can be kept."""
+    # Everything a view here is built from. The verdicts belong on this list: the findings page
+    # shows what a person said about each one, and without it a verdict just pressed came back to
+    # a page rebuilt from the cache — the click looked as though it had done nothing.
     inputs = (layout.INVENTORY, layout.CLASSIFY, layout.CORRECTIONS, layout.DATE_SEARCH,
-              layout.VALIDATION, layout.EXTRACTED)  # fmt: skip
+              layout.VALIDATION, layout.EXTRACTED, layout.JUDGEMENTS)  # fmt: skip
     return max(((output / name).stat().st_mtime for name in inputs if (output / name).exists()), default=0.0)
 
 
@@ -294,7 +298,7 @@ def source_documents(source: Source, output: Path) -> dict | None:
 
 def review_view(source: Source, output: Path) -> dict | None:
     """Findings of the last validation, by check in the order to work through them."""
-    from epicrisis.corrections import unmatched_values
+    from epicrisis.corrections import unmatched_documents, unmatched_values
 
     kept = _kept("review", source, output)
     if kept is not None:
@@ -305,22 +309,47 @@ def review_view(source: Source, output: Path) -> dict | None:
         return {"id": source.id, "name": source.name, "validated_at": None, "checks": [], "documents_checked": 0} if view else None
     rows = {(row["file"]["sha256"], tuple(row["pages"])): row for group in view["years"] for row in group["documents"]}
     checks = []
-    for code in PRIORITY:
+    said = vocabulary(data_dir_of(output))
+    # What a person has already said about each finding, so the page shows it back to them and
+    # a second opinion is one click rather than a guess at what they clicked last time.
+    judged = judgements.latest(output)
+    # Every code the findings hold, in the order of the rules, and then the ones no rule explains
+    # any more. A rule deleted or renamed leaves its findings in the file until the checks are run
+    # again; iterating the rules alone dropped them from this page while the count above it and
+    # the tools over the network went on reporting them — a list that says "34 of 400 documents
+    # to check" over a page that shows thirty.
+    orphans = sorted({code for finding in result["documents"] for code in finding["findings"]} - set(said))
+    for code in [*said, *orphans]:
         entries = []
         for finding in result["documents"]:
             row = rows.get((finding["file_sha256"], tuple(finding["pages"])))
             if code in finding["findings"] and row:
                 copies = [rows[key] for key in ((copy["file_sha256"], tuple(copy["pages"])) for copy in finding["copies"]) if key in rows]
-                entries.append({"row": row, "count": finding["findings"][code], "copies": copies if code == "possible_copy" else []})
+                entries.append({"row": row, "count": finding["findings"][code],
+                                "said": judged.get((code, finding["file_sha256"], tuple(finding["pages"])), ""),
+                                "pages": ",".join(str(page) for page in finding["pages"]),
+                                "sha256": finding["file_sha256"],
+                                "copies": copies if code == "possible_copy" else []})  # fmt: skip
         if entries:
             entries.sort(key=lambda entry: (entry["row"]["date"]["value"] or date.min), reverse=True)
-            checks.append({"code": code, "kind": CHECKS[code][0], "label": CHECKS[code][1],
-                           "ask": ASKS.get(code, ""), "entries": entries})  # fmt: skip
+            explains = said.get(code, {})
+            checks.append({"code": code, "kind": explains.get("kind", "document"),
+                           "label": explains.get("label", code),
+                           "ask": explains.get("ask") or "No rule of this instance explains this any more: "
+                                  "it was found by a rule that has since been removed or renamed, and it "
+                                  "goes when the checks are run again.",
+                           "entries": entries})  # fmt: skip
     lost = [
         {**item, "row": rows.get((item["file_sha256"], tuple(item["pages"])))} for item in unmatched_values(output)
     ]  # fmt: skip
     return _keep("review", source, output, {
         "lost_corrections": lost,
+        # The same loss, for the corrections made on a whole document rather than on one line.
+        "lost_document_corrections": unmatched_documents(output),
+        # And for a person's verdict on a finding, which is kept against the same key and was the
+        # one of the three that went uncounted — while still counting towards the two numbers that
+        # decide whether a rule is kept at all.
+        "lost_judgements": judgements.unmatched(output),
         "id": source.id,
         "name": source.name,
         "whose": source.whose,
@@ -337,9 +366,11 @@ def document_findings(output: Path, file_sha256: str, pages: list[int]) -> list[
     finding = next((item for item in (result or {"documents": []})["documents"] if item["file_sha256"] == file_sha256 and item["pages"] == pages), None)
     if finding is None:
         return []
+    said = vocabulary(data_dir_of(output))
     return [
-        {"label": CHECKS[code][1], "count": finding["findings"][code], "copies": finding["copies"] if code == "possible_copy" else []}
-        for code in PRIORITY
+        {"label": said[code]["label"], "count": finding["findings"][code],
+         "copies": finding["copies"] if code == "possible_copy" else []}  # fmt: skip
+        for code in said
         if code in finding["findings"]
     ]
 
@@ -389,7 +420,55 @@ def document_card(source: Source, output: Path, file_sha256: str, first_page: in
         "observation_tables": observation_tables(_corrected(document, output, file_sha256, [page["page"] for page in classified], output.parent.parent)) if document else [],
         "findings": document_findings(output, file_sha256, [page["page"] for page in classified]),
         "language": language_name(document["language"]) if document else None,
+        # Readings of this file that a later reading displaced, kept beside the archive because
+        # they were somebody's. Written from the day the folder existed, and shown nowhere until
+        # now: a person who changed the model, had the archive read again and finds the new reading
+        # worse was not told that the old one was still there. This says how many and when, and
+        # where the file is; it does not draw the old values beside the new ones, which would put
+        # two readings of one page on one screen with nothing to say which is which.
+        "earlier_readings": _earlier_readings_here(output, file_sha256, on_pages),
     }
+
+
+def _earlier_readings_here(output: Path, file_sha256: str, on_pages: tuple) -> dict:
+    """How many earlier readings of these pages are kept, when the last one was, and by whom.
+
+    By pages that overlap, not by a list that matches. A regrouping is the commonest reason anything
+    is in replaced/ at all — extract/run.py says so where it puts it there: a new reading of pages
+    1-2 takes out every document whose pages it touches. In exactly that case the pages of the old
+    document and of the new one differ by definition, so the one card that mentions this folder said
+    nothing about it, with the file sitting right there; and no other page, command or line of the
+    README names the folder, so a silent card leaves nowhere at all to learn of it.
+    """
+    kept, regrouped = [], []
+    for item in earlier_readings(output, file_sha256):
+        pages = tuple((item.get("document") or {}).get("pages") or ())
+        if not set(pages) & set(on_pages):
+            continue
+        kept.append(item)
+        if pages != tuple(on_pages):
+            regrouped.append(pages)
+    if not kept:
+        return {}
+    newest = kept[0]
+    return {
+        "count": len(kept),
+        "when": (newest.get("replaced_at") or "")[:10],
+        "by": ((newest.get("by") or {}).get("model") or ""),
+        # Where the file is, in the words the rest of this program uses for the same place: inside
+        # the data folder of this instance. The card used to say "inside this archive's folder",
+        # which in the language of this program is the folder of scans — the one the status page
+        # calls "Source (read only). Nothing is copied, moved or renamed." A person sent there finds
+        # nothing, because nothing of this program's is ever written there.
+        "file": f"sources/{output.name}/{layout.REPLACED}/{file_sha256}.jsonl",
+        # And that one of them read these pages as part of a differently grouped document, which is
+        # what usually put it in that folder.
+        "regrouped": [_page_label(pages) for pages in regrouped],
+    }
+
+
+def _page_label(pages: tuple) -> str:
+    return str(pages[0]) if len(pages) == 1 else f"{pages[0]}\u2013{pages[-1]}"
 
 
 def _document_row(pages: list[dict]) -> dict:

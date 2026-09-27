@@ -9,7 +9,6 @@ Output: data/sources/<id>/date_search.jsonl, one line per document per run; the 
 
 import hashlib
 import json
-import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +18,7 @@ from epicrisis import records
 from epicrisis.classify.backend import STRONG_MODEL, BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, _clean_image, _close_ups, _file_bytes, _page_image, page_refs
 from epicrisis.records import read_records
-from epicrisis.runs import belongs_to_the_folder
+from epicrisis.runs import belongs_to_the_folder, one_at_a_time
 from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
 from epicrisis.sources import Source, source_output_dir
 
@@ -125,12 +124,8 @@ def search_source(data_dir: Path, source: Source, backend, targets: list[tuple[d
     }  # fmt: skip
     due = [(record, pages) for record, pages in targets if (record["sha256"], pages) not in done]
     stats = SearchStats(total=len(due))
-    lock = output / LOCK_NAME
-    lock.write_text(json.dumps({"pid": os.getpid(), "started_at": records.now()}), encoding="utf-8")
-    try:
+    with one_at_a_time(output / LOCK_NAME, "The search for a date"):
         run_parallel(due, lambda item: _search_document(*item, output, source, backend, stats), workers)
-    finally:
-        lock.unlink(missing_ok=True)
     return stats
 
 
@@ -203,7 +198,5 @@ def _write(output: Path, record: dict, pages: tuple[int, ...], backend, status: 
     }
     if reason:
         line["reason"] = reason
-    with STATE_LOCK, (output / FILE_NAME).open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(line, ensure_ascii=False) + "\n")
-    belongs_to_the_folder(output / FILE_NAME)
+    records.append_line(output / FILE_NAME, line)  # the one place a record is appended
 

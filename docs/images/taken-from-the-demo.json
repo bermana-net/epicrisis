@@ -1,0 +1,125 @@
+{
+ "of": {
+  "invented": true,
+  "lives": [
+   "Vera Lindqvist",
+   "Anders Lindqvist",
+   "Zoya Kravets"
+  ],
+  "from": "/tmp/shots-demo"
+ },
+ "how": "Written by hand for the set already published, which this check arrived after. The evidence is in the set itself: 19-status.png is the archive status page, which lists every archive the instance held, and it lists those three and no other. Nobody real was open in the instance these were taken from. From here on this file is written by docs/take-the-pictures.py, which refuses to photograph a data directory that does not say it is invented.",
+ "pictures": {
+  "01-timeline.png": "727f0bb038c57647cd4ed460771dd17492b07740acb091f048b263793d45b0e9",
+  "02-lanes.png": "2e2ccac5f56a56d6cd88fe8ad864e872d08fae76b4b989434ed161ab5c14e177",
+  "03-by-test.png": "5236906ebad015a6bc5cdf2b405228139ddca9e4cf362059520f1ee5f4ae7c49",
+  "04-hba1c.png": "01921d348dc930c13699c9480926abe7d0d34cf383c353705d7a03f107797901",
+  "05-creatinine.png": "adad8853986194911bb2564808e79607e648a46d6175c212bd82513f231252d5",
+  "06-ferritin.png": "b1fb25b522f78ff51df75d5ee8107196d333ed0823095bd512f70de2a7ca7a2c",
+  "07-vitamin-d.png": "4decd9a5f88b71c655af5b4107aafcea0ad8d60f790649d0c93fb63d6663e9f9",
+  "08-urine-protein.png": "e8b15636303fe6736a0301736bbd8434382f744fa1bcacfb202389226359b7c6",
+  "09-documents.png": "ec53366f03c2c7aa6b81492f42f3ed55e01a2ccda4c3ff1a1e88f1f8b4b6f2b0",
+  "10-card-en.png": "13ef763fc128194d74a387c0492001af8d9cf48c4621da6cf7c8554ede52a400",
+  "11-card-es.png": "e87960572c970aa48298e97f34ef53eb4829b3e4e9100e82d05b85514d9b4d1d",
+  "12-card-ru.png": "7ab27cba0a0b96e8f9f1d1bcd063166f7dff74631c69ad544a662993edbb1b89",
+  "13-card-el.png": "603eb64187e60d5544b57ffee413518e26b32598dd39f78f570a7d6ca8238c09",
+  "14-scan.png": "7c14dee342a94f2cc9fafffb281bccc84d3239f62a9b53c8a64a191e10668b4c",
+  "15-search.png": "3cc304b2d3745416efe4617ed6ac16ceb961b55878214abc1b3441304655cf86",
+  "16-search-ru.png": "04b9adf785e4d57d7d679dd6f5d515348179c12aaf6db6a0694f4526d5119965",
+  "17-indicators.png": "f4668b4529d1a00e5a90347058e67b1317202765c1a5e9e9fb25f5b377f7ddad",
+  "18-review.png": "3061ca02e69ef852abd65193f41c1d543f844bb66484273f79949dc819b414ad",
+  "19-status.png": "4e12635265bb145c5fbe9cb43794ac7984f22d501aae835b196ca670287a9bc8",
+  "20-settings.png": "00a15263b50fb114d003b8d0776426dd71718a02303dfc8100959ee8628dd135",
+  "21-ask.png": "238f1ac7e9c904ad812aec2cfbf25376f5b5b20beb4851a1107d3be7ecd6c4ee",
+  "22-card-words.png": "4573c758fba7c55d03c8906c3e46679cbe87f56474dd2f57417b72d0e5b68800",
+  "one-pager.png": "8b1396e403b64ea889e9a54799d9bf52d3010810fa216eb3c7a1d5f49fd15c2f",
+  "one-pager-clinics.png": "bdf34c05fdd97dfdbc0d0fab9f2c55f194a9b0ced46150a2e50e18a78ec945b0",
+  "clinics-chart.png": "b60a24456516cea5aeb2a4ad873cf636f36a4daf06c4f3db1e7521937714ac3e"
+ },
+ "not_of_a_page": {
+  "docs/apple-touch-icon.png": "03d45741407f73cf223c835b5144c5c162ae0d7b954f3ff4f16f08b928366855",
+  "epicrisis/web/static/apple-touch-icon.png": "03d45741407f73cf223c835b5144c5c162ae0d7b954f3ff4f16f08b928366855",
+  "docs/epicrisis-for-underwriting.pdf": "927bfd7a412437a8e4d1c2677f0dc4ba891a2ff54f4ac9b4277474a84388f540",
+  "docs/favicon.ico": "6913cae292330d6944522d548218aa79fb13fa97e8e6d18f5792f570d8224337",
+  "epicrisis/web/static/favicon.ico": "6913cae292330d6944522d548218aa79fb13fa97e8e6d18f5792f570d8224337",
+  "docs/epicrisis-for-clinics.pdf": "52b5b14d63e61949c5c634a2e85e288c47668acd6f5f9f2bd7c90d58befabb95"
+ },
+ "not_of_a_page_is": "Files that are not a picture of anybody's page: the mark of this project, drawn as rectangles and published on purpose, the icon made from it, and the one-pagers for insurers and for clinics, whose pages are made by tools/make-one-pager.py out of files in this repository. Pinned by hash so that nothing changes underneath them and nothing new arrives calling itself one of them.",
+ "earlier": {
+  "01-timeline.png": [
+   "62dfcfb346b8314c12e8f63552e8f4b9008523aa4068ed5adf15329a001f13d9"
+  ],
+  "02-lanes.png": [
+   "b8b63f293de07b847eedb8b6d3f0d665762e44cee92c528badb827a3b4316eb5"
+  ],
+  "03-by-test.png": [
+   "2b9e2c19d8109062b4f82f7ed97d124319018a3fa03a124b9fa78a938f8c847e"
+  ],
+  "05-creatinine.png": [
+   "690261f90e3e5a1b900c2b08510754a9ff5eed953224d3f8bac14a5a6a882cb7"
+  ],
+  "13-card-el.png": [
+   "2e6e99f78aae4343612490aabed98eb7e04b91bbdb87ad0ce59b2d58ceb77c05"
+  ],
+  "17-indicators.png": [
+   "5f6b07aad8bfbbbe1a4d5894c6406943b449a334563814557d23f795139211ec"
+  ],
+  "18-review.png": [
+   "cfbe93bc5498a2e3fed042bd1da261608fca0fb92068670944bec152180f6a27"
+  ],
+  "19-status.png": [
+   "8eb9beac8bee54de2b44e8c73a48cc2315982c9c5b790fcacf3ce5fbd9402125"
+  ],
+  "22-card-words.png": [
+   "c3fc383aaa9a355583ac4bd123d72c6de9fc8876b3fa44f05ab7c0b932af0ee3"
+  ],
+  "docs/epicrisis-for-clinics.pdf": [
+   "3c0243d370d1541b0415b5d730cfa5f4a92121daecee2f6bd8a65a67485d1e87",
+   "a26d36a29b63cc059d18f997765e0ee6c36d967ba53fa679e0e8f48b8f5ffdb4",
+   "b7d3f78497dfd78b8f322dbf9ea8e9b70efbc45a2d1131e68ce6e4149b175f08",
+   "e0973380f8aa7349010072fcc7b0a7d84586641cd6357cb1d9ba552a68ab2cf4",
+   "6e4a2102dbda8903982fd1fab6b2b78d42cc3c9cb7c1548cfc023e6cdbbd8ba5",
+   "8cd8a5793bb6b34383b7afe587ee564b9d57c9b1af64d36222213fefeeca3ba5",
+   "68b86bbd75fd08c730f97d88b5d0aac7a4c2bf91d5141ce9b2d03289d42abdf2",
+   "74750ac42d8a353dec4030513bd6976759ddf0ea4f43f4ae6f723fa42a38cc60",
+   "b75459cdcd4d5c1eabf42c0a192a13f54ac3f29e34e42f46f7affc2776211376",
+   "7e8555a96a413785216851c6c53d3c9ffe72a3fcecb977548c07c3f2a89dfb50"
+  ],
+  "docs/epicrisis-for-underwriting.pdf": [
+   "175da69c780fc56f043e6cec8bc3045d741f1787f42c780ee883e25b99fecda0",
+   "ca79914b7bfac8af1f0b92b985f1d0a8f99b3ee140fe072abbb51fcd3bd02e04",
+   "d209cb80f358ed737a682d308bbae66bb14e755b4c52716d9e0f3eb32727a1db",
+   "e962d751c2dc49b650864e4aabac1483b3edb27c36cfea1c89488aae11e55164",
+   "f9aa37878044906178b0ce06f4f86c080fca69a886ae0c233e4784128d19eba2",
+   "76ad3c0c95fdad7f01e78554e641a8c321121a8fb5ad6c819f5a954d18cfbcf6",
+   "46c1ee7864f9d33a6feae24b258328eb60e60c8fa09e512ae345bd3c325222d5",
+   "a4d6a8651d645910256673510fb4a8a41e61a062601cfb1e38ec9418bce0761d",
+   "9cd10d455d651a2aac6c2af650edf5660b8cc460657380c860555f7ef64d5ce0",
+   "d679297216120b38aec83ccdda9b0df5d70384901485ffdfd2fcc059947907d5"
+  ],
+  "one-pager-clinics.png": [
+   "22209856a4f693f1a69316339d9fc9144d1c68fc76acba816675e037b65d3fe0",
+   "6cf79b1d3eec63f1e135d2c6a1b742d1dd4f8567270ef188ae9bf8eb387d0175",
+   "e22fcd731647fa7fc6e92b4bd774038ece31bc9621bd7ece315396eca63e981b",
+   "61f66253bd801f1955c345fbba6a793873fd74c8f7446c8c24f1cc4135dbe669",
+   "0a10d241dcd0e5fd2337d1277bf9917a72a794ea31715b6d455b76379b833ce8",
+   "337b6e18fe3debd2754af552ae4c9f386b83a8156520c0544717b84edfe7b9af",
+   "30bcb26d9f3d19c27fbd4f2b99376e6bf7f3b6d944aeb7110012dba68d455e09",
+   "1cca4266fc3b349a2f00a204af396a04b03d33a839236d08d22ff44a51afdd3f",
+   "8c7e6f363b19bff1a0b6e39e2b1cf14df1bf6ba9bf6626070f512939d2ecd5ca",
+   "93c8fc6feba864b08529e4e36458682932ac0c5380646d6594b6f3ec0b897070"
+  ],
+  "one-pager.png": [
+   "63ac5af04bd2d9215e0201cdccc25cebd754adf07f18a86f4d68f7ae663b56d8",
+   "b7e51e3f5844aa2863d81621457e3297b39597d21990b7dff405361fbdfdb85b",
+   "fa0976ae207bd28d96bdd9cc4c6fa644a95861498aa755186e821c996c23758c",
+   "5cf21ec984b7824459270fe03937a3703a555dca37edfd36a6d29c6c24e50843",
+   "c859b664b9bf61df40778cad3f5c25eafddd9c173a23853e520fe594d958d654",
+   "753b21f5253595b9f32a2e2399ef499a1422487e146a54179caf4b51c3c99ad8",
+   "286263cc84e6be91724fe84201bf6564ffe3814b95e2c5c12b141e220f02ee32",
+   "3ac476dbed680a2af802622ba2131b9d080d217a5e27c1cd48cf299b2ba4238b",
+   "32e40176b9862c3163edd40b23e741c1fd7e23a524575e9973dfe66a0e04d266"
+  ]
+ },
+ "earlier_is": "Versions of these files that commits in this repository hold and the tip does not. A picture replaced rather than deleted keeps its name and leaves its bytes in the history, published to everybody who clones this, and until the QA round of September 2026 nothing compared them with anything: twenty such blobs were in here, two of them in commits already pushed. Every one was looked at then, and each is a screenshot of the demo or a sheet this repository prints from its own files — 19-status.png in each generation lists the archives the instance held, and both list Vera Lindqvist, Anders Lindqvist and Zoya Kravets and nobody else. From here on this list is written by docs/take-the-pictures.py and tools/make-one-pager.py as they displace a version, and tools/nothing-of-yours.py refuses any version that is in neither list."
+}

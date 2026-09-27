@@ -1,4 +1,8 @@
-<form class="searchline" method="get" action="/search" role="search">
+{# Posted, not asked for in the address. This program already refuses to put a name in a URL —
+   "an address is kept in the browser's history and carried between a person's devices by it" — and
+   then put the plainest medical question a person ever types into one. The answer is drawn by the
+   post itself, so the address stays /search and the words are in the body. #}
+<form class="searchline" method="post" action="/search" role="search">
   <label class="caps" for="q">Search</label>
   <input id="q" name="q" type="search" value="{{ query or "" }}" placeholder="a word from a document, an institution, the name of a test" autocomplete="off">
   <button class="caps" type="submit">Find</button>
