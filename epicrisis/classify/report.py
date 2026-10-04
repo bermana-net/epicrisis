@@ -36,16 +36,45 @@ def document_keys(output: Path) -> set[tuple]:
 
 
 def group_documents(pages: list[dict]) -> list[list[dict]]:
-    """Consecutive pages of a file form a document; "first" starts a new one. No model involved."""
+    """Consecutive pages of a file form a document; "first" starts a new one. No model involved.
+
+    In a text file there are no page breaks: this program cut the text into pages itself, so a
+    document ends somewhere in the middle of one and the next begins there. Asked of such a page
+    on its own — the only way a page is ever asked — "is this the first page of a document" has
+    no good answer, and the answer given is "continuation". On the first text archive read here
+    that put fifteen consecutive pages into one document spanning five years, each of those pages
+    carrying its own date and its own kind, named with a confidence of 0.95.
+
+    So for the pages of a text file the date decides as well: a page dated otherwise than the page
+    before it begins a document. The date is the one the reader gave for the page's own document,
+    and nothing else about the grouping changes — least of all for a scan or a PDF, where a page
+    break is a real one and a date printed again on page two is the same form, not a new one.
+    """
     documents: list[list[dict]] = []
     previous_file = None
+    previous_date = None
+    previous_document = None
     for page in sorted(pages, key=lambda page: (page["file_sha256"], page["page"])):
         if "error" in page:
             continue
-        if page["file_sha256"] != previous_file or page.get("page_role") == "first":
+        if page["file_sha256"] != previous_file:
+            previous_date = previous_document = None
+        date = page.get("date_on_page")
+        # Where the documents of a file were marked out before it was cut into pages, the marks
+        # decide and nothing else is asked: no page_role, no date. That is a text file whose
+        # boundaries were read; see epicrisis/boundaries.py.
+        marked = page.get("of_document")
+        # A page with no date of its own carries on with the last one seen: it is the middle of
+        # something, which is exactly where a text file gives no date.
+        cut_in_the_text = (marked is None and page.get("part") == "text" and date is not None
+                           and previous_date is not None and date != previous_date)  # fmt: skip
+        begins = marked != previous_document if marked is not None else page.get("page_role") == "first"
+        if page["file_sha256"] != previous_file or begins or cut_in_the_text:
             documents.append([])
         documents[-1].append(page)
         previous_file = page["file_sha256"]
+        previous_date = date if date is not None else previous_date
+        previous_document = marked
     return documents
 
 

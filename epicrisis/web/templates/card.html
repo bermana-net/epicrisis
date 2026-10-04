@@ -1,15 +1,24 @@
 {% extends "_page.html" %}
 {% set page_class = "card" %}
-{% block title %}{{ card.summary.doc_type }}{% endblock %}
+{% block title %}{{ card.summary.doc_type | in_words }}{% endblock %}
 {% block page %}
 
   {% set current = "documents" %}
   {% include "_header.html" %}
 
   {% set document = card.document %}
+  {# The language the pages of this document are printed in, read once and put on every element
+     below that carries their printed text. The page itself is English and the shell says so;
+     what stands inside it is Russian, Ukrainian, Greek or Spanish, and said nothing at all — so
+     a browser chose a fallback face for a character this page's font has not got, and a reading
+     voice for a Cyrillic line, from lang="en". Where classify read no language, nothing is put:
+     `said_in` in documents.py refuses to invent one. #}
+  {% set printed_in = card.language_code or card.summary.language_code %}
   <section class="rule" style="padding-top: 16px;">
     <a class="caps back" href="/documents">&larr; Documents</a>
-    <h1 class="card-title">{{ (document and document.title_as_printed) or card.summary.doc_type }}</h1>
+    {# The heading is the document's own printed title, or, where it printed none, this program's
+       words for the kind of document it is. Only the first of those is in the document's tongue. #}
+    <h1 class="card-title"{% if document and document.title_as_printed %}{{ printed_in | said_in }}{% endif %}>{{ (document and document.title_as_printed) or (card.summary.doc_type | in_words) }}</h1>
     <div class="card-file caps">{{ card.path }} <span class="file-id" style="background: {{ card.reading.background }}; color: {{ card.reading.color }}" title="File ID {{ card.file_id }}. {{ card.reading.title }}.">{{ card.file_id }}</span> &middot; pages {{ card.summary.page_label }}</div>
 
     <dl class="card-meta">
@@ -21,14 +30,28 @@
           <button class="btn" type="submit">Set</button>{% if card.date.by_hand %} <button class="btn" type="submit" name="value" value="">Clear</button>{% endif %}
         </form>
       </dd></div>
-      <div><dt class="caps">Type</dt><dd>{{ card.summary.doc_type }}</dd></div>
+      <div><dt class="caps">Type</dt><dd>{{ card.summary.doc_type | in_words }}</dd></div>
       <div><dt class="caps">Date of study as printed</dt><dd>{{ (document and document.date_of_study_as_printed) or card.summary.date or "–" }}</dd></div>
       <div><dt class="caps">Date of report as printed</dt><dd>{{ (document and document.date_of_report_as_printed) or "–" }}</dd></div>
-      <div><dt class="caps">Institution as printed</dt><dd>{{ (document and document.provider_as_printed) or card.summary.provider or "–" }}</dd></div>
-      <div><dt class="caps">Department as printed</dt><dd>{{ (document and document.department_as_printed) or "–" }}</dd></div>
+      <div><dt class="caps">Institution as printed</dt><dd{{ printed_in | said_in }}>{{ (document and document.provider_as_printed) or card.summary.provider or "–" }}</dd></div>
+      <div><dt class="caps">Department as printed</dt><dd{{ printed_in | said_in }}>{{ (document and document.department_as_printed) or "–" }}</dd></div>
+      {# Who saw, performed or signed. A record from a hospital's own system names a doctor and no
+         institution at all, and until this field was here that name went where the institution
+         goes — which is where a page would then show a person as the laboratory. #}
+      <div><dt class="caps">Doctor as printed</dt><dd{{ printed_in | said_in }}>{{ (document and document.doctor_as_printed) or "–" }}</dd></div>
       <div><dt class="caps">Language</dt><dd>{{ card.language or card.summary.language or "–" }}</dd></div>
       <div><dt class="caps">Original pages</dt><dd class="page-links">{% for number in card.summary.pages %}<a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ number }}">p{{ number }}</a>{% endfor %}</dd></div>
     </dl>
+    {# The two fields above are what the model read. What the index then made of them is said here
+       and not left to be noticed: a hospital's own export prints the doctor where a letterhead
+       would print the clinic, and this archive files that name as the doctor of the document. The
+       name itself is above, letter for letter; this says where it went and offers the way back. #}
+    {% if card.printed_as_the_institution %}
+    <div class="notice caps"><span>The institution's place on this form printed a person's name.
+      {% if card.printed_as_the_institution.read_as_the_doctor %}This archive reads it as the doctor of this document and leaves the institution empty &mdash; so that is how it stands in the timeline, in the search and on the page of doctors and clinics.{% else %}It stands where the form printed it, because this document already names a doctor of its own.{% endif %}
+      Nothing was rewritten: the transcription says what it said.</span>
+      <span>Open a page above. If a letterhead is printed there and was not read, this document is worth reading again; the check behind it is &ldquo;An institution that reads like a person&rsquo;s name&rdquo;, listed on Looks misread and switchable in Settings.</span></div>
+    {% endif %}
     {% if card.findings %}
     <div class="card-findings">
       <span class="caps">To check</span>
@@ -39,11 +62,14 @@
 
   {% macro observations_block(document, card, title) %}
   {% if document.observations %}
+  {# Read again from the card this macro is handed, because a macro does not see what the page
+     around it set. See the note beside the same line at the top of this file. #}
+  {% set printed_in = card.language_code or card.summary.language_code %}
   <section class="rule card-section">
     <h2>{{ title }}</h2>
     {% for table in card.observation_tables %}
     {% set grid %}grid-template-columns: minmax(180px, 2fr) minmax(90px, 1fr) minmax(70px, 0.7fr) minmax(110px, 1fr){% for heading in table.other_headings %} minmax(110px, 1fr){% endfor %} 80px 50px; min-width: {{ 760 + table.other_headings|length * 130 }}px{% endset %}
-    {% if table.heading %}<h3 class="obs-table-title">{{ table.heading }}</h3>{% endif %}
+    {% if table.heading %}<h3 class="obs-table-title"{{ printed_in | said_in }}>{{ table.heading }}</h3>{% endif %}
     <div class="obs-table">
       <div class="obs-row head caps" style="{{ grid }}">
         <span>Name</span>
@@ -56,7 +82,9 @@
       </div>
       {% for row in table.rows %}
       {% set item = row.main %}
-      <div class="obs-row{% if item.correction %} corrected{% endif %}" style="{{ grid }}" title="{{ item.provenance.snippet }}">
+      {# Every cell of this row is a field the form printed, so the row carries the language once
+         rather than five times. The head row above is this program's English and does not. #}
+      <div class="obs-row{% if item.correction %} corrected{% endif %}" style="{{ grid }}"{{ printed_in | said_in }} title="{{ item.provenance.snippet }}">
         <span>{% if item.indicator_id %}<a href="/tests/{{ item.indicator_id }}" title="Every value of this test, over the years">{{ item.name_as_printed }}</a>{% else %}{{ item.name_as_printed }}{% endif %}{% if item.correction %} <span class="caps signal">{% if item.correction.removed %}not a value{% else %}corrected{% endif %}</span>{% endif %}</span>
         <span class="value">{% if item.comparator and not item.value_as_printed.startswith(item.comparator) %}{{ item.comparator }} {% endif %}{{ item.value_as_printed }}{% if item.method_as_printed %}<span class="method">{{ item.method_as_printed }}</span>{% endif %}</span>
         <span>{{ item.unit_as_printed or "–" }}</span>
@@ -65,6 +93,16 @@
         <span>{{ item.flag_as_printed or "" }}</span>
         <span class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ item.provenance.page }}">p{{ item.provenance.page }}</a></span>
       </div>
+      {# What the model had read in the fields a person changed, on the row and not folded away.
+         It stood inside the form below, behind a summary reading "Correct this line" — which does
+         not say that what the line used to hold, and the way back to it, are in there. The eighth
+         entry of the constitution is that a person's own work is never lost; the other half of it
+         is that the reading their work replaced is kept, and a thing kept where the page never
+         mentions it is kept for nobody. Only on a corrected row, which is a handful per document,
+         so this adds no line to a table a person is reading for its numbers. #}
+      {% if item.correction and item.correction.was %}
+      <p class="caps was-read-as">As the model read it: {% for one in item.correction.was %}{{ one.field }} <b>{{ one.text or "nothing" }}</b>{% if not loop.last %} &middot; {% endif %}{% endfor %} &middot; <span class="muted">&ldquo;Correct this line&rdquo; below puts it back</span></p>
+      {% endif %}
       <details class="fix-row">
         <summary class="caps">Correct this line</summary>
         <form class="fix-form" method="post" action="/documents/{{ card.source_id }}/{{ card.sha256 }}/{{ card.summary.pages[0] }}/value">
@@ -88,9 +126,6 @@
             <button class="btn small" type="submit" name="action" value="remove" title="This line is not a value: a table header, a row label, a piece of a table">Not a value</button>
             {% if item.correction %}<button class="btn small" type="submit" name="action" value="reset">Back to what the model read</button>{% endif %}
           </div>
-          {% if item.correction and item.correction.changes %}
-          <p class="caps muted">As the model read it: {% for field, text in item.correction.printed.items() %}{{ text or "—" }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>
-          {% endif %}
         </form>
       </details>
       {% endfor %}
@@ -102,10 +137,11 @@
 
   {% macro sections_block(document, card) %}
   {% if document.sections %}
+  {% set printed_in = card.language_code or card.summary.language_code %}
   <section class="rule card-section">
     <h2>Text by section</h2>
     {% for section in document.sections %}
-    <div class="card-text">
+    <div class="card-text"{{ printed_in | said_in }}>
       {% if section.heading_as_printed %}<h3>{{ section.heading_as_printed }}</h3>{% endif %}
       <p>{{ section.text }}</p>
       <div class="page-links"><a href="/sources/{{ card.source_id }}/files/{{ card.sha256 }}/pages/{{ section.page }}">p{{ section.page }}</a></div>
@@ -134,11 +170,11 @@
   <section class="rule card-section">
     {% if document.diagnoses_as_printed %}
     <h2>Diagnoses as printed</h2>
-    <ul class="card-list">{% for item in document.diagnoses_as_printed %}<li>{{ item }}</li>{% endfor %}</ul>
+    <ul class="card-list"{{ printed_in | said_in }}>{% for item in document.diagnoses_as_printed %}<li>{{ item }}</li>{% endfor %}</ul>
     {% endif %}
     {% if document.medications_as_printed %}
     <h2 style="margin-top: 20px;">Medications as printed</h2>
-    <ul class="card-list">{% for item in document.medications_as_printed %}<li>{{ item }}</li>{% endfor %}</ul>
+    <ul class="card-list"{{ printed_in | said_in }}>{% for item in document.medications_as_printed %}<li>{{ item }}</li>{% endfor %}</ul>
     {% endif %}
   </section>
   {% endif %}
@@ -153,7 +189,7 @@
   <section class="rule card-section">
     <details class="full-text-toggle">
       <summary>Full text</summary>
-      <pre class="full-text">{{ document.full_text }}</pre>
+      <pre class="full-text"{{ printed_in | said_in }}>{{ document.full_text }}</pre>
     </details>
   </section>
 

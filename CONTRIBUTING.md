@@ -1,18 +1,26 @@
 # Contributing
 
-Bug reports, patches and questions are welcome. Two things to know before you send code, because
-both of them are easier to say now than to untangle later.
+Bug reports, patches and questions are welcome. Three things to know before you send code, because
+all three are easier to say now than to untangle later.
 
 ## What this project is
 
-One person's medical archive, read by a program that stores and displays and does not interpret.
-Most of the work here is refusing to be helpful: not averaging, not converting silently, not
-saying whether a value is normal, not inventing a date a form never printed. A patch that makes
-the program smarter about what numbers *mean* will be turned down, however well it is written.
+One person's medical archive, read by a program that stores and displays and, in its default
+mode, does not interpret. Most of the work here is refusing to be helpful: not averaging, not
+converting silently, not saying whether a value is normal, not inventing a date a form never
+printed. A patch that makes the program smarter about what numbers *mean* will be turned down,
+however well it is written.
 
-Tests come with changes. `uv run pytest` runs them; nothing in them may contain a real person's
-records, and nothing in an issue or a pull request should either — not a value, not a name, not a
-scan. If a bug needs data to reproduce, invent it, or use `epicrisis demo`.
+One door exists, and naming it is part of the rule. The Settings page of an instance has three
+modes, and the strictest is the default; only in the third, which an owner chooses for their own
+instance, does the application itself compare a number with the range printed beside it on its own
+form and count what fell outside. Everything this program computes about "outside the range" lives
+in that mode, and a patch that lets any of it out will be turned down with the rest.
+
+Tests come with changes. `uv run pytest -n 4` runs them; nothing in them may contain a real
+person's records, and nothing in an issue or a pull request should either — not a value, not a
+name, not a scan. If a bug needs data to reproduce, invent it, or build three archives of invented
+people with `uv run epicrisis demo --into /tmp/demo`.
 
 ## Nothing of a real person goes into this repository
 
@@ -35,21 +43,34 @@ it explains something. A single measured value out of a real archive identifies 
 but write an illustration rather than copy one: a habit of quoting real readings is how
 something with a date and an institution eventually arrives with them.
 
-`tools/nothing-of-yours.py` enforces the first paragraph before every push, over every tracked
-file **and over the whole history, commit messages included**. It gathers what identifies from a
-live data directory — the people, the institutions, the folders, the file names and their hashes
-— and says what kind of thing matched and where, never printing the phrase itself. It does not
-look for measured values; numbers are not phrases, and a check that shouts about every number is
-a check nobody runs twice.
+`tools/nothing-of-yours.py` is what enforces the first paragraph, over every tracked file **and
+over the whole history, commit messages included**. Nothing in a fresh clone runs it for you.
+`.githooks/pre-push` holds it, and git runs that hook only once you have said so:
+`git config core.hooksPath .githooks` — one line, and the day you clone is the day to type it.
+Until you have, nothing stands between a paste and a push but this page. By hand, at any time:
+`uv run python tools/nothing-of-yours.py --data-dir data`, which exits `0` when there is nothing
+of yours in here.
 
-What it cannot see: a person's name that appears only inside the text of a document and nowhere
-in the index. Do not copy document text and that gap stays shut.
+It gathers what identifies from a live data directory — the people, the doctors, the institutions,
+the folders, the file names and their hashes, the lines of diagnosis and the medications the forms
+printed, and the text of the documents themselves line by line, where a line is long enough to be
+somebody's rather than any form's — and says what kind of thing matched and where, never printing
+the phrase itself. It looks for the secrets of this machine as well, whole and hashed, for keys
+and tokens by their shape, and for a published picture that nothing accounts for; a stray key of
+your own will stop your push as surely as a stranger's name. It does not look for measured values;
+numbers are not phrases, and a check that shouts about every number is a check nobody runs twice.
+
+What it cannot see: a person's name printed only inside the text of a document. The lines of a
+document are compared whole, so a name lifted out of one on its own matches nothing. Do not copy
+document text and that gap stays shut.
 
 ## The licence of what you send
 
-This project is under the [Business Source License 1.1](LICENSE): free for a person and their
-household, a commercial licence for organisations. That means the author sells licences to
-organisations, and to be able to do that he has to hold the rights to all of the code.
+This project is under the [Business Source License 1.1](LICENSE): free for a person keeping and
+reading medical records — their own, their household's, and those of relatives or friends they
+help without being paid — and a commercial licence for organisations. That is written into the
+licence itself rather than promised on this page. The author sells licences to organisations,
+and to be able to do that he has to hold the rights to all of the code.
 
 So, by opening a pull request you confirm that:
 

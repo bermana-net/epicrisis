@@ -20,16 +20,18 @@ PASSES = {
     "first": {
         "label": "First reading",
         "default": "claude-haiku-4-5-20251001",
-        "about": "Reads every page once: what kind of document it is, a first transcription, and "
-                 "what a table was measured in. Quick and cheap, and everything it does is "
-                 "checked afterwards, which is why a small model belongs here.",
+        "about": "Reads every page once: what kind of document it is, what language it is in, "
+                 "and what a table was measured in. Quick and cheap, and everything it does is "
+                 "checked afterwards, which is why a small model belongs here. The values "
+                 "themselves are not read here: that is the expert reading below.",
     },
     "strong": {
         "label": "Expert reading",
         "default": "claude-opus-5",
-        "about": "Reads again wherever a check failed, and does the work that needs judgement: "
-                 "grouping the printed names of one test, finding a date inside a document, "
-                 "answering a question about the archive.",
+        "about": "Reads the values out of every document, and does the rest of the work that "
+                 "needs judgement: reading a page again wherever a check on it failed, grouping "
+                 "the printed names of one test, finding a date inside a document, answering a "
+                 "question about the archive.",
     },
     "second_reader": {
         "label": "Second opinion",

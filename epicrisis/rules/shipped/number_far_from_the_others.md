@@ -6,7 +6,7 @@ unit and the same specimen. A misplaced decimal point reads exactly like this, a
 digit read twice."""
 kind = "number-far-from-the-others"
 attaches = "document"
-settles = """Open the page beside the card and read the number. If it is what the form printed, nothing is wrong: this is a queue of pages worth opening, not a list of errors."""
+settles = """Open the document beside the original and read the number; every one of these is listed on Looks misread, behind the line on To check. If it is what the form printed, nothing is wrong: this is a queue of pages worth opening, not a list of errors."""
 does = "marks"
 at = "suspects"
 on_by_default = true

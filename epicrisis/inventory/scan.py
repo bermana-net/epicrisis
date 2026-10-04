@@ -13,16 +13,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from epicrisis.inventory import legacy, probes
+from epicrisis.readers import excel, reader_for, word
 
 OS_METADATA_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 YEAR_RE = re.compile(r"(?<!\d)(19\d\d|20\d\d)(?!\d)")
 
-PROBES = {
-    "pdf": probes.probe_pdf,
-    "image": probes.probe_image,
-    "excel": probes.probe_excel,
-    "word": probes.probe_word,
-}
+# Which reader serves which kind of file is written down in one place, epicrisis/readers, and the
+# walk asks it rather than keeping a list of its own that a new format would have to be added to
+# twice.
 
 
 def scan(root: Path) -> Iterator[dict]:
@@ -73,7 +71,7 @@ def inventory_record(root: Path, path: Path) -> dict:
     if kind == "legacy_office":
         # Old Excel workbooks are read like new ones; other legacy Office files stay unsupported.
         try:
-            record["excel"] = probes.probe_legacy_excel(source, record["mime"])
+            record["excel"] = excel.probe_legacy_excel(source, record["mime"])
             kind = record["category"] = "excel"
             return record
         except probes.UnsupportedFormat:
@@ -84,17 +82,17 @@ def inventory_record(root: Path, path: Path) -> dict:
         # Old Word documents are read from a .docx copy made by LibreOffice.
         try:
             converted = legacy.doc_to_docx(source.read_bytes() if isinstance(source, Path) else source.getvalue())
-            record["word"] = {**probes.probe_word(io.BytesIO(converted), record["mime"]), "format": "doc"}
+            record["word"] = {**word.probe(io.BytesIO(converted), record["mime"]), "format": "doc"}
             kind = record["category"] = "word"
         except legacy.ConversionUnavailable as exc:
             record["unsupported"] = str(exc)
         except Exception as exc:
             record["unsupported"] = f"legacy Office file not read: {type(exc).__name__}"
         return record
-    probe = PROBES.get(kind)
-    if probe is not None:
+    reader = reader_for(kind)
+    if reader is not None:
         try:
-            record[kind] = probe(source, record["mime"])
+            record[kind] = reader.probe(source, record["mime"])
         except probes.UnsupportedFormat as exc:
             record["unsupported"] = str(exc)
         except Exception as exc:  # any parser failure means the file is damaged

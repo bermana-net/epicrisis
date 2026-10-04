@@ -157,7 +157,7 @@ when the models change.
 | Languages | Russian, Ukrainian, English, Spanish, Greek |
 | Institutions as printed | over 200 |
 | Tests in the vocabulary | 492 approved groups of spellings |
-| Test suite | 761 tests, no network, no model |
+| Test suite | 1571 tests, no network, no model |
 
 These are real medical records of real people, and whose they are is nobody's business. Nothing
 from them appears in this repository: every screenshot here comes from `uv run epicrisis demo`, which
@@ -174,11 +174,28 @@ invents its own people.
   (`uv run epicrisis index`), the checks in seconds (`uv run epicrisis validate`), the walk of the folder in
   minutes (`uv run epicrisis inventory`). The readings themselves — what each page is and what was printed
   on it — can only be made again by paying a model to read the documents again, and it will read
-  them a little differently. And five things under `data/` are **your own work, which nothing can
+  them a little differently. And six things under `data/` are **your own work, which nothing can
   rebuild**: your corrections (`corrections.jsonl`), your verdicts on findings
-  (`judgements.jsonl`), the indicators you approved (`indicators.json`), the earlier readings kept
-  when a later one displaced them (`replaced/`), and your conversations (`chats/`). Copy those
-  somewhere: `uv run epicrisis backup <folder>` puts exactly them, and nothing else, in one place.
+  (`judgements.jsonl`), the indicators you approved (`indicators.json`), the doctors and clinics you
+  said were one (`people.json`), the earlier readings kept when a later one displaced them
+  (`replaced/`), and your conversations (`chats/`). Copy those somewhere:
+  `uv run epicrisis backup <folder>` puts exactly them, and nothing else, in one place.
+  `people.json` lives **inside each archive's own folder**, because a file beside the instance is
+  a file every archive can see. For one version it sat beside the instance; if yours still has a
+  `data/people.json`, it is carried into the archives that print those names at every start of the
+  dashboard and by `uv run epicrisis people`, and both say what moved. A group that no archive
+  here names stays in that file rather than being thrown away, and the Archive status page says
+  how many are waiting. Do not delete it: nothing makes that work again.
+- **Everything that goes wrong is written down, and none of what the archive holds.**
+  `data/journal.jsonl` is the file to read when something behaved oddly an hour ago: one line per
+  failure and per decision nothing else records, with the time, the type of the fault, the module
+  and line it came from, the file named relative to `data/`, and the exit code. It keeps **no
+  message of any exception** — `OSError` carries the name of the file it failed on, and here a file
+  name carries a surname — no title, no value, no doctor, no laboratory, no spelling of any test,
+  no search, nothing asked of a model and nothing it answered. What it says about an archive is
+  that archive's random id, and the ids are random for exactly this reason. It is meant to be
+  readable out loud: **paste the whole file into a bug report and you have given nothing away**,
+  and a test builds an archive of recognisable strings, breaks it in every way, and proves it.
 - **Each person's archive is a separate database.** A folder belongs to one owner, two owners'
   folders may not contain one another, and ids are random, because folder names carry surnames.
   A question asked of one archive cannot reach another's values.
@@ -297,7 +314,7 @@ Other commands:
 uv run epicrisis check-indicators     # a second model over the test vocabulary
 uv run epicrisis mcp                  # read-only tools for an assistant, over stdio
 uv run epicrisis mcp --http --secret-file /etc/epicrisis/mcp-token --public-host <tunnel host>
-uv run pytest -n 4             # 761 tests, no network, no model
+uv run pytest -n 4             # 1571 tests, no network, no model
 ```
 
 > **Status:** working and in daily use by its author and their family; not yet used by anyone

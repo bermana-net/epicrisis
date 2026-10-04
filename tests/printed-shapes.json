@@ -106,6 +106,86 @@
    "why": "the words, Ukrainian"
   },
   {
+   "text": "3,5 a 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the word between the ends, Spanish, which is one letter"
+  },
+  {
+   "text": "de 3,5 a 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the same with the word Spanish puts in front of the low end"
+  },
+  {
+   "text": "0,5 a 1,2 mg/dL",
+   "expect": [
+    0.5,
+    1.2
+   ],
+   "why": "the Spanish words with the unit printed behind the range"
+  },
+  {
+   "text": "Valores de referencia: de 0,5 a 1,2",
+   "expect": [
+    0.5,
+    1.2
+   ],
+   "why": "a label, and then the Spanish range in words"
+  },
+  {
+   "text": "1 a 3 por campo",
+   "expect": [
+    1.0,
+    3.0
+   ],
+   "why": "a sediment count per field of view, Spanish"
+  },
+  {
+   "text": "3,5 έως 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the word between the ends, Greek, with its accent"
+  },
+  {
+   "text": "3,5 ΕΩΣ 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the same word in capitals, which lose the accent"
+  },
+  {
+   "text": "3,5 μέχρι 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "the other Greek word for the same, with its accent"
+  },
+  {
+   "text": "3,5 ΜΕΧΡΙ 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "and that one in capitals, losing its accent too"
+  },
+  {
+   "text": "από 3,5 έως 5,5",
+   "expect": [
+    3.5,
+    5.5
+   ],
+   "why": "Greek with the word it puts in front of the low end"
+  },
+  {
    "text": "-0,5 - 2,5",
    "expect": [
     -0.5,
@@ -520,6 +600,31 @@
    "why": "one range for men and one for women"
   },
   {
+   "text": "Varones 13,0 a 17,0 Mujeres 11,5 a 15,5",
+   "expect": null,
+   "why": "one range for men and one for women, Spanish, in words"
+  },
+  {
+   "text": "hasta 20 normal, 20 a 200 microalbuminuria",
+   "expect": null,
+   "why": "a table of meanings whose band is written in words, Spanish"
+  },
+  {
+   "text": "< 20 Φυσιολογική, 20 έως 200 Μικροαλβουμινουρία",
+   "expect": null,
+   "why": "the same, Greek, the band written with a word"
+  },
+  {
+   "text": "Hasta 1,2 a los 60 años",
+   "expect": null,
+   "why": "the Spanish letter where it says who the limit is for, and no band of 1,2 to 60"
+  },
+  {
+   "text": "1,5 mg/día a 37 ºC",
+   "expect": null,
+   "why": "the same letter between two numbers with a unit in the way: not a range either"
+  },
+  {
    "text": "1:40",
    "expect": null,
    "why": "a titer, not a range"
@@ -627,6 +732,52 @@
     9.0
    ],
    "why": "an ordinary decimal comma, two digits: never a group"
+  },
+  {
+   "text": "47 – 72 % 2,000 – 5,500*10⁹/л",
+   "expect": null,
+   "why": "a blood count printing both bands of one test on one line: the per-cent corridor and the absolute one, each with its own unit. Read with no unit in hand it is two ranges and nothing says which the value belongs to; read in per cent it is 47 to 72, and in 10⁹/л it is 2,0 to 5,5"
+  },
+  {
+   "text": "19 - 37 % 1,200 - 3,000 10⁹/л",
+   "expect": null,
+   "why": "the same shape with plain hyphens and nothing printed for the multiplication"
+  },
+  {
+   "text": "1,200 - 3,000 10⁹/л 19 - 37 %",
+   "expect": null,
+   "why": "the same two bands printed the other way round: taking the first is a lie whichever order the form put them in, and the unit is what chooses, not the order"
+  },
+  {
+   "text": "М 130,0 – 160,0 Ж 120,0 – 140,0 г/л",
+   "expect": null,
+   "why": "one band for men and one for women, printed with the en dash forms use. Counted by its ASCII hyphens, of which it has none, this was read as the band for men"
+  },
+  {
+   "text": "Ч 11 – 61 Од/л Ж 9 – 39 Од/л",
+   "expect": null,
+   "why": "two bands in one unit: what tells them apart is a person's sex, which is not printed on the line and is not a scale"
+  },
+  {
+   "text": "0-8,5-20,5 мкмоль/л",
+   "expect": null,
+   "why": "one readable range and one dash too many: nothing on the line says what the third number is, and it is refused rather than read as 0 to 8,5"
+  },
+  {
+   "text": "47 – 72 %",
+   "expect": [
+    47.0,
+    72.0
+   ],
+   "why": "the same line with its other half missing: one band with its unit, read as it always was"
+  },
+  {
+   "text": "2,000 – 5,500*10⁹/л",
+   "expect": [
+    2.0,
+    5.5
+   ],
+   "why": "and the absolute half on its own, whose comma is a decimal mark and whose unit carries a power of ten"
   }
  ],
  "units_named_inside_a_range": [
@@ -684,6 +835,111 @@
    "text": "3,5 - 5,5",
    "expect": null,
    "why": "no unit named at all"
+  },
+  {
+   "text": "4,0-5,0 Т/л",
+   "expect": "10^12/l",
+   "why": "tera per litre, which the reader of ranges did not know at all"
+  },
+  {
+   "text": "4,0-9,0 Г/L",
+   "expect": "10^9/l",
+   "why": "the measure in Cyrillic and the litre in Latin"
+  },
+  {
+   "text": "4,0-9,0 G/л",
+   "expect": "10^9/l",
+   "why": "and the other way about"
+  },
+  {
+   "text": "(Ч. 4,0-5,5 Т/л) (Ж. 3,7-5,1 Т/л)",
+   "expect": "10^12/l",
+   "why": "a range for men and one for women on one line, in one unit, so the unit is not in doubt"
+  },
+  {
+   "text": "180,0-320,0 Г\\л",
+   "expect": "10^9/l",
+   "why": "the capital read through a backslash typed for a slash"
+  },
+  {
+   "text": "1,5-5,0 нг\\мл",
+   "expect": "ng/ml",
+   "why": "nanograms per millilitre with the backslash a Cyrillic keyboard puts there"
+  },
+  {
+   "text": "60 - 80 г\\л",
+   "expect": "g/l",
+   "why": "and the small letter through a backslash is still grams"
+  },
+  {
+   "text": "0,01-0,08 x10 9 /л",
+   "expect": "10^9/l",
+   "why": "a blood count whose only unit is the power of ten printed inside its own range"
+  },
+  {
+   "text": "0,01-0,08 10^9/л",
+   "expect": "10^9/l",
+   "why": "the same power written with a caret"
+  },
+  {
+   "text": "0,01-0,08 10⁹/л",
+   "expect": "10^9/l",
+   "why": "and in superscript, as most forms print it"
+  },
+  {
+   "text": "4,0-5,0 x10 12 /л",
+   "expect": "10^12/l",
+   "why": "the red cell count, one power of ten further up"
+  },
+  {
+   "text": "3,5-5,5 x10³/µL",
+   "expect": "10^3/ul",
+   "why": "the same shape per microlitre, which is the same measure by arithmetic"
+  },
+  {
+   "text": "до 2,0·10⁶/л",
+   "expect": "10^6/l",
+   "why": "an open range with a middle dot for the multiplication"
+  },
+  {
+   "text": "1010 - 1030",
+   "expect": null,
+   "why": "urine specific gravity: four digits beginning with a one are not a power of ten"
+  },
+  {
+   "text": "до 1000/мл",
+   "expect": null,
+   "why": "a thousand per millilitre is a million per litre, written at another scale; this fold converts nothing, so the value stays where its own numbers put it"
+  },
+  {
+   "text": "до 1000/мл 10⁶/л",
+   "expect": "10^6/l",
+   "why": "and where the same range writes the power out too, the power is what is read"
+  },
+  {
+   "text": "53-115 мкмoль/л",
+   "expect": "umol/l",
+   "why": "a range naming micromoles with a Latin o: the range named no unit at all"
+  },
+  {
+   "text": "0,5-2,0 μg/l",
+   "expect": "ug/l",
+   "why": "micrograms with the Greek mu, which is one letter from 'mg/l' and a thousandfold away"
+  },
+  {
+   "text": "0,5-2,0 μmol/l",
+   "expect": "umol/l",
+   "why": "and micromoles, one letter from millimoles"
+  },
+  {
+   "text": "0,5-2,0 μg/dl",
+   "expect": "ug/dl",
+   "why": "the micro sign and the Greek mu are one character after a fold and were two before it"
+  },
+  {
+   "text": "47 – 72 % 2,000 – 5,500*10⁹/л",
+   "expect": null,
+   "why": "two bands, each with its own unit: the line names two units and nothing on it says which one the value beside it was printed in, so as a whole it names none. The bands are read one at a time in reference.py, with the unit of the value in hand"
   }
  ],
  "unit_keys": [
@@ -796,53 +1052,408 @@
    "text": "μmol/L",
    "expect": "umol/l",
    "why": "the Greek mu before a unit is still the micro sign"
+  },
+  {
+   "text": "10⁹/1",
+   "expect": "10^9/l",
+   "why": "a lone 1 after the slash is the letter for litre, read as a digit — five values of one archive carried it"
+  },
+  {
+   "text": "g/1",
+   "expect": "g/l",
+   "why": "the same in the Latin alphabet"
+  },
+  {
+   "text": "1/1",
+   "expect": "l/l",
+   "why": "and on both sides of the slash, which is a ratio either way"
+  },
+  {
+   "text": "см",
+   "expect": "cm",
+   "why": "the Russian centimetre, which had no entry at all and drew its own chart"
+  },
+  {
+   "text": "см/сек",
+   "expect": "cm/s",
+   "why": "and the Russian second with it"
+  },
+  {
+   "text": "°С",
+   "expect": "°c",
+   "why": "the degree sign with a Cyrillic C: one temperature, not two"
+  },
+  {
+   "text": "уд./мин",
+   "expect": "/min",
+   "why": "per minute: what is counted is not the unit, the minute is. This read 'уд/min' — a key with a Cyrillic word still standing in it"
+  },
+  {
+   "text": "mg/24 h",
+   "expect": "mg/24h",
+   "why": "a number in a unit keeps its digits, whatever is done to a lone one"
+  },
+  {
+   "text": "мкМЕ/мл",
+   "expect": "uu/ml",
+   "why": "micro international units: how thyrotropin and insulin are printed on Russian and Ukrainian forms, and the same measure as 'мкЕд/мл'"
+  },
+  {
+   "text": "µIU/mL",
+   "expect": "uu/ml",
+   "why": "the same unit in Latin, which has to come to the same key"
+  },
+  {
+   "text": "мкМО/мл",
+   "expect": "uu/ml",
+   "why": "the same written with the Ukrainian word for an international unit"
+  },
+  {
+   "text": "мМЕ/л",
+   "expect": "mu/l",
+   "why": "milli international units per litre: the word for a millimetre was taken out of the middle of it"
+  },
+  {
+   "text": "mIU/L",
+   "expect": "mu/l",
+   "why": "the same in Latin"
+  },
+  {
+   "text": "мкОд/мл",
+   "expect": "uu/ml",
+   "why": "micro units per millilitre, Ukrainian"
+  },
+  {
+   "text": "мкЕд/мл",
+   "expect": "uu/ml",
+   "why": "the same, Russian"
+  },
+  {
+   "text": "µU/mL",
+   "expect": "uu/ml",
+   "why": "and in Latin: a plain unit is not an international one, and the two keep their own keys"
+  },
+  {
+   "text": "мг/кг",
+   "expect": "mg/kg",
+   "why": "the kilogramme, which stood in no list of words at all"
+  },
+  {
+   "text": "мкг/кг/хв",
+   "expect": "ug/kg/min",
+   "why": "a dose per kilogramme per minute, Ukrainian"
+  },
+  {
+   "text": "мкМоль/л",
+   "expect": "umol/l",
+   "why": "the micromole, which the prefixed words for units must not eat"
+  },
+  {
+   "text": "мМоль/л",
+   "expect": "mmol/l",
+   "why": "and the millimole beside it"
+  },
+  {
+   "text": "Г/Л",
+   "expect": "10^9/l",
+   "why": "giga per litre in capitals, which the fold read as grams"
+  },
+  {
+   "text": "Г/L",
+   "expect": "10^9/l",
+   "why": "the measure in Cyrillic and the litre in Latin: forms really mix the alphabets"
+  },
+  {
+   "text": "G/л",
+   "expect": "10^9/l",
+   "why": "and the other way about"
+  },
+  {
+   "text": "Т/л",
+   "expect": "10^12/l",
+   "why": "tera per litre: a count of red cells"
+  },
+  {
+   "text": "Т/L",
+   "expect": "10^12/l",
+   "why": "the same, mixed"
+  },
+  {
+   "text": "T/л",
+   "expect": "10^12/l",
+   "why": "and mixed the other way"
+  },
+  {
+   "text": "г/L",
+   "expect": "g/l",
+   "why": "the small letter is grams in any mixture of the two alphabets"
+  },
+  {
+   "text": "g/Л",
+   "expect": "g/l",
+   "why": "and so is this one"
+  },
+  {
+   "text": "мкмoль/л",
+   "expect": "umol/l",
+   "why": "micromoles with a Latin o inside the word: it came out 'umololь/l', a key of its own"
+  },
+  {
+   "text": "ммoль/л",
+   "expect": "mmol/l",
+   "why": "millimoles, the same slip"
+  },
+  {
+   "text": "уд/xв",
+   "expect": "/min",
+   "why": "the same with a Latin x, which stood in the table by hand"
+  },
+  {
+   "text": "мкг/дл",
+   "expect": "ug/dl",
+   "why": "micrograms per decilitre, spelled as printed"
+  },
+  {
+   "text": "мг/дл",
+   "expect": "mg/dl",
+   "why": "and milligrams, which is a thousand times it"
+  },
+  {
+   "text": "IU/L",
+   "expect": "u/l",
+   "why": "international units per litre: the same measure as 'U/L' for an enzyme, and what the reader of printed ranges in this program has always called it"
+  },
+  {
+   "text": "МЕ/л",
+   "expect": "u/l",
+   "why": "the same in Russian, where the word for the international unit is 'МЕ'"
+  },
+  {
+   "text": "МО/л",
+   "expect": "u/l",
+   "why": "and in Ukrainian, where it is 'МО'"
+  },
+  {
+   "text": "IU/mL",
+   "expect": "u/ml",
+   "why": "per millilitre, so that the whole prefix folds and not one spelling of it"
+  },
+  {
+   "text": "ед/мл",
+   "expect": "u/ml",
+   "why": "the plain unit per millilitre, which has to be the same key"
+  },
+  {
+   "text": "μ/L",
+   "expect": "/ul",
+   "why": "a micro sign with nothing after it and a litre over the slash: the microlitre with its slash on the wrong side. Read as 'u/l' — units per litre, which is what an enzyme is printed in — it stood a cell count on an enzyme's scale"
+  },
+  {
+   "text": "µ/l",
+   "expect": "/ul",
+   "why": "the same with the micro sign of the other table and a small litre"
+  },
+  {
+   "text": "лейко/мкл",
+   "expect": "/ul",
+   "why": "leucocytes per microlitre: the spelling the other forms of that test print"
+  },
+  {
+   "text": "bpm",
+   "expect": "/min",
+   "why": "beats per minute written as one word"
+  },
+  {
+   "text": "в 1 минуту",
+   "expect": "/min",
+   "why": "'per one minute' in Russian, written out: the word for the minute was not in the table, so the key came out 'в1minуту'"
+  },
+  {
+   "text": "в 1 хвилину",
+   "expect": "/min",
+   "why": "the same in Ukrainian, which came out 'в1minиlину' — two alphabets in one key, for a measurement the archive already held"
+  },
+  {
+   "text": "уд в 1 хв",
+   "expect": "/min",
+   "why": "the beats, the 'per one' and the minute, all three in one field"
+  },
+  {
+   "text": "за 1 хв",
+   "expect": "/min",
+   "why": "'in one minute', which is the same thing said the other way"
+  },
+  {
+   "text": "р./хв.",
+   "expect": "/min",
+   "why": "times per minute, as a Ukrainian form abbreviates it"
+  },
+  {
+   "text": "/хв",
+   "expect": "/min",
+   "why": "the minute alone under a slash, which is the plainest of them"
+  },
+  {
+   "text": "ударів/хв",
+   "expect": "/min",
+   "why": "beats per minute in Ukrainian, which this archive does not print and the form in the next town does"
+  },
+  {
+   "text": "вдохов в 1 минуту",
+   "expect": "/min",
+   "why": "breaths per minute: another thing counted, the same unit, and a shape nothing here holds yet"
+  },
+  {
+   "text": "мин",
+   "expect": "min",
+   "why": "a length of time — a clotting time, the hour a sedimentation is read at — and not a rate at all, so it keeps its own key"
+  },
+  {
+   "text": "ml/min",
+   "expect": "ml/min",
+   "why": "millilitres per minute: the minute is in it and the measure is a volume"
+  },
+  {
+   "text": "lpm",
+   "expect": "/min",
+   "why": "latidos por minuto, the Spanish for beats per minute. The tenth spelling of the pulse and the one left behind when the other nine were folded into one: it stood as a chart of its own over three values beside the seven under 'в 1 минуту'"
+  },
+  {
+   "text": "latidos por minuto",
+   "expect": "/min",
+   "why": "the same written out, with 'por' where the other two languages write 'в 1' and 'за 1'. No archive here prints it and a Spanish form in the next town does"
+  },
+  {
+   "text": "lat./min",
+   "expect": "/min",
+   "why": "abbreviated with the slash, as the Ukrainian 'уд./хв.' is"
+  },
+  {
+   "text": "por minuto",
+   "expect": "/min",
+   "why": "'per minute' with nothing counted named in it, the Spanish twin of '/хв'"
+  },
+  {
+   "text": "mm/hora",
+   "expect": "mm/h",
+   "why": "millimetres an hour with the hour written out in Spanish: a sedimentation rate this archive prints, which stood on a key of its own beside 'мм/год' and 'mm/hr'"
+  },
+  {
+   "text": "ng/mL/hora",
+   "expect": "ng/ml/h",
+   "why": "a plasma renin activity: the same word at the end of a longer unit"
+  },
+  {
+   "text": "seg",
+   "expect": "s",
+   "why": "segundos, how a Spanish laboratory prints the second — ten clotting times of this archive, beside the 'сек' and 's' of every other form of the same tests"
+  },
+  {
+   "text": "milisegundos",
+   "expect": "ms",
+   "why": "the millisecond written out. The prefixed spellings stand in the table themselves: with the second alone in it this would have read 'milis', which is the half translation the cure was for"
+  },
+  {
+   "text": "gramos",
+   "expect": "g",
+   "why": "the gramme written out, as the mass of a ventricle is printed on these forms"
+  },
+  {
+   "text": "miligramos/dL",
+   "expect": "mg/dl",
+   "why": "and with its prefix, which has to come to the same key as 'mg/dL'"
+  },
+  {
+   "text": "microgramos/L",
+   "expect": "ug/l",
+   "why": "the microgramme written out, which has to come to the same key as 'µg/L'"
+  },
+  {
+   "text": "UI/L",
+   "expect": "u/l",
+   "why": "unidades internacionales: the international unit in Spanish, the same two letters the other way round. 22 values over six enzymes of one archive, each of which already had a chart in 'U/L', 'IU/L', 'Од/л', 'од/л' or 'Е/л'"
+  },
+  {
+   "text": "microUI/mL",
+   "expect": "uu/ml",
+   "why": "the same with the micro prefix, which is 'мкМЕ/мл' in Russian and 'µU/mL' in Latin"
+  },
+  {
+   "text": "UFC/mL",
+   "expect": "cfu/ml",
+   "why": "unidades formadoras de colonias, which is cfu in English: three forms of this archive print it as 'UFC/mL', 'ufc/mL' and 'cfu/ml'"
+  },
+  {
+   "text": "mm",
+   "expect": "mm",
+   "why": "millimetres, and a length rather than a rate even where a sedimentation rate is the test that printed it. 48 values of these archives are printed in 'mm' and 44 of them are lengths — keratometry radii, fat thicknesses, the height of an ECG wave. That a form meant millimetres an hour is a claim about what it meant, which a rule that places says out loud on the page; this table reads what is written"
+  },
+  {
+   "text": "años",
+   "expect": "años",
+   "why": "years, a Spanish form's word for an age. Nothing in this table is a year in any language, so there is nothing to fold it with and the key stays as the form wrote it"
   }
  ],
  "dates": [
   {
-   "text": "08.07.2019",
-   "expect": "2019-07-08",
+   "text": "09.07.2011",
+   "expect": "2011-07-09",
    "why": "day first, which is how this archive's forms print"
   },
   {
-   "text": "8 липня 2019",
-   "expect": "2019-07-08",
+   "text": "9 липня 2011",
+   "expect": "2011-07-09",
    "why": "the month named, Ukrainian genitive"
   },
   {
-   "text": "8 июля 2019",
-   "expect": "2019-07-08",
+   "text": "9 июля 2011",
+   "expect": "2011-07-09",
    "why": "the month named, Russian genitive"
   },
   {
-   "text": "8 de mayo de 2019",
-   "expect": "2019-05-08",
+   "text": "9 de mayo de 2011",
+   "expect": "2011-05-09",
    "why": "the month named, Spanish"
   },
   {
-   "text": "8-jul-2019",
-   "expect": "2019-07-08",
+   "text": "9-jul-2011",
+   "expect": "2011-07-09",
    "why": "the month abbreviated, English"
   },
   {
-   "text": "8 ΜΑΙΟΥ 2019",
-   "expect": "2019-05-08",
+   "text": "9 ΜΑΙΟΥ 2011",
+   "expect": "2011-05-09",
    "why": "the month named in Greek capitals"
   },
   {
-   "text": "8 ΜΑΪΟΥ 2019",
-   "expect": "2019-05-08",
+   "text": "9 ΜΑΪΟΥ 2011",
+   "expect": "2011-05-09",
    "why": "the same, with the diaeresis capitals require"
   },
   {
-   "text": "8 Μαΐου 2019",
-   "expect": "2019-05-08",
+   "text": "9 Μαΐου 2011",
+   "expect": "2011-05-09",
    "why": "the same in lower case, with its diaeresis"
   },
   {
-   "text": "2019-07-08",
-   "expect": "2019-07-08",
+   "text": "2011-07-09",
+   "expect": "2011-07-09",
    "why": "the way a machine writes it"
+  },
+  {
+   "text": "9 квiтня 2011",
+   "expect": "2011-04-09",
+   "why": "Ukrainian April with its і typed in Latin: two of the twelve stems carry one"
+  },
+  {
+   "text": "9 сiчня 2011",
+   "expect": "2011-01-09",
+   "why": "and January, the other stem that does; without it the day and the month were lost"
+  },
+  {
+   "text": "9 квітня 2011",
+   "expect": "2011-04-09",
+   "why": "and the same month spelled as it is printed, which must not stop reading"
   }
  ],
  "printed_numbers": [
@@ -1042,6 +1653,23 @@
     "117"
    ],
    "why": "a number among words is the only token in it"
+  },
+  {
+   "text": "Analyte 707 404 - 909",
+   "expect": [
+    "707 404",
+    "909"
+   ],
+   "why": "a result and the low end of its printed range, one space apart, which is how pdfium writes two columns of a form where the reader before it wrote several spaces: the two read as one number of six digits. Ten pages of one live archive moved this way when the reader of the text layer changed, and the page itself is unchanged — nothing places a value by this, because the one check that reads the numbers of a page text only ever marks. Written down so that whoever widens what reads a page text reads this first"
+  },
+  {
+   "text": "Analyte 707   404 - 909",
+   "expect": [
+    "707",
+    "404",
+    "909"
+   ],
+   "why": "the same row with the columns further apart, which is what the reader before pdfium gave: three numbers, because thousands are grouped by one space and never by three"
   }
  ],
  "comparators": [
@@ -1104,6 +1732,56 @@
    "text": "5 mg",
    "expect": false,
    "why": "a unit after the number is not a comparator either"
+  },
+  {
+   "text": "20 or less",
+   "expect": true,
+   "why": "the word behind its number, which the comment over the list named and the reader could not match"
+  },
+  {
+   "text": "18 и более",
+   "expect": true,
+   "why": "Russian, behind the number"
+  },
+  {
+   "text": "5 і більше",
+   "expect": true,
+   "why": "Ukrainian, behind the number"
+  },
+  {
+   "text": "40 and above",
+   "expect": true,
+   "why": "English, behind the number"
+  },
+  {
+   "text": "5 o menos",
+   "expect": true,
+   "why": "Spanish, behind the number"
+  },
+  {
+   "text": "5 ή λιγότερο",
+   "expect": true,
+   "why": "Greek, behind the number"
+  },
+  {
+   "text": "5 Ή ΛΙΓΟΤΕΡΟ",
+   "expect": true,
+   "why": "and the same in capitals, which lose the accent"
+  },
+  {
+   "text": "3,5 - 5,5",
+   "expect": false,
+   "why": "a printed range is not a comparator, from either end"
+  },
+  {
+   "text": "120 мин",
+   "expect": false,
+   "why": "minutes: 'мин' and 'min' head a column in front of a number and are a unit behind one"
+  },
+  {
+   "text": "120 min",
+   "expect": false,
+   "why": "the same in Latin, which is how a form prints it too"
   }
  ],
  "dates_of_birth": [

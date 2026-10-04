@@ -19,10 +19,11 @@ from epicrisis.models import model_for
 from epicrisis.classify.run import classify_source
 from epicrisis import engines
 from epicrisis.consent import has_consent
-from epicrisis.datesearch import search_source
+from epicrisis.datesearch import documents_without_a_date, search_source
 from epicrisis.extract.run import extract_source
 from epicrisis.index.build import build_index
 from epicrisis.inventory.run import NothingWhereTheArchiveWas, write_inventory
+from epicrisis.readers.pdf import remembering_page_text
 from epicrisis.records import now, read_records
 from epicrisis.runs import belongs_to_the_folder, holder, one_at_a_time
 from epicrisis.sources import SourceRegistry, source_output_dir
@@ -39,42 +40,57 @@ def run_update(data_dir: Path, say=print) -> dict:
     totals = {}
     with one_at_a_time(registry.data_dir / LOCK_NAME, "An update"):
         for source in registry.list():
-            output = source_output_dir(registry.data_dir, source.id)
-            try:
-                summary = write_inventory(Path(source.path), output / layout.INVENTORY)
-            except NothingWhereTheArchiveWas as gone:
-                # One archive whose folder is not where it was does not stop the others being
-                # brought up to date, and the refusal is said rather than raised: it names no
-                # path, and it is the whole of what a person needs to know.
-                say(f"Source {source.id}: {gone}")
-                continue
-            say(f"Source {source.id}: {summary.files} files")
-            backend = engines.classifier(registry.data_dir)
-            if not has_consent(registry.data_dir, backend.name):
-                # Not a line in a progress log. This is the difference between an archive that has
-                # been read and one that has not, and the run goes on to finish with a zero exit —
-                # so a person following the README sees no failure, and then a dashboard with
-                # nothing read in it, and no idea that one press on one page is all that is
-                # missing. The same sentence the other commands give, and where to go.
-                say(f"Source {source.id}: nothing was read, and nothing was sent.")
-                say("  Model processing is not confirmed for this engine. Confirm it once, on the")
-                say(f"  page that says exactly what would go and where: {CLI} serve, then /consent.")
-            else:
-                classified = classify_source(registry.data_dir, source, backend)
-                say(f"  classify: {classified.classified} new pages, {classified.failed} failed")
-                extracted = extract_source(registry.data_dir, source, engines.extractor(registry.data_dir))
-                say(f"  extract: {extracted.extracted} new documents, {extracted.escalated} by Opus after a check, {extracted.failed} failed")
-                if "usage_limit" in (classified.stopped, extracted.stopped):
-                    say("  stopped at the subscription usage limit; run update again later")
+            # One pass over one archive, and the text layer of a page read once inside it.
+            # It is left behind at the end of this archive and before the next one begins:
+            # what it holds is printed on somebody's documents, and the first entry of the
+            # constitution says such a thing stays with the archive it came from.
+            with remembering_page_text():
+                output = source_output_dir(registry.data_dir, source.id)
+                try:
+                    summary = write_inventory(Path(source.path), output / layout.INVENTORY)
+                except NothingWhereTheArchiveWas as gone:
+                    # One archive whose folder is not where it was does not stop the others being
+                    # brought up to date, and the refusal is said rather than raised: it names no
+                    # path, and it is the whole of what a person needs to know.
+                    say(f"Source {source.id}: {gone}")
+                    continue
+                say(f"Source {source.id}: {summary.files} files")
+                backend = engines.classifier(registry.data_dir)
+                if not has_consent(registry.data_dir, backend.name):
+                    # Not a line in a progress log. This is the difference between an archive that has
+                    # been read and one that has not, and the run goes on to finish with a zero exit —
+                    # so a person following the README sees no failure, and then a dashboard with
+                    # nothing read in it, and no idea that one press on one page is all that is
+                    # missing. The same sentence the other commands give, and where to go.
+                    say(f"Source {source.id}: nothing was read, and nothing was sent.")
+                    say("  Model processing is not confirmed for this engine. Confirm it once, on the")
+                    say(f"  page that says exactly what would go and where: {CLI} serve, then /consent.")
                 else:
-                    targets = _undated(source, output)
-                    searched = search_source(registry.data_dir, source, engines.date_search(registry.data_dir), targets)
-                    say(f"  date search: {searched.searched} documents searched, dates found in {searched.with_dates}")
-                    read = _read_materials(registry.data_dir, output)
-                    say(f"  materials: {read['decided']} tables settled, {read['values']} values, "
-                        f"{read['waiting']} unsure, {read['unclear']} could not be told")  # fmt: skip
-            result = validate_source(output, Path(source.path))
-            say(f"  validate: {len(result['documents'])} of {result['documents_checked']} documents to check")
+                    # Before anything is read: where the documents of a text file begin. A scan has
+                    # pages because somebody printed it; a text file has none, and a cut by a number
+                    # of characters falls in the middle of a visit. Files of every other kind pass
+                    # through this in no time at all, having their own pages already.
+                    from epicrisis.boundaries import read_boundaries
+
+                    marked = read_boundaries(registry.data_dir, source,
+                                             engines.boundary_reader(registry.data_dir), say=say)  # fmt: skip
+                    if marked:
+                        say(f"  boundaries: {marked} text file(s) marked into documents")
+                    classified = classify_source(registry.data_dir, source, backend)
+                    say(f"  classify: {classified.classified} new pages, {classified.failed} failed")
+                    extracted = extract_source(registry.data_dir, source, engines.extractor(registry.data_dir))
+                    say(f"  extract: {extracted.extracted} new documents, {extracted.escalated} by Opus after a check, {extracted.failed} failed")
+                    if "usage_limit" in (classified.stopped, extracted.stopped):
+                        say("  stopped at the subscription usage limit; run update again later")
+                    else:
+                        targets = documents_without_a_date(source, output)
+                        searched = search_source(registry.data_dir, source, engines.date_search(registry.data_dir), targets)
+                        say(f"  date search: {searched.searched} documents searched, dates found in {searched.with_dates}")
+                        read = _read_materials(registry.data_dir, output)
+                        say(f"  materials: {read['decided']} tables settled, {read['values']} values, "
+                            f"{read['waiting']} unsure, {read['unclear']} could not be told")  # fmt: skip
+                result = validate_source(output, Path(source.path))
+                say(f"  validate: {len(result['documents'])} of {result['documents_checked']} documents to check")
         totals: dict = {}
         for source in registry.list():
             built = build_index(registry.data_dir, [source])
@@ -88,6 +104,10 @@ def run_update(data_dir: Path, say=print) -> dict:
             if has_consent(registry.data_dir, engines.classifier(registry.data_dir).name):
                 if _propose_new_names(registry.data_dir, say, source.id):
                     build_index(registry.data_dir, [source])
+                # The same narrow question about the names of doctors and places. No index is
+                # built after it, because nothing it writes changes what the archive answers:
+                # a proposal about a person's identity is applied by a person and by nobody else.
+                _propose_people(registry.data_dir, say, source.id)
     return totals
 
 
@@ -155,15 +175,25 @@ def _propose_new_names(data_dir: Path, say, source_id: str | None = None) -> int
     return counts["added_to_existing"] + counts["new_indicators"]
 
 
-def _undated(source, output: Path) -> list:
-    from epicrisis.web.documents import source_documents
+def _propose_people(data_dir: Path, say, source_id: str) -> int:
+    """Which printed names are one doctor, or one place — asked of a model, applied by nobody."""
+    from epicrisis import people
+    from epicrisis.people_proposals import ProposalBackend, names_to_ask_about, propose_people
+    from epicrisis.query import open_index
 
-    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
-    view = source_documents(source, output) or {"years": []}
-    return [
-        (records[row["file"]["sha256"]], tuple(row["pages"]))
-        for group in view["years"]
-        for row in group["documents"]
-        if row["date"]["value"] is None and not row.get("unreadable") and row["doc_type"] != "Blank page"
-    ]
+    groups = people.load(data_dir, source_id)
+    connection = open_index(data_dir, source_id)
+    try:
+        from epicrisis.query import who_made_them
 
+        makers = who_made_them(connection, groups)
+    finally:
+        connection.close()
+    if not any(len(names_to_ask_about(makers, kind, groups)) >= 2 for kind in people.KINDS):
+        return 0
+    with tempfile.TemporaryDirectory(prefix="epicrisis-people-") as workdir:
+        counts = propose_people(data_dir, source_id, makers, ProposalBackend(model=model_for(data_dir, "strong"), data_dir=data_dir), Path(workdir))
+    if counts["proposed"]:
+        say(f"  who made them: {counts['proposed']} group(s) of names look like one and the same, "
+            f"waiting for you on the Doctors and clinics page")  # fmt: skip
+    return counts["proposed"]

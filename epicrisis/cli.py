@@ -4,8 +4,10 @@ The pipeline is five independent commands. Each can be run and re-run on its own
 inventory -> classify -> extract -> validate -> index.
 """
 
+import errno
 import signal
 import os
+import socket
 import sys
 from datetime import UTC, datetime
 from contextlib import closing
@@ -40,25 +42,49 @@ def run() -> None:
     the path printed a second time, and the process left with status 1 where a script was looking
     for 2.
     """
+    from epicrisis import journal
     from epicrisis.runs import Busy
     from epicrisis.state import NoSpace, Unreadable, no_space
 
+    instance = _the_instance_in(sys.argv)
     try:
         # The program's own name, so that usage lines say "epicrisis" and not the name of whatever
         # file happened to start it — "root ask [OPTIONS]" under a console script run as root.
         app(prog_name="epicrisis")
+    except SystemExit as ending:
+        # Every refusal of every command, by the code it leaves. Click turns typer.Exit into this
+        # on its way out of app(), so the thirty places that say "no" and exit 2 are caught in one
+        # — and those are the ones nothing else here hears about: the four below each print a
+        # sentence a person can act on, while a refusal deep in a command printed its sentence to
+        # a terminal and left nothing behind at all.
+        code = ending.code if isinstance(ending.code, int) else (0 if ending.code is None else 1)
+        if code:
+            journal.record(instance, {"event": "a command refused and stopped", "code": code,
+                                      **_which_command(sys.argv)})  # fmt: skip
+        raise
     except Unreadable as broken:
         typer.echo(str(broken), err=True)
+        journal.went_wrong(instance, "a file of this instance would not read", broken,
+                           file=broken.file, code=2, **_which_command(sys.argv))  # fmt: skip
         raise SystemExit(2) from broken
     except Busy as busy:
         typer.echo(str(busy), err=True)
+        journal.went_wrong(instance, "a step was already running", busy, code=3,
+                           **({"step": busy.what} if busy.what else {}),
+                           **_which_command(sys.argv))  # fmt: skip
         raise SystemExit(3) from busy
     except NoSpace as full:
         typer.echo(str(full), err=True)
+        journal.went_wrong(instance, "there was no space left on the disk", full, code=4,
+                           **_which_command(sys.argv))  # fmt: skip
         raise SystemExit(4) from full
     except OSError as trouble:
         if not no_space(trouble):
+            journal.went_wrong(instance, "a command failed with nothing to say about it", trouble,
+                               **_which_command(sys.argv))  # fmt: skip
             raise
+        journal.went_wrong(instance, "there was no space left on the disk", trouble, code=4,
+                           **_which_command(sys.argv))  # fmt: skip
         typer.echo(
             "There is no space left on the disk this instance writes to. Nothing was changed: "
             "every file here is written whole and renamed into place, so the ones already on disk "
@@ -66,6 +92,47 @@ def run() -> None:
             err=True,
         )
         raise SystemExit(4) from trouble
+
+
+DEFAULT_DATA_DIR = Path("data")
+
+
+def _the_instance_in(argv: list[str]) -> Path:
+    """Which instance a command was acting on, read back out of its own arguments.
+
+    The journal is a file in the data directory, and run() is outside every command, where nothing
+    has parsed the arguments yet — and parsing them a second time with typer to find out would
+    mean running the command twice. So the one option that decides where the file goes is read
+    off the line directly, and a line that does not carry it means the default, exactly as the
+    commands themselves mean it.
+
+    A directory that is not there records nowhere: journal.record swallows that, which is right.
+    Writing the line into a folder this command was not acting on would be worse than losing it.
+    """
+    for index, word in enumerate(argv):
+        if word == "--data-dir" and index + 1 < len(argv):
+            return Path(argv[index + 1])
+        if word.startswith("--data-dir="):
+            return Path(word.split("=", 1)[1])
+    return DEFAULT_DATA_DIR
+
+
+def _which_command(argv: list[str]) -> dict:
+    """The name of the command that was run, and only if it is one this program has.
+
+    Nothing else off the line. An argument here is a path to somebody's archive — the folder names
+    carry surnames and often what was wrong with them — or a search, or the name of a model. The
+    command's own name is this program's vocabulary and says what a person was doing, which is
+    the whole of what the journal needs.
+    """
+    known = {one.name or (one.callback.__name__.replace("_", "-") if one.callback else "")
+             for one in app.registered_commands}  # fmt: skip
+    for word in argv[1:]:
+        if word in known:
+            return {"command": word}
+        if not word.startswith("-"):
+            break  # the first bare word is the command or nothing is
+    return {}
 
 
 def _version_callback(value: bool) -> None:
@@ -128,7 +195,7 @@ def _print_progress(scanned: int, total: int) -> None:
 def serve(
     host: str = typer.Option("127.0.0.1", help="Address to listen on. Keep it local and use an SSH tunnel."),
     port: int = typer.Option(8050, help="Port to listen on."),
-    data_dir: Path = typer.Option(Path("data"), "--data-dir", help="Where sources and results are kept."),
+    data_dir: Path = typer.Option(DEFAULT_DATA_DIR, "--data-dir", help="Where sources and results are kept."),
 ) -> None:
     """Run the local status dashboard."""
     import uvicorn
@@ -146,6 +213,10 @@ def serve(
     # person where to go and then failed to bind, on a port already in use.
     where = f"http://{'localhost' if host in LOCAL_HOSTS else host}:{port}"
 
+    # Bound here rather than left to uvicorn, so that a port already taken is answered in this
+    # program's own words. See _take_the_port.
+    listening = _take_the_port(host, port, where, data_dir)
+
     # No access log: /browse query strings carry folder names, which must not land in logs.
     server = uvicorn.Server(uvicorn.Config(web_app, host=host, port=port, log_level="warning", access_log=False))
     original = server.startup
@@ -156,15 +227,61 @@ def serve(
 
     server.startup = startup
     try:
-        server.run()
+        server.run(sockets=[listening])
     except OSError as trouble:
-        typer.echo(f"Cannot listen on {host}:{port}: {trouble.strerror or trouble}.", err=True)
+        typer.echo(f"Cannot listen on {host}:{port}: {trouble.strerror or trouble}. Nothing was started.", err=True)
         raise typer.Exit(code=3) from trouble
+
+
+def _take_the_port(host: str, port: int, where: str, data_dir: Path) -> socket.socket:
+    """The socket this dashboard will listen on, held before uvicorn starts — or a way out.
+
+    uvicorn binds inside its own startup and answers an OSError there with `logger.error(exc)`
+    and `sys.exit`, so the `except OSError` around `server.run()` never ran once: what a person
+    got was uvicorn's line, in uvicorn's voice, naming the cause and nothing else —
+
+        ERROR: [Errno 98] error while attempting to bind on address ('127.0.0.1', 8050):
+               [errno 98] address already in use
+
+    and that is the path the README walks a reader down. It has them run `serve` twice, the demo
+    archive first and their own second, both times on the default port; a second server on 8050
+    is the described way through this program and not a corner of it. So the port is taken here,
+    where the refusal can say which address is busy, that the thing already there is probably the
+    first dashboard, and the command that takes another port.
+    """
+    sock = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    # The same option uvicorn sets. It lets a port in TIME_WAIT be taken again after a restart;
+    # it does not let two servers listen on one port, so it hides nothing this refusal is about.
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError as trouble:
+        sock.close()
+        elsewhere = invocation.run(f"serve --port {port + 1 if port < 65535 else port - 1}", data_dir)
+        if trouble.errno == errno.EADDRINUSE:
+            typer.echo(
+                f"Something is already listening on {host}:{port}, so this dashboard did not start. "
+                "Nothing was changed and nothing was read.\n"
+                f"If it is another Epicrisis Companion — the demo archives, or this instance started "
+                f"in another terminal — it is serving at {where} already, and that page is the one "
+                "this command would have opened.\n"
+                f"If it is something else, take a port of your own: {elsewhere}",
+                err=True,
+            )  # fmt: skip
+        else:
+            typer.echo(
+                f"Cannot listen on {host}:{port}: {trouble.strerror or trouble}. Nothing was started.\n"
+                f"A port under 1024 is the server's to give and needs root; anything above it does "
+                f"not. Another port: {elsewhere}, and --host says which address to listen on.",
+                err=True,
+            )  # fmt: skip
+        raise typer.Exit(code=3) from trouble
+    return sock
 
 
 SOURCE_OPTION = typer.Option(None, "--source", help="Source id. Defaults to the only registered source.")
 YEARS_OPTION = typer.Option(None, "--years", help="Only files whose folder year is listed, e.g. 1992-2003 or 1992-2003,2025.")
-DATA_DIR_OPTION = typer.Option(Path("data"), "--data-dir", help="Where sources and results are kept.")
+DATA_DIR_OPTION = typer.Option(DEFAULT_DATA_DIR, "--data-dir", help="Where sources and results are kept.")
 
 
 def _an_instance(data_dir: Path) -> Path:
@@ -432,21 +549,17 @@ def find_dates(
 ) -> None:
     """Look again for dates on documents that have none: stamps, signatures, handwriting. Sends pages to a model."""
     from epicrisis.classify.run import is_running
-    from epicrisis.datesearch import LOCK_NAME, search_source
-    from epicrisis.records import read_records
-    from epicrisis.web.documents import source_documents
-
+    from epicrisis.datesearch import LOCK_NAME, documents_without_a_date, search_source
 
     backend = engines.date_search(data_dir)
     registry, source, output = _prepare_model_step(data_dir, source_id, backend.name, lambda path: is_running(path, LOCK_NAME))
-    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
-    view = source_documents(source, output)
-    targets = [
-        (records[row["file"]["sha256"]], tuple(row["pages"]))
-        for group in view["years"]
-        for row in group["documents"]
-        if row["date"]["value"] is None and not row.get("unreadable") and row["doc_type"] != "Blank page"
-    ]
+    # Both numbers below are the length of this one list, asked before the run and again after it.
+    # They were two walks of the documents with two filters: this one left blank pages out — a
+    # blank page is a kind of document and has no date to find — and the one that printed the
+    # second number did not. So an archive with blank pages was told "Documents without a date: 4"
+    # and, underneath, "Documents still without a date: 7", even where a date had been found on
+    # every one of the four.
+    targets = documents_without_a_date(source, output)
     stats = search_source(registry.data_dir, source, backend, targets, workers=workers)
     typer.echo(
         f"Documents without a date: {len(targets)}. This run: searched {stats.searched}, with dates found "
@@ -454,8 +567,7 @@ def find_dates(
     )
     if stats.stopped == "usage_limit":
         typer.echo("Stopped at the subscription usage limit. Run the same command later to continue.")
-    still = sum(1 for group in source_documents(source, output)["years"] for row in group["documents"] if row["date"]["value"] is None and not row.get("unreadable"))
-    typer.echo(f"Documents still without a date: {still}")
+    typer.echo(f"Documents still without a date: {len(documents_without_a_date(source, output))}")
 
 
 def _print_step_progress(unit: str) -> Callable:
@@ -778,6 +890,78 @@ def indicators(
 
 
 @app.command()
+def people(
+    propose: bool = typer.Option(False, "--propose", help="Ask a model which printed names are one doctor, or one place."),
+    data_dir: Path = DATA_DIR_OPTION,
+) -> None:
+    """Doctors and institutions: printed names grouped under one label. Nothing is ever joined here.
+
+    Unlike the indicators, no answer from a model is applied, however sure it says it is. The
+    difference is not that this mistake costs more — it does, since being wrong here says two human
+    beings are one — but that nothing on the screen could show it was wrong: no document anywhere
+    says whether two "surname plus one initial" are the same person, while two spellings of a test
+    sit side by side under their label and a wrong one is plain to see. Every group waits on the
+    "Doctors and clinics" page for somebody to press a button.
+    """
+    import tempfile
+
+    from epicrisis import people as store
+    from epicrisis import query as query_index
+    from epicrisis.people_proposals import ProposalBackend, names_to_ask_about, propose_people
+    from epicrisis.sources import showing as sources_showing
+
+    # Before anything is counted. The docstring of this function has promised since it was written
+    # that the move is done "by the page and by the command line", and no command called it: a
+    # person who restored data/people.json from an old copy and ran this was told "0 joined by
+    # you" while their own work sat in a file beside the instance. The page is not an answer for
+    # somebody working in a terminal, and this is the one command this file is about.
+    carried = store.carry_the_old_file_in(data_dir)
+    for source_id, how_many in sorted(carried.items()):
+        typer.echo(f"Carried {how_many} group(s) from {store.FILE_NAME} beside this instance into "
+                   f"the archive {source_id}, which prints those names.")  # fmt: skip
+    waiting_outside = store.still_beside_the_instance(data_dir)
+    if waiting_outside:
+        # Said whether anything moved or not, because the case that matters is the one where
+        # nothing could: a group naming nobody this server has an index for, or one belonging to
+        # an archive that already has a people.json of its own. It used to wait there with nothing
+        # anywhere saying it was waiting.
+        typer.echo(
+            f"{data_dir / store.FILE_NAME} still stands beside this instance, holding "
+            f"{waiting_outside} group(s) joined by hand. Nothing is read from there. It is still "
+            f"here because at least one of them has been carried nowhere: it names nobody this "
+            f"server has an index for, or belongs to an archive that already has a "
+            f"{store.FILE_NAME} of its own. What an archive here does name is already inside it. "
+            f"Read those documents, or add the archive that prints those names, and the rest moves "
+            f"by itself. Deleting that file loses the work: nothing makes it again."
+        )
+    showing = sources_showing(data_dir)
+    connection = _read_index(data_dir, showing)
+    makers = query_index.who_made_them(connection, store.load(data_dir, showing.id))
+    connection.close()
+    if propose:
+        _require_consent(data_dir, engines.engine_name(data_dir))
+        with tempfile.TemporaryDirectory(prefix="epicrisis-people-") as workdir:
+            from epicrisis.models import model_for
+
+            counts = propose_people(data_dir, showing.id, makers, ProposalBackend(model=model_for(data_dir, "strong"), data_dir=data_dir),
+                                    Path(workdir), say=typer.echo)  # fmt: skip
+        typer.echo(
+            f"Asked about {counts['asked']} names in {counts['calls']} call(s); {counts['proposed']} group(s) "
+            f"waiting for you on the Doctors and clinics page"
+            + (f"; {counts['left_out']} names did not fit in one call" if counts["left_out"] else "")
+        )
+    groups = store.load(data_dir, showing.id)
+    for kind in store.KINDS:
+        here = [one for one in makers if one["what"] == kind]
+        typer.echo(
+            f"{kind.capitalize()}s: {len(here)} printed names, {len(store.settled(groups, kind))} joined by you, "
+            f"{len(store.waiting(groups, kind))} waiting; "
+            f"{len(store.worth_joining(kind, [one['name'] for one in here]))} pairs the word count offers, "
+            f"{len(names_to_ask_about(makers, kind, groups))} names a model has not been asked about"
+        )
+
+
+@app.command()
 def mcp(
     data_dir: Path = DATA_DIR_OPTION,
     http: bool = typer.Option(False, "--http", help="Serve over HTTP instead of stdio, for a Claude connector."),
@@ -961,8 +1145,8 @@ def backup(
 
 @sources.command("list")
 def sources_list(data_dir: Path = DATA_DIR_OPTION) -> None:
-    """The archives this instance holds, and which one is open."""
-    from epicrisis.sources import SourceRegistry
+    """The archives this instance holds, which one is open, and any whose folder is not there."""
+    from epicrisis.sources import SourceRegistry, folder_is_there
 
     data_dir = _an_instance(data_dir)
     registry = SourceRegistry(data_dir)
@@ -975,10 +1159,41 @@ def sources_list(data_dir: Path = DATA_DIR_OPTION) -> None:
         _work_no_archive_names(data_dir, listed)
         return
     open_now = registry.active()
+    gone = []
     for source in listed:
         here = " (open)" if open_now and open_now.id == source.id else ""
-        typer.echo(f"{source.id}  {source.owner or 'nobody named'}{here}  {source.path}")
+        there = folder_is_there(source.path)
+        if not there:
+            gone.append(source)
+        typer.echo(f"{source.id}  {source.owner or 'nobody named'}{here}  {source.path}"
+                   + ("" if there else "  <- not there now"))  # fmt: skip
+    _folders_not_where_they_were(data_dir, gone)
     _work_no_archive_names(data_dir, listed)
+
+
+def _folders_not_where_they_were(data_dir: Path, gone: list) -> None:
+    """Archives on the list whose folder is not there, said rather than printed as if it were.
+
+    This is the one command that shows the folders, and it showed a path to nothing exactly as it
+    shows a path to an archive — no mark, no sentence, nothing. A folder renamed and a disk that
+    did not mount are the ordinary reasons, and the moment somebody asks for this list is usually
+    just after one of them. The status page answers the same state well and these are its words;
+    `epicrisis update` answers it honestly too. The terminal was the door that did not.
+    """
+    if not gone:
+        return
+    typer.echo("")
+    for source in gone:
+        typer.echo(f"The folder of the archive of {source.whose} is not where it was, or cannot be "
+                   f"read by this account: {source.path}", err=True)  # fmt: skip
+    typer.echo("Nothing has been lost: everything read from those folders is kept here, beside this "
+               "instance, and the corrections are too. Check whether the disk is mounted. If a "
+               "folder has moved, point its archive at the new place, which keeps every reading and "
+               "every correction:", err=True)  # fmt: skip
+    for source in gone:
+        typer.echo("  " + invocation.run(f"sources set-path {source.id} /the/new/folder", data_dir), err=True)
+    typer.echo("Adding the folder again instead makes a second archive of the same person and reads "
+               "it all from nothing.", err=True)  # fmt: skip
 
 
 def _work_no_archive_names(data_dir: Path, listed: list) -> None:
@@ -1086,8 +1301,10 @@ def forget(
     """Put aside everything read from one archive, so the next run reads it again from nothing.
 
     The folder is not touched and stays on the list. The inventory, the classification, the
-    transcriptions, the checks and the index move into data/sources/<id>/forgotten-<when>/.
-    Corrections stay where they are and apply again to the next reading.
+    transcriptions, the materials, the boundaries, the checks and the index move into
+    data/sources/<id>/forgotten-<when>/. What is the person's own stays where it is: corrections
+    and verdicts, which apply again to the next reading, and the readings a later reading
+    displaced, which are the only copy of themselves there is.
     """
     from epicrisis.sources import SourceRegistry
 

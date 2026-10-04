@@ -1,6 +1,6 @@
 [project]
 name = "epicrisis"
-version = "0.3.0"
+version = "0.4.0"
 description = "A self-hosted archive: scanned medical documents as structured data, every value as printed."
 readme = "README.md"
 license = "BUSL-1.1"
@@ -14,6 +14,12 @@ dependencies = [
     "mcp>=2.2.0",
     "openpyxl>=3.1.5",
     "pillow>=12.3.0",
+    # Two libraries read a PDF here, and which answers which question is decided in one place,
+    # epicrisis/readers/pdf.py, where it is also written down. pypdf says what a file *is*:
+    # whether it is encrypted and whether the empty password opens it, how many pages it has, and
+    # whether a picture is pasted into a page. pdfium reads the text layer of a page and renders a
+    # page as a picture. Neither answers a question the other also answers, so they cannot
+    # disagree; dropping either one takes a question with it.
     "pypdf>=6.18.1",
     "pypdfium2>=5.13.0",
     "python-docx>=1.2.0",

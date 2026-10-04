@@ -164,7 +164,12 @@ def _what_to_take(data_dir: Path) -> list[Path]:
     # belongs to which folder. settings.json is nineteen switches, three models, the answer mode
     # and every rule's thresholds — minutes to give again by hand, and gone without a word if
     # nobody carries it. consent.json is deliberately not here: a restored copy should ask.
-    for name in (*layout.THEIR_CHOICES, layout.INDICATORS, layout.CHATS):
+    # rules/ is here because a rule of this instance's own is a file somebody typed: a TOML header
+    # and a body in prose saying what the check looks at and how it can be wrong, written for one
+    # laboratory's forms and held by nobody else. Nothing rebuilds that, and the command that
+    # reports what it carried reads layout.THEIR_OWN_WORK — so a name in that list and not in this
+    # loop would be reported as a kind of work this instance holds none of while it sat on disk.
+    for name in (*layout.THEIR_CHOICES, layout.INDICATORS, layout.CHATS, layout.RULES):
         if (data_dir / name).exists():
             taking.append(Path(name))
     output = data_dir / OUTPUT_DIR_NAME
@@ -173,7 +178,14 @@ def _what_to_take(data_dir: Path) -> list[Path]:
     except Exception:
         folders = [Path(OUTPUT_DIR_NAME) / item.name for item in sorted(output.glob("*")) if item.is_dir()]
     for folder in folders:
-        for name in (layout.CORRECTIONS, layout.JUDGEMENTS, layout.REPLACED):
+        # people.json is here because it lives inside the archive it is about, which it has only
+        # done since the day the instance-wide one leaked a person's doctors onto somebody else's
+        # page. It was missing from this list before that move and after it, so the one command
+        # whose job is to carry off what nothing can rebuild carried four of the six kinds and
+        # named this one under "none of these in this instance yet" while it sat on the disk
+        # holding somebody's joins. layout.THEIR_OWN_WORK is the list that answers the question;
+        # this loop has to ask it rather than keep its own.
+        for name in (layout.CORRECTIONS, layout.JUDGEMENTS, layout.REPLACED, layout.PEOPLE):
             if (data_dir / folder / name).exists():
                 taking.append(folder / name)
     return taking

@@ -8,12 +8,15 @@ represented by one primary document unless a caller asks for all of them.
 
 import json
 import re
-import unicodedata
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
+from epicrisis import everyday_words
+from epicrisis import people
 from epicrisis.index.build import SCHEMA_VERSION, index_path
 from epicrisis.printed_values import also_written_as, fold, fold_with_offsets
+from epicrisis.printed_values import in_name_order
 from epicrisis.state import Unreadable
 from epicrisis.values import only_results
 from epicrisis.invocation import CLI
@@ -31,8 +34,19 @@ class IndexMissing(Exception):
     """The index has not been built yet."""
 
 
-def open_index(data_dir: Path, source_id: str | None = None) -> sqlite3.Connection:
+def open_index(data_dir: Path, source_id: str | None) -> sqlite3.Connection:
     """The index of one archive. A connection holds one owner's records and no one else's.
+
+    Which archive has no default, and the first entry of the constitution is why: a call that
+    forgets it must fail rather than answer about somebody. It had one, and on an instance holding
+    exactly one archive `open_index(data_dir)` handed that archive's own index to whoever asked —
+    so a caller that had simply not got round to naming the archive was answered, correctly, until
+    the day a second archive arrived. `choose_primary_copy` below, the door of this pair that
+    writes, has never had one.
+
+    `None` is still an answer, and it is a different thing from forgetting: it names the single
+    index of an instance built before archives had owners, which is the only index there is
+    between such an upgrade and the next `epicrisis index`. See `_the_only_index`.
 
     Three things can be wrong with it, and only one of them was answered. A missing index was
     answered well: every page said so and offered to build it, in a sentence that also promised
@@ -120,17 +134,51 @@ def _the_only_index(data_dir: Path, asked_for: Path, source_id: str | None) -> P
     added and not yet read has no index file, the only file in the folder is somebody else's,
     and every page answered from it under the new owner's name. An archive with no index has no
     index, and the page says so.
+
+    The leak was closed by counting files rather than by asking whose they were, and counting
+    left one shape out: an instance upgraded from before archives had owners, where a second
+    archive was added on the dashboard before `epicrisis index` was next run. The old single file
+    is then the only index there is, so "no per-owner index exists" was true, and the second
+    archive's every page — the documents, the laboratory, the test, the value — came out of the
+    first person's index under the second person's name. So the file is asked whose it is instead,
+    which is a question it can answer: every document in an index carries the id of the archive
+    it was read from, and has since before that single file was last written.
     """
     older = index_path(data_dir)
-    per_owner = sorted(data_dir.glob("index-*.sqlite"))
     if source_id is not None:
-        # A named archive is answered from its own file or from nothing. The one exception is an
-        # instance upgrading from before archives had owners: its single file is that archive's,
-        # and it is only that archive's while no per-owner index exists at all.
-        return older if older.exists() and not per_owner else asked_for
+        # A named archive is answered from its own file, or from the one file that says in so many
+        # words that these are that archive's documents, or from nothing at all.
+        return older if _index_of_only(older) == source_id else asked_for
+    per_owner = sorted(data_dir.glob("index-*.sqlite"))
     if older.exists():
         return older
     return per_owner[0] if len(per_owner) == 1 else asked_for
+
+
+def _index_of_only(path: Path) -> str | None:
+    """Which archive every document in this index was read from, where it is one archive.
+
+    None for a file that is not there, will not open, holds no documents, holds documents of more
+    than one archive, or is old enough not to have written the id down. Every one of those is an
+    index that cannot be shown to be a named archive's own, and an index that cannot be shown to
+    be somebody's is not handed to them: the whole point of asking is that the answer "I do not
+    know whose this is" and the answer "it is yours" stop being the same answer.
+
+    Nothing else here opens a database to decide which file to open, and this does it on one path
+    only — a named archive whose own index file is missing — which is a page that is about to say
+    there is nothing to show. The cost of being wrong in the other direction is the first line of
+    the constitution.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+            whose = connection.execute("SELECT DISTINCT source_id FROM documents LIMIT 2").fetchall()
+    except (sqlite3.DatabaseError, OSError):
+        return None
+    if len(whose) != 1 or not whose[0][0]:
+        return None
+    return str(whose[0][0])
 
 
 def overview(connection: sqlite3.Connection) -> dict:
@@ -158,16 +206,21 @@ def overview(connection: sqlite3.Connection) -> dict:
 def _match_of(query: str) -> str:
     """The words of a question, as FTS5 wants them, each one looked for both ways it may be typed.
 
-    The question is normalised before its words are cut out of it: text pasted from a Mac arrives
-    decomposed, and a combining accent split "πρωτεΐνη" into two half-words that matched nothing,
-    while the same text stored in the index had been folded and matched fine. One side normalised
-    and the other not is the worst of both.
+    The question is **folded before its words are cut out of it**, and that order is the whole of
+    it. Text pasted from a Mac arrives decomposed, and a combining accent split "πρωτεΐνη" into
+    two half-words that matched nothing while the same text stored in the index had been folded
+    and matched fine; the fold takes the accent off, so the word stays one word. One side folded
+    and the other not is the worst of both, and it is the apostrophe that showed the order
+    matters, not only the folding: cut first, a surname typed "Аб'ва" becomes the two words "аб"
+    and "ва", and the index — which holds "абва" in one piece now that the fold drops the
+    apostrophe — answers nothing at all. Folded first it is one word, and it matches both
+    spellings of the surname, which is the point of dropping the apostrophe in the first place.
 
     And a word every letter of which is drawn alike in two alphabets is looked for in both: "В12"
     typed in Cyrillic on the form and "B12" typed in Latin by the person share no character at
     all, and an empty answer here is read as "the archive does not have it".
     """
-    words = re.findall(r"[^\W_]+", unicodedata.normalize("NFC", query or ""), re.UNICODE)
+    words = re.findall(r"[^\W_]+", fold(query), re.UNICODE)
     terms = []
     for word in words:
         folded = fold(word)
@@ -176,7 +229,14 @@ def _match_of(query: str) -> str:
         spellings = [folded, *also_written_as(folded)]
         terms.append("(" + " OR ".join(f'"{one}"*' for one in spellings) + ")" if len(spellings) > 1
                      else f'"{folded}"*')  # fmt: skip
-    return " ".join(terms)
+    # AND between the words, spelled out. A space between two bare terms is an AND in FTS5 and
+    # reads better, which is why it was written that way — but a space in front of a bracket is a
+    # syntax error, and the moment a word above got a second spelling it came in brackets. So any
+    # question of two words where either of them is drawn alike in two alphabets answered with
+    # "fts5: syntax error near (" — which the dashboard showed as 500 and nothing recorded. Seven
+    # of twelve ordinary questions were that shape: "витамин в12", "гемоглобин а1с", "vitamin b12",
+    # "psa свободный", "са 125". Found by the journal on the day it was written, from one line.
+    return " AND ".join(terms)
 
 
 def search(connection: sqlite3.Connection, query: str, limit: int = 20, since: str | None = None, until: str | None = None,
@@ -209,28 +269,52 @@ NOT_A_RECORD = ("blank",)
 
 def timeline(connection: sqlite3.Connection, since: str | None = None, until: str | None = None, doc_type: str | None = None,
              limit: int = 100, all_copies: bool = False, offset: int = 0, undated: bool = False,
-             with_paperwork: bool = True) -> list[dict]:  # fmt: skip
+             with_paperwork: bool = True, provider: str | None = None, doctor: str | None = None) -> list[dict]:  # fmt: skip
     """Documents by their own date, newest first. undated: only the ones carrying no date at all."""
     only = "AND d.date IS NULL" if undated else ""
     only += _without(doc_type, with_paperwork)
+    by = (provider, doctor)
     rows = connection.execute(
-        f"""SELECT id FROM documents d WHERE 1 = 1 {only} {_filters(since, until, doc_type, all_copies)}
+        f"""SELECT id FROM documents d WHERE 1 = 1 {only} {_filters(since, until, doc_type, all_copies, by)}
             ORDER BY d.date IS NULL, d.date DESC, d.id LIMIT ? OFFSET ?""",
-        (*_filter_values(since, until, doc_type), within_limit(limit), max(0, int(offset))),
+        (*_filter_values(since, until, doc_type, by), within_limit(limit), max(0, int(offset))),
     ).fetchall()
     return [_document_row(connection, row["id"]) for row in rows]
 
 
 def count_documents(connection: sqlite3.Connection, since: str | None = None, until: str | None = None,
                     doc_type: str | None = None, all_copies: bool = False, undated: bool = False,
-                    with_paperwork: bool = True) -> int:  # fmt: skip
+                    with_paperwork: bool = True, provider: str | None = None, doctor: str | None = None) -> int:  # fmt: skip
     """How many documents the same filters hold, so a page can say what it is not showing."""
     only = "AND d.date IS NULL" if undated else ""
     only += _without(doc_type, with_paperwork)
+    by = (provider, doctor)
     return connection.execute(
-        f"SELECT count(*) FROM documents d WHERE 1 = 1 {only} {_filters(since, until, doc_type, all_copies)}",
-        _filter_values(since, until, doc_type),
+        f"SELECT count(*) FROM documents d WHERE 1 = 1 {only} {_filters(since, until, doc_type, all_copies, by)}",
+        _filter_values(since, until, doc_type, by),
     ).fetchone()[0]
+
+
+def span_of_documents(connection: sqlite3.Connection, since: str | None = None, until: str | None = None,
+                      doc_type: str | None = None, all_copies: bool = False, undated: bool = False,
+                      with_paperwork: bool = True, provider: str | None = None,
+                      doctor: str | None = None) -> dict:  # fmt: skip
+    """From when to when the documents these filters hold run, for the heading over them.
+
+    The same arguments as count_documents, and for the same reason it takes them: the timeline's
+    heading printed the span of the whole archive over a cut of it, so a feed narrowed to one
+    laboratory stood under "41 documents · 2013-03-06 – 2025-09-21" while showing ten documents of
+    2019 to 2021 — and not one date in the heading belonged to anything on the page.
+    """
+    only = "AND d.date IS NULL" if undated else ""
+    only += _without(doc_type, with_paperwork)
+    by = (provider, doctor)
+    row = connection.execute(
+        f"""SELECT min(d.date) AS first_date, max(d.date) AS last_date FROM documents d
+            WHERE 1 = 1 {only} {_filters(since, until, doc_type, all_copies, by)}""",
+        _filter_values(since, until, doc_type, by),
+    ).fetchone()
+    return {"first_date": row["first_date"], "last_date": row["last_date"]}
 
 
 def count_search(connection: sqlite3.Connection, query: str, since: str | None = None, until: str | None = None,
@@ -252,13 +336,21 @@ def count_search(connection: sqlite3.Connection, query: str, since: str | None =
     ).fetchone()[0]
 
 
-def years(connection: sqlite3.Connection, doc_type: str | None = None) -> list[dict]:
-    """How many documents carry each year, oldest first. Years with nothing are years with nothing."""
+def years(connection: sqlite3.Connection, doc_type: str | None = None, provider: str | None = None,
+          doctor: str | None = None) -> list[dict]:  # fmt: skip
+    """How many documents carry each year, oldest first. Years with nothing are years with nothing.
+
+    Whose work, as well as which type: the bars and the rows drawn under them have to be of one
+    set. The row of type tabs had exactly this defect with a year in force — the comment over that
+    row in the page records what it cost — and a strip counted over the whole archive beside a feed
+    narrowed to one doctor offers years that hold nothing of theirs.
+    """
+    by = (provider, doctor)
     rows = connection.execute(
         f"""SELECT CAST(substr(d.date, 1, 4) AS INTEGER) AS year, count(*) AS documents
-            FROM documents d WHERE d.date IS NOT NULL {_filters(None, None, doc_type, False)}
+            FROM documents d WHERE d.date IS NOT NULL {_filters(None, None, doc_type, False, by)}
             GROUP BY 1 ORDER BY 1""",
-        _filter_values(None, None, doc_type),
+        _filter_values(None, None, doc_type, by),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -307,10 +399,34 @@ def material_is(material: str) -> str:
     return " AND o.material = ?"
 
 
+def drawn_against_a_day(include_derived: bool = False) -> str:
+    """Which values the by-test view draws, in the one wording both halves of it ask with.
+
+    The list of tests and the row of material tabs over it are two queries, and they asked two
+    different questions: the tabs counted every value an indicator holds, the list only the ones
+    it can draw a dot for. Three differences, none of them written down anywhere — a value from a
+    document carrying no date has no place on a year axis, a value the laboratory derived is not
+    drawn at all, and a form filed twice is counted once. Measured on 4 October 2026 over the
+    three archives here, with the template above the list saying *"Every tab here means 'click and
+    see this many'"*: the blood tab read 2048 over 1665 values, urine 1406 over 1220, and the
+    smallest archive's blood 156 over 129.
+
+    So it is one sentence, asked twice, rather than two sentences held together by care. A query
+    that takes it joins `documents` as `d` and `observations` as `o`.
+    """
+    return (f"o.indicator_id IS NOT NULL AND d.date IS NOT NULL AND {only_results()}"
+            f" AND d.primary_copy = 1{'' if include_derived else ' AND o.derived = 0'}")  # fmt: skip
+
+
 def indicator_timeline(connection: sqlite3.Connection, material: str | None = None, limit: int = 40,
-                       include_derived: bool = False) -> list[dict]:  # fmt: skip
-    """Per indicator: the days it was measured and the last value, as printed."""
-    conditions = f"o.indicator_id IS NOT NULL AND d.date IS NOT NULL AND {only_results()}"
+                       include_derived: bool = False, cap: int = MAX_LIMIT) -> list[dict]:  # fmt: skip
+    """Per indicator: the days it was measured and the last value, as printed.
+
+    cap is how many this caller may have at most, as it is for the values of one test: a tool
+    keeps the small one, and the page that prints how many tests there are asks through
+    `every_indicator` below.
+    """
+    conditions = drawn_against_a_day(include_derived)
     filters: list = []
     if material:
         conditions += material_is(material)
@@ -322,8 +438,7 @@ def indicator_timeline(connection: sqlite3.Connection, material: str | None = No
                    d.file_sha256, d.first_page, f.file_id
             FROM observations o JOIN documents d ON d.id = o.document_id
             JOIN files f ON f.sha256 = d.file_sha256 JOIN indicators i ON i.id = o.indicator_id
-            WHERE {conditions} {"" if include_derived else "AND o.derived = 0"}
-            {_filters(None, None, None, False)}
+            WHERE {conditions}
             ORDER BY o.indicator_id, d.date""",
         tuple(filters),
     ).fetchall()
@@ -354,15 +469,37 @@ def indicator_timeline(connection: sqlite3.Connection, material: str | None = No
         series.append({
             "indicator_id": item["indicator_id"], "label": item["label"], "points": item["points"],
             "count": len(item["points"]),
-            "materials": sorted(name for name in item["materials"]
-                                if name not in (NOT_A_SAMPLE, UNKNOWN_MATERIAL)),  # fmt: skip
+            "materials": sorted((name for name in item["materials"]
+                                 if name not in (NOT_A_SAMPLE, UNKNOWN_MATERIAL)), key=in_name_order),  # fmt: skip
             "first_date": item["points"][0]["date"], "last_date": last["date"],
             "last_value": last["value"] if of_one_material else None,
             "last_unit": last["unit"] if of_one_material else None,
             "last_comparator": last["comparator"] if of_one_material else None,
         })  # fmt: skip
-    series.sort(key=lambda item: (-item["count"], item["label"].casefold()))
-    return series[: within_limit(limit)]
+    # Commonest first, and where two have been measured as often, by the name a person reads
+    # them under. A casefold alone put every label beginning with і, ї, є, ґ or ё below every
+    # one beginning with я, which is the bottom of the list.
+    series.sort(key=lambda item: (-item["count"], in_name_order(item["label"])))
+    return series[: within_limit(limit, cap)]
+
+
+def every_indicator(connection: sqlite3.Connection, material: str | None = None) -> list[dict]:
+    """Every test of one material, not a page of them: what the "by test" view is made of.
+
+    It prints how many tests there are beside the ones it draws — "Showing 40 of 161 tests" —
+    so the whole list is what it has to be given, and how much that may be is decided here,
+    once, as it is for the whole history of one test.
+
+    The caller asked for a thousand and was handed two hundred, because an asked-for number is
+    held to MAX_LIMIT, which is the cap for an answer a model reads and not for a page its own
+    owner reads. The number printed above the list was then the length of the cut list, so it
+    could never exceed the cap and could never disagree out loud. Measured when this was written:
+    the largest material of the three archives here holds 161 tests, so the page is honest today
+    with thirty-nine to spare, and the link offering to show every test does show every test. At
+    201 it would say 200 and mean more, which is the seventh entry of the constitution, and the
+    comment over MAX_SERIES says in the same words why a page's cap is not a tool's.
+    """
+    return indicator_timeline(connection, material=material, limit=MAX_SERIES, cap=MAX_SERIES)
 
 
 def language_counts(connection: sqlite3.Connection) -> dict[str, int]:
@@ -373,23 +510,62 @@ def language_counts(connection: sqlite3.Connection) -> dict[str, int]:
     return {row["language"]: row["documents"] for row in rows}
 
 
-def indicators_matching(connection: sqlite3.Connection, words: str | None) -> list[dict]:
+def indicators_matching(connection: sqlite3.Connection, words: str | None,
+                        everyday_words_too: bool = False) -> list[dict]:  # fmt: skip
     """Indicators whose label or any of its printed spellings holds these words.
 
     This is what makes a question asked in one language find values printed in another: the
     indicator already gathers the spellings, and a search that knows about it searches them all.
+
+    `everyday_words_too` adds, where no name of any language held the words, the test an everyday
+    word stands for — "sugar", which no form prints, for the row a laboratory prints as Glucose.
+    `said` on a row carries the word that found it and is empty where the printed name itself did,
+    so a page can say which of the two happened rather than let a reader think they typed the
+    printed name. Only where nothing matched by name, so a question that already answers is never
+    widened and no answer this gave before can change.
+
+    It is off by default, and the default is the contract: the tools over the network promise that
+    matching is literal and per-language, and `searched_every_spelling_of` on one of their answers
+    would be untrue of a word that is nobody's spelling of anything. A model holding those tools
+    knows that sugar is glucose without being told. The pages of the dashboard are the doors a
+    person types into, and they are the ones that ask for this.
     """
     if not words or not words.strip():
         return []
     folded = fold(words)
+    groups = [(row["id"], row["label"], json.loads(row["names"]))
+              for row in connection.execute("SELECT id, label, names FROM indicators")]  # fmt: skip
     found = []
-    for row in connection.execute("SELECT id, label, names FROM indicators"):
-        names = json.loads(row["names"])
+    for identifier, label, names in groups:
         # A spelling inside the question counts only when it is a word of its own: "АТ" for blood
         # pressure sits inside "цистатин" and would drag every question into the wrong indicator.
-        if folded in fold(row["label"]) or any(folded in name or _stands_alone(name, folded) for name in names):
-            found.append({"id": row["id"], "label": row["label"], "names": names})
+        if folded in fold(label) or any(folded in name or _stands_alone(name, folded) for name in names):
+            found.append({"id": identifier, "label": label, "names": names, "said": ""})
+    if found or not everyday_words_too:
+        return found
+    # "sugar" is printed on no form anywhere, and a person looking for their own blood sugar typed
+    # it and was told the archive held nothing — over forty-four values of Glucose. See
+    # everyday_words.py for what may be in that table and what may not.
+    said = words.strip()
+    for printed in everyday_words.stands_for(said):
+        for identifier, label, names in groups:
+            if any(item["id"] == identifier for item in found):
+                continue
+            if printed in fold(label) or any(printed in name or _stands_alone(name, printed) for name in names):
+                found.append({"id": identifier, "label": label, "names": names, "said": said})
     return found
+
+
+def _the_words_asked_for(name: str | None) -> list[str]:
+    """The words of a question about a printed name, folded, in one place because two callers ask.
+
+    The list of values and the count of them, and a count whose words were cut differently from
+    the list's would say a total about another question. Folded before the words are cut out, for
+    the reason _match_of gives: an apostrophe is not a letter and is not a space either, so
+    "сер.об'ем ер." must come out as the words "сер", "обем" and "ер" rather than as "об" and
+    "ем" — four substrings ANDed together find more than the name a person typed.
+    """
+    return re.findall(r"[^\W_]+", fold(name), re.UNICODE)
 
 
 def _stands_alone(name: str, text: str) -> bool:
@@ -475,7 +651,7 @@ def values(connection: sqlite3.Connection, name: str | None = None, since: str |
     cap is how many this caller may have at most. A tool keeps the small one; the page of one
     test asks for the whole history, because it prints how many values there are beside them.
     """
-    words = [fold(word) for word in re.findall(r"[^\W_]+", name or "", re.UNICODE)]
+    words = _the_words_asked_for(name)
     if indicator:
         conditions, words = "o.indicator_id = ?", [indicator]
     elif words:
@@ -490,7 +666,7 @@ def values(connection: sqlite3.Connection, name: str | None = None, since: str |
     rows = connection.execute(
         f"""SELECT o.name, o.value, o.value_numeric, o.comparator, o.unit, o.reference, o.flag, o.value_role, o.derived,
                    o.kind, o.material, {MATERIAL_KEY} AS material_key, o.material_source, o.corrected, o.table_heading, o.column_heading, o.snippet, o.page, d.id AS document_id, d.date,
-                   d.date_precision, d.doc_type, d.provider, d.copy_group, d.primary_copy, f.file_id, o.indicator_id,
+                   d.date_precision, d.doc_type, d.provider, d.language, d.copy_group, d.primary_copy, f.file_id, o.indicator_id,
                    d.source_id, d.file_sha256, d.first_page, d.pages
             FROM observations o JOIN documents d ON d.id = o.document_id JOIN files f ON f.sha256 = d.file_sha256
             WHERE {conditions} {"" if include_derived else "AND o.derived = 0"}
@@ -550,7 +726,7 @@ def count_values(connection: sqlite3.Connection, indicator: str | None = None, m
     name alone not at all — and the answer said "these are the 50 earliest of 89" where 185 matched.
     """
     if name is not None or indicators:
-        words = [fold(word) for word in re.findall(r"[^\W_]+", name or "", re.UNICODE)]
+        words = _the_words_asked_for(name)
         by_name = " AND ".join("fold(o.name) LIKE ?" for _ in words)
         pieces = ([f"({by_name})"] if words else []) + (
             [f"o.indicator_id IN ({', '.join('?' for _ in indicators)})"] if indicators else [])
@@ -585,39 +761,66 @@ def printed_at_another_scale(connection: sqlite3.Connection, placing) -> dict[in
 
     The band moves by its own distance and not the value's: a form with the range printed and the
     number written in by hand has named two scales, not one.
+
+    A test here is every value of one indicator, one specimen and one unit, and the unit is the
+    one the charts read rather than the spelling a form happened to print.
     """
-    from epicrisis.rules.subjects import Series
-    from epicrisis.series import printed_range
+    from epicrisis.rules.subjects import Series, Value
+    from epicrisis.series import _join_equivalent, printed_range
+    from epicrisis.units import unit_key
 
     rules = [rule for rule in placing if rule.kind == "value-against-its-printed-range"]
     if not rules:
         return {}
+    # The same reading of a unit the chart makes, and for the same reason. Grouped by the printed
+    # spelling, one unit written in two alphabets — "мкмоль/л" on one form, "umol/L" on the next —
+    # was two series here and one history on the chart: each half held printed ranges standing at a
+    # single scale, so neither half could see that the test is printed at two, and the rows whose
+    # number and range disagree went out over the network as values outside their range after all.
+    # A unit named inside a printed range counts for the same reason, where the form printed no
+    # unit column of its own; whether it is read at all is the person's switch, not this list's.
+    # The spellings of one measure that only the archive's own numbers can join — per litre beside
+    # per microlitre — are joined by the chart's own function rather than by a second copy of it
+    # here, because a second copy is how the two came apart in the first place.
+    from_range = next((rule for rule in placing if rule.kind == "unit-from-the-printed-range"), None)
     rows = connection.execute(
         f"""SELECT o.rowid AS row_id, o.indicator_id, o.material, o.unit, o.value_numeric, o.reference
             FROM observations o WHERE o.indicator_id IS NOT NULL AND {only_results()} AND o.derived = 0"""
     ).fetchall()
-    series: dict[tuple, list] = {}
+    series: dict[tuple, dict[str, list[dict]]] = {}
+    # Folded once per spelling and not once per value: an archive holds a hundred and fifty
+    # spellings of a unit and tens of thousands of values, and folding each value's own took half
+    # again as long over forty thousand rows, on a function the list asks for every answer.
+    folded: dict[str | None, str] = {}
     for row in rows:
-        series.setdefault((row["indicator_id"], row["material"], (row["unit"] or "").strip()), []).append(row)
+        item = dict(row)
+        spelling = item["unit"]
+        if spelling not in folded:
+            folded[spelling] = unit_key(spelling)
+        key = folded[spelling]
+        if not key and from_range:
+            key = from_range.check.run(Value(item=item), from_range.settings) or ""
+        series.setdefault((item["indicator_id"], item["material"]), {}).setdefault(key, []).append(item)
     moves: dict[int, float] = {}
-    for items in series.values():
-        subject = Series(numbers=[item["value_numeric"] for item in items],
-                         bands=[printed_range(item["reference"]) for item in items])  # fmt: skip
-        for rule in rules:
-            powers = rule.check.run(subject, rule.settings)
-            if not any(value or band for value, band in powers):
-                continue
-            for item, (value, band) in zip(items, powers, strict=True):
-                if value or band:
-                    moves[item["row_id"]] = 10.0 ** (value - band)
-            break
+    for by_unit in series.values():
+        for items in _join_equivalent(by_unit).values():
+            subject = Series(numbers=[item["value_numeric"] for item in items],
+                             bands=[printed_range(item["reference"]) for item in items])  # fmt: skip
+            for rule in rules:
+                powers = rule.check.run(subject, rule.settings)
+                if not any(value or band for value, band in powers):
+                    continue
+                for item, (value, band) in zip(items, powers, strict=True):
+                    if value or band:
+                        moves[item["row_id"]] = 10.0 ** (value - band)
+                break
     return moves
 
 
 def flagged_values(connection: sqlite3.Connection, since: str | None = None, until: str | None = None,
                    flag: str | None = None, indicator: str | None = None, include_derived: bool = False,
                    all_copies: bool = False, compare_with_printed_range: bool = False, limit: int = 100,
-                   offset: int = 0, placing=()) -> tuple[list[dict], dict]:  # fmt: skip
+                   offset: int = 0, placing=()) -> tuple[list[dict], dict, int]:  # fmt: skip
     """Values a laboratory itself marked, for looking over a whole period at once.
 
     The mark is the one printed on the form — H, L, an asterisk, an arrow. The archive never adds
@@ -677,8 +880,13 @@ def flagged_values(connection: sqlite3.Connection, since: str | None = None, unt
             # brought to the range before they are compared. Nothing is stored and nothing shown
             # changes: only the comparison is made on one scale instead of two.
             scale = moved.get(row["row_id"])
+            # The unit the form printed goes with them, for the one line it settles: a form that
+            # printed both bands of a test on one line, each with its own unit, printed one of
+            # them for this value and the unit says which. Without it such a line is not read at
+            # all and the value lands in range_not_read, which is the honest answer where the
+            # form printed no unit either.
             verdict = outside(row["value_numeric"] * scale if scale else row["value_numeric"],
-                              row["reference"], row["comparator"])  # fmt: skip
+                              row["reference"], row["comparator"], row["unit"])  # fmt: skip
             if scale:
                 item["read_on_the_printed_scale"] = True
             counts["range_not_read" if verdict is None else "outside" if verdict else "inside"] += 1
@@ -687,7 +895,12 @@ def flagged_values(connection: sqlite3.Connection, since: str | None = None, unt
             item["outside_printed_range"] = True
         items.append(item)
     start = max(0, int(offset))
-    return items[start : start + within_limit(limit)], counts
+    # How many there are in all, which this function has in its hands and used to throw away: it
+    # reads every matching row and then cuts a page out of them, so the number costs nothing. Six
+    # values came back to a caller that had asked for a hundred, under a line saying the next page
+    # begins at six — and a model reading that asks the same question again with a larger limit.
+    # That was one of two repeated calls in a run of ten. See _page in mcp_server.
+    return items[start : start + within_limit(limit)], counts, len(items)
 
 
 PARTS = ("values", "sections", "text", "diagnoses", "medications", "unreadable", "to_check", "copies")
@@ -811,7 +1024,8 @@ def to_check(connection: sqlite3.Connection, code: str | None = None, limit: int
 def _document_row(connection: sqlite3.Connection, document_id: int) -> dict | None:
     row = connection.execute(
         """SELECT d.id AS document_id, d.date, d.date_precision, d.date_printed, d.date_by_hand, d.date_flags, d.doc_type,
-                  d.language, d.title, d.provider, d.department, d.pages, d.transcribed, d.model, d.unreadable_count,
+                  d.language, d.title, d.provider, d.department, d.person_printed_as_the_institution,
+                  d.pages, d.transcribed, d.model, d.unreadable_count,
                   d.finding_count, d.copy_group, d.primary_copy, f.file_id, d.source_id, d.file_sha256,
                   (SELECT count(*) FROM observations o WHERE o.document_id = d.id) AS value_count
            FROM documents d JOIN files f ON f.sha256 = d.file_sha256 WHERE d.id = ?""",
@@ -856,13 +1070,19 @@ def _copies(connection: sqlite3.Connection, copy_group: int | None, document_id:
 
 
 def _snippet(connection: sqlite3.Connection, document_id: int, query: str) -> str | None:
-    """A piece of the document's own text around the query, taken from the original wording."""
+    """A piece of the document's own text around the query, taken from the original wording.
+
+    The words are cut out of the folded question, for the reason _match_of gives: a name typed
+    with an apostrophe is one word and not two, and cut the other way round both halves of "Аб'ва"
+    are two letters long and thrown away by the length test below — so the piece shown was the
+    opening of the document rather than the place the name stands.
+    """
     texts = [r["text"] for r in connection.execute("SELECT text FROM page_texts WHERE document_id = ? ORDER BY page", (document_id,))]
-    words = [word for word in re.findall(r"[^\W_]+", query, re.UNICODE) if len(word) > 2]
+    words = [word for word in re.findall(r"[^\W_]+", fold(query), re.UNICODE) if len(word) > 2]
     for text in texts:
         folded, offsets = fold_with_offsets(text)
         for word in words:
-            found = folded.find(fold(word))
+            found = folded.find(word)
             if found != -1:
                 start = max(0, offsets[found] - SNIPPET_CHARS // 3)
                 return ("…" if start else "") + text[start : start + SNIPPET_CHARS].strip() + "…"
@@ -877,7 +1097,8 @@ def _without(doc_type: str | None, with_paperwork: bool) -> str:
     return " AND d.doc_type NOT IN ({})".format(", ".join(f"'{kind}'" for kind in kinds))
 
 
-def _filters(since: str | None, until: str | None, doc_type: str | None, all_copies: bool) -> str:
+def _filters(since: str | None, until: str | None, doc_type: str | None, all_copies: bool,
+             by: tuple[str | None, str | None] = (None, None)) -> str:  # fmt: skip
     parts = []
     if since:
         parts.append("AND d.date >= ?")
@@ -885,13 +1106,390 @@ def _filters(since: str | None, until: str | None, doc_type: str | None, all_cop
         parts.append("AND d.date <= ?")
     if doc_type:
         parts.append("AND d.doc_type = ?")
+    # Whose work this is: the institution that made the document, or the person who saw, performed
+    # or signed. As printed, letter for letter — one doctor is written five ways across an archive
+    # and this program does not decide that two spellings are one person.
+    for column, wanted in (("provider", by[0]), ("doctor", by[1])):
+        if wanted:
+            parts.append(f"AND d.{column} IN ({', '.join('?' * len(_spellings(wanted)))})")
     if not all_copies:
         parts.append("AND d.primary_copy = 1")
     return " ".join(parts)
 
 
-def _filter_values(since: str | None, until: str | None, doc_type: str | None) -> tuple:
-    return tuple(value for value in (since, until, doc_type) if value)
+def _filter_values(since: str | None, until: str | None, doc_type: str | None,
+                   by: tuple[str | None, str | None] = (None, None)) -> tuple:  # fmt: skip
+    named = [name for wanted in by if wanted for name in _spellings(wanted)]
+    return (*(value for value in (since, until, doc_type) if value), *named)
+
+
+def _spellings(wanted) -> list[str]:
+    """A name as asked for, or every spelling it stands for where a person joined several."""
+    return list(wanted) if isinstance(wanted, (list, tuple, set)) else [wanted]
+
+
+# Written on the forms of five countries, and all of it means one of two things. A value is read
+# by what it starts with, because a form writes "позитивна", "поз(+)", "pos." and "+" for one
+# answer. Anything that is neither is not an answer and is not compared with one.
+RH_POSITIVE = ("поз", "pos", "θετ", "+")
+RH_NEGATIVE = ("нег", "neg", "αρν", "-")
+#: The letter of a blood group, as the alphabets and the typists of five countries write it: the
+#: digit nought and the letters O of two alphabets are one group, and so are А and A, В and B.
+ABO_LETTERS = {"0": "O", "o": "O", "о": "O", "a": "A", "а": "A", "b": "B", "в": "B"}
+
+
+def _rh_of(value: str | None) -> str | None:
+    """Positive or negative, where the value says one of them plainly. Nothing where it does not."""
+    said = fold(value).strip().lstrip("(").strip()
+    for answer, words in (("positive", RH_POSITIVE), ("negative", RH_NEGATIVE)):
+        if any(said.startswith(word) for word in words):
+            return answer
+    return None
+
+
+def _abo_of(value: str | None) -> str | None:
+    """The group a value names — O, A, B or AB — however the form wrote its letter."""
+    letters = [ABO_LETTERS[ch] for ch in fold(value) if ch in ABO_LETTERS]
+    if not letters:
+        return None
+    if letters[:2] == ["A", "B"]:
+        return "AB"
+    return letters[0]
+
+
+#: What the line is about, read from the name the form printed. Without this the reader of a
+#: group letter was handed the Rh lines too, and "негативна" gave it an А and a В and it answered
+#: "AB" — a page crying wolf about a blood group, on the one line where it must not.
+GROUP_NAMES = ("група крові", "группа крови", "blood group", "blood type", "grupo sanguíneo",
+               "grupo sanguineo", "ομάδα αίματος", "ομαδα αιματος")  # fmt: skip
+#: Five languages, as the group above is, and two letters long in three of them — which is why no
+#: reader of these may look inside a printed name for them. Spanish and Greek forms write the Latin
+#: "Rh" as well, so this list is shorter than its neighbour and not because a language is missing.
+RH_NAMES = ("rh", "резус", "rhesus")
+
+#: How many answers to one of these questions the first tab of the card shows. It counts answers
+#: and never the rows they were read from: an archive carries one blood group on every form that
+#: ever asked for one, and counting rows meant the first fact on the page spent the whole budget.
+AT_MOST = 8
+
+#: The words a form prints over a height. A height belongs with the blood group and not with the
+#: measurements that make a series: it is about the person rather than about the day they came in.
+HEIGHT_NAMES = ("зріст", "ріст", "рост", "height", "talla", "altura", "ύψος")
+
+
+def _is_height(name: str | None) -> bool:
+    """Whether a printed name is a height, read from the start of the name and never from inside it.
+
+    The substring match the blood group uses cannot be used here: "рост" stands inside "прирост",
+    which a form prints of a change over time and not of the person, and the card would then carry
+    a line that answers nothing about them.
+    """
+    folded = fold(name).strip().lstrip("(").strip()
+    return any(folded.startswith(fold(word)) for word in HEIGHT_NAMES)
+
+
+def _is_rh(name: str | None) -> bool:
+    """Whether a printed name is the Rh of the person, and not a word with those letters inside it.
+
+    "Rh" is two letters, and read as a substring it stood inside "Rheumatoid factor", "Arrhythmia",
+    "Cirrhosis" and "Diarrhea". The card printed a rheumatoid factor on the personal tab as "Rh
+    negative", and the tab that names disagreements then put it against the real Rh and said the
+    documents fell out about the resus factor of the person — a page crying wolf, invented out of
+    two lines that never disagreed about anything.
+
+    The start of the name is not enough by itself here, as it is for a height: "Rheumatoid" starts
+    with "rh". So the word has to end where it ends — what follows must not be another letter, and
+    a form writing "Rh-фактор", "Rh (D)", "Rh+" or "Резус-фактор" is read, while one writing
+    "Rheumatoid" is not.
+    """
+    folded = fold(name).strip().lstrip("(").strip()
+    for word in RH_NAMES:
+        said = fold(word)
+        if folded.startswith(said) and not folded[len(said):len(said) + 1].isalpha():
+            return True
+    return False
+
+
+def _is_group(name: str | None) -> bool:
+    """Whether a printed name is the blood group of the person.
+
+    Read as a substring, which is safe here and is not for its neighbour: each of GROUP_NAMES is a
+    phrase of two words, so none of them stands inside a single word a form prints, and a form that
+    writes "Група крові (АВ0)" or "Blood group / Rh" is read by looking inside its own line.
+    """
+    return _about(name, GROUP_NAMES)
+
+
+def _about(name: str | None, words) -> bool:
+    folded = fold(name)
+    return any(fold(word) in folded for word in words)
+
+
+def _where_they_disagree(blood: list[dict]) -> list[dict]:
+    """Documents of one archive that print different answers to one question about the person.
+
+    Said as a disagreement and never settled: two forms printing two blood groups is one of them
+    being wrong, and which is not a thing this program can know. What it can do is put the two
+    lines side by side with the date and the page each came from.
+
+    A difference of spelling is not a disagreement. "0 (І)" and "O (І)" are the same group written
+    with a nought and with a letter, and a page that called those a conflict would cry wolf on the
+    one line where it must not.
+    """
+    found = []
+    for about, reading, is_it in (("blood group", _abo_of, _is_group), ("Rh", _rh_of, _is_rh)):
+        lines = [one for one in blood if is_it(one["name"]) and reading(one["value"])]
+        answers = {reading(one["value"]) for one in lines}
+        if len(answers) > 1:
+            found.append({"about": about, "answers": sorted(answers),
+                          "lines": _one_page_of_each(lines, reading)})  # fmt: skip
+    return found
+
+
+def _one_page_of_each(lines: list[dict], reading) -> list[dict]:
+    """The newest page printing each answer first, and the pages after those up to the limit.
+
+    Every answer is shown before any answer is shown twice, which is what a page naming a
+    disagreement owes the reader: a limit that falls on one side of it leaves the page saying two
+    forms differ and showing only one of them. That is what happened while the limit was taken off
+    the rows before they reached here — nine forms printing one answer and one printing the other,
+    and the one went over the edge with nothing saying so.
+    """
+    newest: dict = {}
+    for one in lines:
+        newest.setdefault(reading(one["value"]), one)
+    shown = list(newest.values())
+    after = [one for one in lines if not any(one is already for already in shown)]
+    return shown + after[:max(0, AT_MOST - len(shown))]
+
+
+def patient_card(connection: sqlite3.Connection) -> dict:
+    """What the documents of this archive print about the person, rather than about one day.
+
+    Diagnoses, medications, and the handful of facts a form states about the person themselves —
+    the sex, the date of birth, the blood group, the Rh and the height — each as printed, grouped
+    by the printed words and counted, with the newest document that carries it. The page shows
+    them a tab apart, which is why they come back a key apart rather than in one list.
+
+    Nothing here is a judgement: a medication
+    printed in 2019 is a medication printed in 2019, and whether it is still taken is not a thing
+    a program can read off a page. The page says so, and the newest date is there for a person to
+    judge by.
+
+    Newest first, and that is the whole order. It used to be by how many documents carried a line,
+    with the date only breaking a tie, and the owner of an archive read the top of his medications
+    and asked why they stopped in 2014: a drug prescribed to him this year stood on one document,
+    under one prescribed in 1992 that had been copied into four. On a page whose question is what
+    this person is on, the count is a remark and the date is the answer. Both are printed; only
+    their order changed.
+    """
+    def roll(table: str) -> list[dict]:
+        rows = connection.execute(
+            f"""SELECT t.text AS text, count(*) AS documents, max(d.date) AS last_date, min(d.date) AS first_date,
+                       (SELECT d2.id FROM {table} t2 JOIN documents d2 ON d2.id = t2.document_id
+                        WHERE t2.text = t.text AND d2.primary_copy = 1
+                        ORDER BY d2.date IS NULL, d2.date DESC LIMIT 1) AS newest
+                FROM {table} t JOIN documents d ON d.id = t.document_id
+                WHERE d.primary_copy = 1 AND trim(t.text) != ''
+                GROUP BY t.text ORDER BY max(d.date) IS NULL, max(d.date) DESC, count(*) DESC"""
+        ).fetchall()
+        return [dict(row, **_where(connection, row["newest"])) for row in rows]
+
+    blood = connection.execute(
+        """SELECT o.name AS name, o.value AS value, o.unit AS unit, d.date AS date, d.id AS newest
+           FROM observations o JOIN documents d ON d.id = o.document_id
+           WHERE d.primary_copy = 1 ORDER BY d.date IS NULL, d.date DESC"""
+    ).fetchall()
+    # Two readings and not one list of words: a blood group is a phrase and is looked for inside
+    # the printed line, an Rh is two letters and has to end where it ends. Asked as one substring
+    # list, "rh" picked up a rheumatoid factor, an arrhythmia, a cirrhosis and a diarrhoea, and the
+    # card then printed one of them as this person's Rh.
+    # Uncut here, and cut by the tab that shows them. These are one row per document, and the
+    # limit used to be taken off them: one answer printed on nine forms spent the whole of it, and
+    # the fact printed beside it — the Rh under the blood group — fell off the first tab and out of
+    # the disagreements with it, where neither the page nor anything else said a word about it.
+    about_the_person = [dict(row, **_where(connection, row["newest"])) for row in blood
+                        if _is_group(row["name"]) or _is_rh(row["name"])]  # fmt: skip
+    height_lines = [dict(row, **_where(connection, row["newest"])) for row in blood
+                    if _is_height(row["name"])]  # fmt: skip
+    # Read once and used twice. Sex and the date of birth were read only to be compared, so the
+    # two facts a form states most plainly about a person could be seen on the card only when the
+    # documents fell out about them; reading them again for the personal tab would be a second
+    # pass over every page text of the archive for the same two answers.
+    sex, births = _sex_said(connection), _births_said(connection)
+    return {"diagnoses": roll("diagnoses"), "medications": roll("medications"),
+            "blood": about_the_person,
+            "personal": _about_the_person(sex, births, about_the_person, height_lines),
+            "conflicts": (_where_they_disagree(about_the_person) + _sex_disagrees(sex)
+                          + _births_disagree(births))}  # fmt: skip
+
+
+def _about_the_person(sex: dict, births: dict, blood: list[dict], height: list[dict]) -> list[dict]:
+    """The few lines a form states about the person rather than about the day they came in.
+
+    Every answer the documents state, not one of them chosen: where two pages print two blood
+    groups both stand here, because choosing between them is the thing this program must not do.
+    The tab that names them as a disagreement is the fourth one, and it says so there.
+
+    A value stands once however many pages carry it, under the newest of them, which is the page
+    a person opens to check it. The limit is on those values and not on the rows they were read
+    from, and that is the whole of it: it used to be taken off the rows, one per document, before
+    anything had been folded together, so a single blood group printed on nine forms used the lot
+    and the Rh printed beside it on the same nine never reached the tab. Nothing said it had been
+    left out, which is the part that makes it a defect rather than a short page — and the limit is
+    per fact, so a long run of one of them can no longer crowd out another.
+    """
+    lines = [{"about": "Sex", **one} for one in sex.values()]
+    lines += [{"about": "Date of birth", **one} for one in births.values()]
+    for named, rows in (("Blood group", [one for one in blood if _is_group(one["name"])]),
+                        ("Rh", [one for one in blood if _is_rh(one["name"])]),
+                        ("Height", height)):  # fmt: skip
+        seen: dict[str, dict] = {}
+        for one in rows:
+            seen.setdefault(fold(one["value"]), {"about": named, **one})
+        lines += list(seen.values())[:AT_MOST]
+    # The form's own word for the fact, where it is not the word this page uses. A person checking
+    # a line against the page has to be able to find it there, and "Blood group" is not what is
+    # printed on a Ukrainian form.
+    for line in lines:
+        line["printed"] = line["name"] if fold(line["name"]) != fold(line["about"]) else None
+    return lines
+
+
+def _births_said(connection: sqlite3.Connection) -> dict:
+    """Every date of birth the pages of this archive print, under the newest page that prints it."""
+    from epicrisis.about_the_person import birth_dates_printed
+
+    said: dict = {}
+    for row in connection.execute(
+        """SELECT p.text AS text, d.language AS language, d.id AS document, d.date AS date
+           FROM page_texts p JOIN documents d ON d.id = p.document_id WHERE d.primary_copy = 1
+           ORDER BY d.date IS NULL, d.date DESC"""
+    ):
+        for printed in birth_dates_printed(row["text"], row["language"]):
+            said.setdefault(printed, {"name": "Date of birth", "value": printed.isoformat(), "unit": None,
+                                      "date": row["date"], **_where(connection, row["document"])})  # fmt: skip
+    return said
+
+
+def _births_disagree(said: dict) -> list[dict]:
+    """Where the pages of one archive print two dates of birth: one of them is another person's.
+
+    A year printed alone is not a disagreement with the day of that same year — a form that prints
+    "1975" and one that prints "06.12.1975" say the same thing with different care.
+    """
+    from epicrisis.about_the_person import dates_disagree
+
+    if not dates_disagree(set(said)):
+        return []
+    return [{"about": "date of birth", "answers": sorted(one["value"] for one in said.values()),
+             "lines": list(said.values())}]  # fmt: skip
+
+
+def _sex_said(connection: sqlite3.Connection) -> dict[str, dict]:
+    """Which sexes the pages of this archive state. Read from a labelled field and nowhere else.
+
+    Only the words the forms of five countries use for an answer count as one: a form printing
+    "Ч/Ж" against an empty box offers two choices and states nothing, and a page that read that as
+    an answer would cry wolf on every archive holding such a form.
+    """
+    from epicrisis.about_the_person import sex_as_printed
+
+    said: dict[str, dict] = {}
+    for row in connection.execute(
+        """SELECT p.text AS text, d.id AS document, d.date AS date FROM page_texts p
+           JOIN documents d ON d.id = p.document_id WHERE d.primary_copy = 1
+           ORDER BY d.date IS NULL, d.date DESC"""
+    ):
+        for answer in sex_as_printed(row["text"]):
+            said.setdefault(answer, {"name": "Sex", "value": answer, "unit": None,
+                                     "date": row["date"], **_where(connection, row["document"])})  # fmt: skip
+    return said
+
+
+def _sex_disagrees(said: dict[str, dict]) -> list[dict]:
+    """Where the pages of one archive state two sexes. One of the two is not this person's."""
+    if len(said) < 2:
+        return []
+    return [{"about": "sex", "answers": sorted(said), "lines": list(said.values())}]
+
+
+def _where(connection: sqlite3.Connection, document_id: int | None) -> dict:
+    """Enough of a document to make a link to its card: the file it is in and its first page."""
+    if document_id is None:
+        return {"source_id": None, "file_sha256": None, "first_page": None}
+    row = connection.execute(
+        "SELECT source_id, file_sha256, first_page FROM documents WHERE id = ?", (document_id,)
+    ).fetchone()
+    return dict(row) if row else {"source_id": None, "file_sha256": None, "first_page": None}
+
+
+def who_made_them(connection: sqlite3.Connection, groups: list | None = None) -> list[dict]:
+    """The institutions and doctors read into those two fields of this archive, with how many each.
+
+    **It said "every institution and doctor named on the documents of this archive", and that is
+    not true.** A name reaches this list by having been read into the provider or the doctor field
+    of a document; a surname printed inside the document's own text and nowhere else never arrives
+    here, and nothing in this query can find it. Measured on the archive it was read on: the doctor
+    field is filled on 20 of its 414 documents, and 38 documents carry a labelled surname in their
+    transcribed text — 20 distinct names — that is in no field. The owner looked on the page this
+    feeds for two doctors he had seen, by their surnames, did not find either, and concluded the
+    archive did not hold them. See how_many_name_them, which is the count that says so.
+
+    As printed and nothing else. One doctor is written "Нетудихата І.В", "Нетудихата І. В." and
+    "уролог Нетудихата" across one archive, and joining those is the same question as joining the
+    printed names of one test — a person's to answer, not a program's to guess. Where a document
+    names an institution and a person both, it stands under each of them.
+    """
+    rows = connection.execute(
+        """SELECT provider, doctor, count(*) AS documents, min(date) AS first_date, max(date) AS last_date
+           FROM documents d WHERE primary_copy = 1 AND (provider IS NOT NULL OR doctor IS NOT NULL)
+           GROUP BY provider, doctor"""
+    ).fetchall()
+    together: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        for whose, name in (("institution", row["provider"]), ("doctor", row["doctor"])):
+            if not name:
+                continue
+            # Under the name a person chose for them, where they said two spellings are one.
+            shown = people.label_of(groups, whose, name) if groups else name
+            found = together.setdefault((whose, shown), {"what": whose, "name": shown, "documents": 0,
+                                                         "first_date": None, "last_date": None,
+                                                         "spellings": set()})  # fmt: skip
+            found["documents"] += row["documents"]
+            found["spellings"].add(name)
+            for edge, which in (("first_date", min), ("last_date", max)):
+                dates = [date for date in (found[edge], row[edge]) if date]
+                found[edge] = which(dates) if dates else None
+    for one in together.values():
+        one["spellings"] = sorted(one["spellings"], key=in_name_order)
+    # On the most documents first, and then by the name itself — ordered by its bare code points,
+    # a doctor whose surname begins with І stood under every doctor whose surname begins with Я.
+    return sorted(together.values(), key=lambda one: (-one["documents"], in_name_order(one["name"])))
+
+
+def how_many_name_them(connection: sqlite3.Connection) -> dict[str, int]:
+    """How many documents this archive holds, and on how many of them each of the two was read.
+
+    The denominator the page of doctors and clinics needs in order to say what it is a page of.
+    Without it that page carried a promise — every institution and every doctor — which it cannot
+    keep and which was read as one: a name that was never read into either field is not on it, and
+    a person who does not find a doctor there concludes the archive does not hold them.
+
+    Counted over the primary copy of each document, which is what every other count of "the
+    documents of this archive" means (`overview`) and what `who_made_them` gathers over. The two
+    numbers then stand on one page without disagreeing, which §7 asks of them. A field that is
+    there and empty counts as none, because `who_made_them` skips a falsy name too.
+    """
+    row = connection.execute(
+        """SELECT count(*) AS documents,
+                  sum(coalesce(provider, '') <> '') AS institution,
+                  sum(coalesce(doctor, '') <> '') AS doctor
+           FROM documents WHERE primary_copy = 1"""
+    ).fetchone()
+    # sum() over no rows is null, not nought, and an archive whose index holds no documents yet is
+    # the one this page is first opened on.
+    return {which: int(row[which] or 0) for which in ("documents", "institution", "doctor")}
 
 
 def within_limit(limit: int, cap: int = MAX_LIMIT) -> int:
@@ -996,18 +1594,23 @@ def unreadable_parts(connection: sqlite3.Connection) -> dict[tuple[str, int], li
     return found
 
 
-def materials_present(connection: sqlite3.Connection) -> dict[str, int]:
+def materials_present(connection: sqlite3.Connection, include_derived: bool = False) -> dict[str, int]:
     """Every material this archive printed, and how many values it has, with the two absences apart.
 
     See MATERIAL_KEY: a value with no material is one of two things, and calling both of them
     "not said" put seven hundred measurements that are of no sample — a refraction, the width of a
     kidney, a blood pressure — in front of a hundred lab values that lost their label on a form
     holding two specimens. The first is not work; the second is.
+
+    These are the numbers on the tabs over the by-test view, so they count what pressing a tab
+    will draw and nothing else: `drawn_against_a_day` is that condition, written once and asked
+    here and by `indicator_timeline`, which is the list underneath.
     """
     return {
         row["material_key"]: row["n"]
         for row in connection.execute(
-            f"SELECT {MATERIAL_KEY} AS material_key, count(*) AS n FROM observations o"
-            f" WHERE o.indicator_id IS NOT NULL AND {only_results('o')} GROUP BY material_key"
+            f"SELECT {MATERIAL_KEY} AS material_key, count(*) AS n"
+            f" FROM observations o JOIN documents d ON d.id = o.document_id"
+            f" WHERE {drawn_against_a_day(include_derived)} GROUP BY material_key"
         )
     }

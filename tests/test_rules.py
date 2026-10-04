@@ -170,21 +170,48 @@ def test_a_switch_belongs_to_a_rule_and_survives_rules_coming_and_going(tmp_path
 
 
 def test_a_rule_that_costs_a_model_s_reading_is_not_stored_on_one_click(tmp_path, monkeypatch):
-    """A switch that means hours of reading, and money on an API key, is asked about first."""
+    """A switch that means hours of reading, and money on an API key, is asked about first.
+
+    Registered the way the program registers one: through the decorator, at a step whose record in
+    the table says it hands a rule one document and that its switch is asked about first. What
+    stood here wrote a kind straight into KINDS, which went round the decorator and so round every
+    check it makes — and the step it named, `extract`, is one the decorator refuses, because
+    nothing there assembles a subject to hand a rule. The guard was green in the suite and
+    unreachable in the program, which is the shape this project has now found four times.
+
+    What is said of the table here is the one word a contributor writes the day the extract step
+    learns to hand a rule a document: everything else — that a rule may stand there, that the page
+    holds its switch back, what it says it will cost — follows from the same record.
+    """
+    from dataclasses import replace
+
     from fastapi.testclient import TestClient
 
     from epicrisis import settings
+    from epicrisis.rules import kinds
+    from epicrisis.rules.subjects import ONE_DOCUMENT
     from epicrisis.web.app import create_app
 
     data = tmp_path / "data"
     (data / rules.FOLDER_NAME).mkdir(parents=True)
-    KINDS["for-the-tests"] = Kind(name="for-the-tests", does="marks", at="extract", looks_at="one document",
-                                  about="only for the tests", settings={})  # fmt: skip
+    monkeypatch.setitem(kinds.STEPS, kinds.EXTRACT,
+                        replace(kinds.STEPS[kinds.EXTRACT], serves=frozenset({ONE_DOCUMENT})))  # fmt: skip
+    at, served, costs, costly = kinds.from_the_table()
+    for name, now in (("AT", at), ("SERVED", served), ("COSTS", costs), ("COSTLY", costly)):
+        monkeypatch.setattr(kinds, name, now)
+    assert kinds.COSTLY == (kinds.EXTRACT,)
+
+    @kinds.kind("for-the-tests", does=kinds.MARKS, at=kinds.EXTRACT, looks_at=ONE_DOCUMENT,
+                about="only for the tests")  # fmt: skip
+    def _only_for_the_tests(document, settings_of_the_rule):
+        return []
+
     write(data / rules.FOLDER_NAME, "costly.md",
           GOOD.replace("a-test-rule", "costly").replace('at = "validate"', 'at = "extract"')
               .replace("[settings]\nhow_far = 2.5\nwords = [\"one\", \"two\"]\n", ""))  # fmt: skip
     loaded = rules.load(data_dir=data, shipped_dir=tmp_path / "none")
     assert not loaded.problems and loaded.get("costly").costly
+    assert "read again by a model" in loaded.get("costly").cost
 
     client = TestClient(create_app(data), base_url="http://127.0.0.1:8050")
     head = {"Sec-Fetch-Site": "same-origin"}
@@ -302,6 +329,69 @@ def test_a_scale_is_not_reported_as_an_excursion():
     # against their own range, and are compared where they stand.
     assert sorted(round(factor, 6) for factor in moves.values()) == [0.001, 1.0, 1.0]
     assert not printed_at_another_scale(connection, [])  # no rules, nothing moves
+
+
+def _one_test_printed(rows: list[tuple]):
+    """An index holding one test and nothing else: a row is (printed unit, number, printed range)."""
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("""CREATE TABLE observations (indicator_id TEXT, material TEXT, unit TEXT,
+                          value_numeric REAL, reference TEXT, value_role TEXT, derived INTEGER)""")  # fmt: skip
+    connection.executemany(
+        "INSERT INTO observations VALUES ('thing', 'blood', ?, ?, ?, 'result', 0)", rows
+    )
+    return connection
+
+
+def test_the_list_gathers_a_test_the_way_a_chart_gathers_it():
+    """One unit written in two alphabets is one test, in this list as on the chart.
+
+    Grouped by the spelling a form printed, "мкмоль/л" and "umol/L" were two series here and one
+    history on the chart. Each half held ranges standing at a single scale, so neither half could
+    see that the test is printed at two, and the row whose number and range disagree was reported
+    as a value outside its range — which is what this whole function exists to prevent.
+    """
+    from epicrisis.query import printed_at_another_scale
+    from epicrisis.reference import outside
+
+    printed = [("мкмоль/л", 0.6, "0,2-1,0"), ("мкмоль/л", 0.7, "0,2-1,0"),
+               ("мкмоль/л", 600.0, "0,2-1,0"),  # the range printed at one scale, the number at the other
+               ("umol/L", 650.0, "200 - 1000"), ("umol/L", 700.0, "200 - 1000")]  # fmt: skip
+    connection = _one_test_printed(printed)
+    moves = printed_at_another_scale(connection, [rules.load().get("two-scales-in-one-test")])
+
+    # Judged where it stands, that row reads as an excursion of three thousandfold; read on the
+    # scale its own range is printed at, it is an ordinary value in the middle of the range.
+    assert outside(600.0, "0,2-1,0") is True
+    assert round(moves[3], 6) == 0.001
+    assert outside(600.0 * moves[3], "0,2-1,0") is False
+
+
+def test_a_unit_named_only_in_a_printed_range_still_gathers_the_test():
+    """The unit a range names is the unit here too, or half the test is a series of its own.
+
+    The forms this archive is full of print no unit column at all and name the unit inside the
+    range beside the value. Read as having no unit, those values stood apart from the ones whose
+    form printed a column, and the two scales of one test were again invisible to this list.
+    """
+    from epicrisis.query import printed_at_another_scale
+    from epicrisis.reference import outside
+
+    printed = [("мкмоль/л", 0.6, "0,2-1,0"), ("мкмоль/л", 0.7, "0,2-1,0"),
+               ("мкмоль/л", 600.0, "0,2-1,0"),  # the range printed at one scale, the number at the other
+               (None, 650.0, "200 - 1000 мкмоль/л"), (None, 700.0, "200 - 1000 мкмоль/л")]  # fmt: skip
+    connection = _one_test_printed(printed)
+    loaded = rules.load()
+    placing = [loaded.get("two-scales-in-one-test"), loaded.get("unit_from_range")]
+    moves = printed_at_another_scale(connection, placing)
+
+    assert round(moves[3], 6) == 0.001
+    assert outside(600.0 * moves[3], "0,2-1,0") is False
+    # And it is the person's switch that decides it: with that rule off, the unit column is all
+    # this list has, which is the same answer the chart gives when the rule is off.
+    assert not printed_at_another_scale(connection, placing[:1])
 
 
 def test_a_person_can_say_a_finding_was_real_or_noise(archive_index):  # noqa: F811
@@ -566,7 +656,7 @@ def test_what_the_tools_answer_over_the_network_carries_no_path_into_the_archive
     from epicrisis.query import open_index
 
     data_dir, _source, _labs = archive_index
-    with open_index(data_dir) as connection:
+    with open_index(data_dir, None) as connection:
         rows = query.timeline(connection, limit=5) + query.search(connection, "a", limit=5)
     assert rows, "the fixture archive should hold documents"
     for row in rows:
@@ -637,6 +727,32 @@ def test_what_counts_as_a_copy_is_four_numbers_a_person_can_see():
     assert all(copy.check.means.get(name) for name in copy.settings)
 
 
+def test_a_switch_the_page_asks_about_first_is_one_a_rule_can_actually_stand_at():
+    """Three lists answered one question — may a kind of check stand at this step — and two of
+    them disagreed.
+
+    One named `extract` as the step whose switch has to be confirmed before it takes effect; the
+    other said nothing at `extract` hands a rule anything, and the decorator refused every kind
+    written there. Of twenty-six kinds registered, none was at `extract` or `index`; of the
+    twenty-six rules that ship, none was costly. So the confirmation on the settings page could
+    not be reached by any rule this program would accept, the cost of those two steps was shown
+    nowhere, and rules/README.md offered the mechanism to whoever writes the first model-using
+    rule as a thing that works.
+
+    All of it now comes off one record per step, and this asserts that it still does: a step whose
+    switch is asked about first is a step a rule can stand at, and nothing about the steps is
+    written down anywhere but the table.
+    """
+    from epicrisis.rules import kinds
+
+    for step in kinds.COSTLY:
+        assert kinds.SERVED[step], f"{step}: a switch asked about first, at a step no rule can stand at"
+        assert step in kinds.AT, step
+    assert kinds.from_the_table() == (kinds.AT, kinds.SERVED, kinds.COSTS, kinds.COSTLY)
+    assert set(kinds.SERVED) == set(kinds.COSTS) == set(kinds.STEPS)
+    assert set(kinds.AT) <= set(kinds.STEPS) and all(kinds.STEPS[step].serves for step in kinds.AT)
+
+
 def test_a_kind_whose_subject_its_step_never_builds_is_refused_where_it_is_written():
     """Accepted and then skipped in silence by every loop of that step: no error, no line anywhere,
     the rule switched on in the settings and finding nothing for ever — which looks exactly like a
@@ -668,17 +784,78 @@ def test_each_step_says_in_one_place_what_it_is_built_from():
     assert layout.INDICATORS in layout.BUILT_FROM["index"][1]
 
 
-def test_every_file_under_data_belongs_to_exactly_one_list():
-    """The lists say what a backup takes and what it leaves, and a file in none of them is a file
-    whose fate nobody decided."""
+def test_a_rule_edited_by_hand_ages_the_findings_counted_under_the_old_one(tmp_path):
+    """The settings page is not the only door to a rule, and the other one moved no file at all.
+
+    What checks run and with which thresholds is a rule file. Turning one off goes through the
+    settings, and `changed_since` has counted settings.json since the day the checks' badge said
+    "done" over an index hiding documents by the old answer. Editing `data/rules/<id>.md` goes
+    through no file the list named: the findings stayed on the page, counted by a rule that had
+    since been rewritten, with the badge over them saying "done" and no page anywhere saying the
+    answer was old. That is the refusal `changed_since` is written against, through the door that
+    edits a rule instead of the one that switches it.
+    """
+    import os
+
+    from epicrisis import layout
+    from epicrisis.validate import validation_state
+
+    data = tmp_path / "data"
+    output = data / layout.ARCHIVES / "aa11bb22"
+    (data / layout.RULES).mkdir(parents=True)
+    output.mkdir(parents=True)
+    write(data / layout.RULES, "a-test-rule.md", GOOD)
+    (output / layout.VALIDATION).write_text('{"documents": [], "documents_checked": 3}', encoding="utf-8")
+    # The rule as it stood when the checks ran: a moment before them, as a file on disk is.
+    ran = (output / layout.VALIDATION).stat().st_mtime
+    os.utime(data / layout.RULES / "a-test-rule.md", (ran - 60, ran - 60))
+    os.utime(data / layout.RULES, (ran - 60, ran - 60))
+    assert validation_state(output)["state"] == "done"
+
+    # A threshold changed in the file itself, as a person with an editor changes one. The folder's
+    # own moment does not move for this, which is why a folder answers for what is inside it.
+    rule = data / layout.RULES / "a-test-rule.md"
+    rule.write_text(GOOD.replace("how_far = 2.5", "how_far = 9.5"), encoding="utf-8")
+    os.utime(rule, (ran + 60, ran + 60))
+    os.utime(data / layout.RULES, (ran - 60, ran - 60))
+
+    state = validation_state(output)
+    assert state["state"] == "partial" and state["label"] == "Outdated"
+
+
+def test_a_folder_a_step_is_built_from_answers_for_the_files_inside_it(tmp_path):
+    """A folder's own moment moves when a name is added to it, and not when a file in it is saved.
+
+    Both folders in the lists are written that way. A document read a second time lands on its own
+    name under extracted/<two letters>/, which moves that subfolder and leaves `extracted` as it
+    was; a rule of this archive's own is a file somebody opens and saves. Asked of the folder
+    alone, the step was told it was up to date by a file whose answer had changed under it.
+    """
+    import os
+
     from epicrisis import layout
 
-    named = (set(layout.THEIR_OWN_WORK) | set(layout.THEIR_CHOICES) | set(layout.MADE_AGAIN_BY_CODE)
-             | set(layout.MADE_AGAIN_BY_A_MODEL) | set(layout.ASKED_FOR_AGAIN))  # fmt: skip
-    for name in (layout.SOURCES, layout.SETTINGS, layout.CONSENT, layout.INDICATORS, layout.CHATS,
-                 layout.CORRECTIONS, layout.JUDGEMENTS, layout.REPLACED, layout.INVENTORY,
-                 layout.CLASSIFY, layout.EXTRACTED, layout.VALIDATION, layout.MATERIALS):  # fmt: skip
-        assert name in named, f"{name} is in no list: nobody has decided whether a copy carries it"
+    data = tmp_path / "data"
+    output = data / layout.ARCHIVES / "aa11bb22"
+    for folder, inside in ((output / layout.EXTRACTED, "ab"), (data / layout.RULES, None)):
+        (folder / inside if inside else folder).mkdir(parents=True)
+    (output / layout.EXTRACTED / "ab" / "abcdef.jsonl").write_text("{}\n", encoding="utf-8")
+    write(data / layout.RULES, "a-test-rule.md", GOOD)
+
+    long_ago = layout.changed_since(output, data, "validate")
+    for folder in (output / layout.EXTRACTED, output / layout.EXTRACTED / "ab", data / layout.RULES):
+        os.utime(folder, (long_ago - 60, long_ago - 60))
+    settled = layout.changed_since(output, data, "validate")
+
+    for file in (output / layout.EXTRACTED / "ab" / "abcdef.jsonl", data / layout.RULES / "a-test-rule.md"):
+        os.utime(file, (settled - 60, settled - 60))
+    assert layout.changed_since(output, data, "validate") <= settled
+
+    # Each file in turn, saved where it stands, with every folder above it left as it was.
+    for number, file in enumerate((output / layout.EXTRACTED / "ab" / "abcdef.jsonl",
+                                   data / layout.RULES / "a-test-rule.md"), start=1):  # fmt: skip
+        os.utime(file, (settled + number, settled + number))
+        assert layout.changed_since(output, data, "validate") == settled + number, file
 
 
 def test_the_two_readings_of_a_printed_range_are_compared_and_neither_decides():
@@ -723,6 +900,39 @@ def test_the_two_readings_of_a_printed_range_are_compared_and_neither_decides():
                         item={"observations": [value("3,5 - 5,5", reference_low=3.5, reference_high=5.6)]})  # fmt: skip
     assert len(range_read_two_ways(document, {"apart_by": 0.0})) == 1
     assert len(range_read_two_ways(document, {"apart_by": 0.05})) == 0
+
+
+def test_a_range_printed_backwards_is_reported_in_every_spelling_a_form_prints_it_in():
+    """The check had a pattern of its own and caught one of the nine spellings: the dash.
+
+    It is the worst check of this file to have been blind in. A range that reads backwards is read
+    by reference.parse as no range at all, so the band goes off the chart and the third answer mode
+    has nothing to compare the number with — and this check is the only thing that says so. On a
+    Spanish or a Greek form, which print a range with a word between its ends, it never fired once.
+    """
+    from epicrisis.rules.subjects import Document
+    from epicrisis.validate import reference_reversed
+
+    def findings(*printed: str | None) -> int:
+        values = [{"name_as_printed": "X", "value_as_printed": "4,2", "reference_as_printed": one,
+                   "provenance": {"page": 1, "snippet": "X 4,2"}} for one in printed]  # fmt: skip
+        document = Document(file_sha256="b" * 64, pages=(1,), item={"observations": values})
+        return len(reference_reversed(document, {}))
+
+    backwards = ("5,5-3,5", "17,0 a 13,0", "5,5 έως 3,5", "17 to 13", "5,5 до 3,5", "5,5..3,5",
+                 "Норма: 5,5-3,5", "5,5-3,5 ммоль/л", "150 000 - 100 000")  # fmt: skip
+    assert findings(*backwards) == len(backwards)
+    for one in backwards:
+        assert findings(one) == 1, one
+
+    # The same nine printed the way round a form means them, and nothing is said about any of them.
+    assert findings("3,5-5,5", "13,0 a 17,0", "3,5 έως 5,5", "13 to 17", "3,5 до 5,5", "3,5..5,5",
+                   "Норма: 3,5-5,5", "3,5-5,5 ммоль/л", "100 000 - 150 000") == 0  # fmt: skip
+    # And the printed things that are not one range for one value, which reference.py refuses
+    # before either question is asked of them — two of these read backwards and are still silent,
+    # because what the form printed there is a titer and a pair of bands side by side.
+    assert findings("1:40", "М: 17,0-13,0 Ж: 15,5-11,5", "≤75% від білка",
+                    "< 20 Норма, 20 - 200 багато", "", None, "Negative", "< 5", "до 5") == 0  # fmt: skip
 
 
 def test_a_verdict_about_a_document_that_no_longer_exists_stops_counting(tmp_path):
@@ -804,3 +1014,286 @@ def test_a_switch_that_does_more_than_stop_a_finding_says_so_where_it_is_pressed
 
     # Nothing else claims one, and nothing has to: this is for the switch that does more than report.
     assert [rule.id for rule in rules.load() if rule.switching_off] == ["possible_copy"]
+
+
+def test_pages_of_one_document_dated_far_apart_are_two_documents(tmp_path):
+    """A text file has no page breaks, so a bad cut puts two visits in one document.
+
+    Before the archive of October 2026 was cut at the lines its own export draws, six of its
+    twenty documents covered more than two months and one covered 1666 days; after it, none.
+    The dates are the ones the reading gave each page — a rule over every date printed anywhere
+    fires on a third of an archive of ordinary scans, because a form carries a birth date too.
+    """
+    from epicrisis.rules.subjects import Document
+    from epicrisis.validate import dates_far_apart
+
+    one_visit = Document(file_sha256="a" * 64, pages=(1, 2), item={"language": "uk"},
+                         page_dates=("15.06.2026", "17.06.2026"))  # fmt: skip
+    assert dates_far_apart(one_visit, {"apart_by_days": 60}) == []
+
+    two_visits = Document(file_sha256="a" * 64, pages=(7, 8, 9), item={"language": "uk"},
+                          page_dates=("31.08.2016", None, "22.04.2016"))  # fmt: skip
+    found = dates_far_apart(two_visits, {"apart_by_days": 60})
+
+    assert len(found) == 1
+    assert "131 days apart" in found[0].line and found[0].first_page == 7
+    assert dates_far_apart(two_visits, {"apart_by_days": 365}) == []  # the threshold is a threshold
+    assert dates_far_apart(Document(file_sha256="a" * 64, pages=(1,), item=None), {}) == []
+
+
+def test_the_sex_a_page_states_is_read_only_where_it_states_one():
+    """A form printing "Ч/Ж" against an empty box offers two choices and states nothing.
+
+    "пол" also lives inside "полость", so the label stands on a word boundary of its own: without
+    that, a page about a cavity answers a question about a person.
+    """
+    from epicrisis.about_the_person import sex_as_printed
+
+    assert sex_as_printed("Пацієнт: Хтось\nСтать: чоловіча\nВік 40") == {"male"}
+    assert sex_as_printed("Sex: F   Age: 73") == {"female"}
+    assert sex_as_printed("Sexo: Hombre") == {"male"}
+    assert sex_as_printed("Стать: Ч/Ж") == set()  # a blank box offering both
+    assert sex_as_printed("Порожнина розширена, полость свободна") == set()
+    assert sex_as_printed("Стать: чоловіча\nSex: female") == {"male", "female"}  # and then they disagree
+
+
+def test_a_year_of_birth_printed_alone_does_not_disagree_with_the_day():
+    from datetime import date
+
+    from epicrisis.about_the_person import dates_disagree
+
+    assert not dates_disagree({date(1975, 12, 6)})
+    assert not dates_disagree({date(1975, 12, 6), date(1975, 1, 1)})  # the same year, less precisely
+    assert dates_disagree({date(1975, 12, 6), date(1976, 12, 6)})  # a year apart: two people
+    assert dates_disagree({date(1975, 12, 6), date(1975, 3, 27)})
+
+
+SHIPPED_RANGE_POWERS = {"powers_apart": 1.5, "ranges_at_least": 5, "ranges_agree": 0.75}
+
+
+def _row(value: str, unit: str, reference: str, name: str = "A measure") -> dict:
+    return {"name_as_printed": name, "value_as_printed": value, "unit_as_printed": unit,
+            "reference_as_printed": reference, "provenance": {"page": 1, "snippet": f"{name} {value}"}}  # fmt: skip
+
+
+def _form(*rows: dict, titled: str = "") -> dict:
+    """One transcribed page, where what the page is headed with matters to the check."""
+    return {"title_as_printed": titled, "observations": list(rows)}
+
+
+def _sha(index: int) -> str:
+    """The file a form of _ranges_of_a_test sits in, by its place in the list handed over."""
+    return f"{index:064d}"
+
+
+def _ranges_of_a_test(*rows: dict, read_materials: dict | None = None, **moved):
+    """Each row on a form of its own — how the archive really holds a history of one test.
+
+    A row already made into a form by _form is left as it is, for the cases where the heading of
+    the page is the thing being tested. read_materials is what a model read off the headings of
+    those forms, keyed as material_reading keys it; the file of the nth form is _sha(n).
+    """
+    from epicrisis.rules.subjects import Archive
+    from epicrisis.validate import range_powers_from_the_rest
+
+    documents = [{"file_sha256": _sha(index), "pages": [1], "date": f"2026-02-{index + 1:02d}",
+                  "item": one if "observations" in one else _form(one), "findings": {},
+                  "carries_on_from": None}
+                 for index, one in enumerate(rows)]  # fmt: skip
+    archive = Archive(rows=[], documents=documents, read_materials=read_materials or {})
+    return range_powers_from_the_rest(archive, {**SHIPPED_RANGE_POWERS, **moved})
+
+
+def test_a_printed_range_that_cannot_be_this_values_range_is_marked():
+    """A haematocrit drawn as 48 per cent with «0,2-1,0 %» printed beside it as its range.
+
+    0,2–1,0 % is the line of basophils on the same form. The value was right and the band under
+    the chart was another row's, which is why the axis ran from a fifth of a per cent to fifty.
+    """
+    the_test = [_row("41", "%", "35 - 50 %") for _ in range(6)]
+    another_rows_range = _row("0,48", "", "0,2-1,0%")  # no unit column; the range names the unit
+
+    hits = _ranges_of_a_test(*the_test, another_rows_range)
+
+    assert len(hits) == 1
+    assert hits[0].file_sha256 == _sha(6)  # the row with the foreign range, and not the six
+    assert "times from the ranges printed beside the other readings" in hits[0].line
+
+
+def test_a_reading_far_from_normal_is_not_a_printed_range_from_another_row():
+    """The case the whole program exists to show, and the one this check must never dress up.
+
+    A printed range is a fact about the test and the laboratory. One person's reading may be far
+    outside it twice over and the range printed beside it is the test's own range either way, so
+    the stored value is not read here at all.
+    """
+    the_test = [_row("41", "%", "35 - 50 %") for _ in range(5)]
+
+    assert _ranges_of_a_test(*the_test, _row("95", "%", "35 - 50 %")) == []
+    assert _ranges_of_a_test(*the_test, _row("4", "%", "35 - 50 %")) == []
+    # And a value sitting inside its own foreign range is still reported: 0,48 is between 0,2 and
+    # 1,0. Where the value stands is not the question.
+    assert len(_ranges_of_a_test(*the_test, _row("0,48", "%", "0,2-1,0%"))) == 1
+
+
+def test_a_test_two_laboratories_print_at_two_scales_is_left_to_the_two_scales_reading():
+    """Which of two scales is the odd one out is a question the archive cannot answer.
+
+    Four forms printing a fraction and three printing a per cent are not one range with a foreign
+    line in it. units.py moves the points of such a test and says by how much; this says nothing.
+    """
+    two_scales = ([_row("0,41", "%", "0,35-0,50 %") for _ in range(4)]
+                  + [_row("41", "%", "35 - 50 %") for _ in range(3)])  # fmt: skip
+
+    assert _ranges_of_a_test(*two_scales) == []
+
+    # And where no unit is printed anywhere, nothing is said whatever the shares are: the form has
+    # not stated the scale its range is at, so a fraction beside a per cent is an honest form.
+    no_unit_printed = [_row("41", "", "35 - 50") for _ in range(6)] + [_row("0,41", "", "0,35-0,50")]
+    assert _ranges_of_a_test(*no_unit_printed) == []
+
+
+def test_one_printed_name_over_two_specimens_is_two_tests():
+    """A total protein in serum and a protein in urine are printed under one name in g/L.
+
+    Seventy against seven hundredths is a thousandfold, which is exactly the shape this check
+    reports — and both forms are right. The specimen is part of what counts as the same test, or
+    every urine protein in an archive is a finding.
+    """
+    serum = [_row("72", "g/l", "64 - 83 g/l", name="Protein") for _ in range(6)]
+    urine = _row("0,07", "g/l", "0,02 - 0,14 g/l", name="Protein")
+
+    assert _ranges_of_a_test(*serum, _form(urine, titled="Urine analysis")) == []
+    # A range that starts at nought has no middle on a scale of powers and is not read here at
+    # all, which is most urine ranges and the reason this one had to be given a floor to test with.
+    assert _ranges_of_a_test(*serum, _row("0,07", "g/l", "0,00 - 0,14 g/l", name="Protein")) == []
+    # Said the other way round: with the urine form's own heading gone, the thousandfold is
+    # reported, which is what makes the specimen and not the threshold the thing doing the work.
+    assert len(_ranges_of_a_test(*serum, urine)) == 1
+
+
+def test_the_specimen_a_check_groups_by_is_the_settled_one_and_not_only_the_printed_word():
+    """The same urine protein, with its specimen known from somewhere other than the print.
+
+    The check keyed its groups by index/build.material_of, which answers with the word the form
+    printed and with nothing else. The whole order of precedence lives one function further on,
+    in settled_material: a person first, then the form, then a model. So a panel whose heading a
+    model read — which is what material_reading is for, and most old forms print no heading at
+    all — and a panel whose specimen the person whose archive this is corrected by hand both went
+    into the serum protein's group, and a form that is right about everything was reported as
+    carrying "a range that cannot be this value's". A false finding on exactly the test the
+    check's own comment warns about, and the second case overrode a person's own word, which the
+    file deciding that order says wins.
+    """
+    from epicrisis.corrections import BY_A_PERSON
+    from epicrisis.material_reading import panel_key
+
+    serum = [_row("72", "g/l", "64 - 83 g/l", name="Protein") for _ in range(6)]
+    urine = _row("0,07", "g/l", "0,02 - 0,14 g/l", name="Protein")
+
+    # A model read the panel, and this instance trusts what it read. The form prints no heading,
+    # so the panel is keyed by its file and page alone.
+    read = {panel_key(_sha(6), [1], None): {"material": "urine", "sure": True}}
+    assert _ranges_of_a_test(*serum, urine, read_materials=read) == []
+    # The person whose archive it is looked at the scan and said so themselves.
+    assert _ranges_of_a_test(*serum, {**urine, BY_A_PERSON: {"changes": {"material": "urine"}}}) == []
+    # And where nobody has said anything at all, the thousandfold is still reported: this moves
+    # what the check knows about a specimen, not how little evidence it needs.
+    assert len(_ranges_of_a_test(*serum, urine)) == 1
+
+
+def test_how_far_a_printed_range_may_stand_and_how_many_ranges_it_takes_are_the_rules_own_numbers():
+    """And the shape this was written for is ninety-three times, not a hundred.
+
+    0,2–1,0 against 35–50 is 1,97 powers of ten. A threshold of two powers — the obvious round
+    number, and the distance between a fraction and a per cent — would have missed the one row
+    that is known to need this.
+    """
+    the_test = [_row("41", "%", "35 - 50 %") for _ in range(6)]
+    foreign = _row("0,48", "", "0,2-1,0%")
+
+    assert len(_ranges_of_a_test(*the_test, foreign)) == 1
+    assert _ranges_of_a_test(*the_test, foreign, powers_apart=2.0) == []
+    # A test with too few printed ranges has no middle worth standing away from.
+    assert _ranges_of_a_test(*the_test[:3], foreign) == []
+    assert len(_ranges_of_a_test(*the_test[:4], foreign)) == 1
+
+
+def test_the_rule_that_marks_a_foreign_printed_range_only_marks():
+    """The boundary, asserted rather than promised in a Markdown body nobody runs.
+
+    MDCG 2019-11: a rule may say "look at this" or say where a printed thing belongs, and this one
+    says the first. It is also archive-wide at the checks, which is the only step and subject that
+    hands a rule the other printed ranges of the same test.
+    """
+    from epicrisis.rules.kinds import MARKS, THE_ARCHIVE, VALIDATE
+
+    rule = next(one for one in rules.load() if one.id == "range_powers_from_the_rest")
+
+    assert rule.does == MARKS and rule.check.does == MARKS
+    assert rule.at == VALIDATE and rule.check.looks_at == THE_ARCHIVE
+    assert rule.attaches == "value" and rule.settles
+    assert set(rule.settings) == set(SHIPPED_RANGE_POWERS)
+    assert all(rule.check.means.get(name) for name in rule.settings)
+
+
+def test_a_rule_named_in_its_own_alphabet_is_called_after_the_name_that_was_typed():
+    """Two of the five languages on these forms are Cyrillic and one is Greek.
+
+    rules.slug kept the Latin letters and threw the rest away, so a name written in any of the
+    three left nothing behind and came out as the fallback alone, 'a-rule'. indicators.slug had
+    answered the same question for years, with a transliteration table and the comment saying what
+    bought it; there were two answers to one question and only one of them was right.
+    """
+    assert rules.slug("Діапазон прочитано двома способами") == "dyapazon-prochytano-dvoma-sposobamy"
+    assert rules.slug("Μία κλίμακα") == "mia-klimaka"
+    assert rules.slug("Диапазон прочитан двумя способами") == "dyapazon-prochytan-dvumia-sposobamy"
+    # And a name with no letter and no digit left in it still falls back to the word for a rule.
+    assert rules.slug("—  —") == "a-rule"
+
+
+def test_one_answer_to_what_a_name_somebody_typed_may_be_called():
+    """Asked of a rule and of an indicator, the same name comes back the same.
+
+    This is the guard against the two drifting apart again, and it is a cheap one: both now ask
+    printed_values.as_a_name, so the only way these can disagree is if somebody writes a second
+    answer. The names below leave Latin letters behind in both alphabets, so neither falls back,
+    and the fallbacks are the one thing the two are allowed to differ on.
+    """
+    from epicrisis.indicators import slug as an_indicator
+
+    for typed in ("Діапазон прочитано двома способами", "Μία κλίμακα", "Range read two ways",
+                  "Диапазон прочитан двумя способами", "Un rango leído de dos maneras"):  # fmt: skip
+        assert rules.slug(typed) == an_indicator(typed, set()), typed
+
+
+def test_two_rules_a_person_writes_in_their_own_alphabet_are_two_rules(tmp_path):
+    """Both came out as 'a-rule', so the second was refused by an id nobody had typed.
+
+    What the person saw: a form whose only required field is a name, nothing on it to say the name
+    had to be in Latin letters, and "There is already a rule called 'a-rule'" — about a file called
+    a-rule.md, which said nothing about the first rule either. On a Ukrainian, Russian or Greek
+    instance a person could write their own rule once.
+    """
+    from epicrisis.rules import kinds
+
+    data = tmp_path / "data"
+    data.mkdir()
+    named = next(name for name, item in kinds.KINDS.items() if item.does == kinds.MARKS)
+
+    def write(name: str) -> tuple[str, str]:
+        return rules.write_one(data, {"kind": named, "name": name, "summary": "One line.",
+                                      "settles": "Open the page and see.", "attaches": "document"},
+                               "# What it looks at\n\nSomething.", kinds.KINDS)  # fmt: skip
+
+    first, wrong = write("Діапазон прочитано двома способами")
+    assert not wrong and first == "dyapazon-prochytano-dvoma-sposobamy"
+    second, wrong = write("Μία κλίμακα")
+    assert not wrong and second == "mia-klimaka"
+
+    assert {path.name for path in (data / rules.FOLDER_NAME).glob("*.md")} == {f"{first}.md", f"{second}.md"}
+    assert not rules.load(data).problems
+    # And two rules of one name are still refused — by a name the person can see they typed, and
+    # with what puts it right, which a refusal naming 'a-rule' could not have said.
+    again, wrong = write("Μία κλίμακα")
+    assert not again and wrong == "There is already a rule called 'mia-klimaka'. Give this one a name of its own."

@@ -87,6 +87,11 @@
   form.add input:focus { box-shadow: inset 0 -4px 0 var(--signal); }
   form.add button { display: flex; align-items: center; gap: 10px; border: 0; padding: 0 32px; background: var(--signal); color: var(--ink); font: 700 16px var(--sans); cursor: pointer; }
   form.add button:hover { background: #e8653f; }
+  /* Browse only fills the path in; Add is what commits. The quieter button says which is which. */
+  form.add button.browse { background: transparent; color: var(--paper); border-left: 1px solid #3a3a37; padding: 0 22px; font: 600 13px var(--sans); letter-spacing: 0.06em; text-transform: uppercase; }
+  form.add button.browse:hover { background: #2a2a28; }
+  /* A page that is text and has no scan behind it: the file's own lines, kept as they stand. */
+  .page-text { margin: 0; padding: 24px; border: 1px solid var(--ink); background: #fff; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font: 14px/1.5 var(--mono); }
   .error { margin-top: 10px; color: var(--signal); font-weight: 600; font-size: 12px; }
   .footnote { margin-top: 8px; color: var(--muted); }
 
@@ -103,6 +108,10 @@
   .crumbs button:hover { color: var(--signal); }
   .crumbs button[aria-current] { color: var(--ink); font-weight: 600; }
   .crumbs .sep { color: var(--faint); font: 12px var(--mono); }
+  /* A folder above the ones this picker may open: still printed, so the path reads whole, and
+     not a press, because the press could only ever be refused. Set in the same metrics as the
+     buttons beside it so the row does not move when one of them stops being one. */
+  .crumbs .outside { padding: 3px 4px; font: 12px var(--mono); color: var(--faint); }
   .listing { flex: 1; overflow-y: auto; }
   .entry { width: 100%; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 13px 24px; background: none; border: 0; border-bottom: 1px solid var(--line); font: 500 16px var(--sans); color: var(--ink); text-align: left; cursor: pointer; }
   .entry span { overflow-wrap: anywhere; }
@@ -129,9 +138,13 @@
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .value { font-size: 36px; }
     form.add { flex-wrap: wrap; }
-    form.add label { padding: 14px 16px; }
+    form.add label { flex-basis: 100%; padding: 14px 16px; }
     form.add input { flex-basis: 100%; border-left: 0; border-top: 1px solid #3a3a37; padding: 16px; }
     form.add button { flex-basis: 100%; justify-content: center; padding: 16px; }
+    /* Browse belongs at the end of the line the path is on, here as on a wide screen: it is what
+       fills that field in, and a row of its own read as a third step between the two it sits between. */
+    form.add #path { flex: 1 1 0; }
+    form.add button.browse { flex: 0 0 auto; border-top: 1px solid #3a3a37; padding: 16px 18px; }
     .picker-head h2 { font-size: 30px; }
     .actions { width: 100%; }
     .actions .btn { flex: 1; }
@@ -219,6 +232,24 @@
   .menu-panel { position: absolute; right: 0; top: 100%; z-index: 20; width: min(340px, calc(100vw - 32px)); background: var(--ink); border-top: 6px solid var(--signal); box-shadow: 14px 14px 0 rgba(14, 14, 14, 0.14); }
   .menu-panel a { display: flex; flex-direction: column; gap: 4px; padding: 16px 22px; color: var(--paper); text-decoration: none; font-weight: 700; font-size: 21px; letter-spacing: -0.01em; border-bottom: 1px solid #3a3a37; }
   .menu-panel a:last-child { border-bottom: 0; }
+  /* The four pages about the reading rather than about the records. Folded, and drawn quieter than
+     the six above it: this is a drawer, not a seventh page. */
+  .menu-panel .menu-more { border-top: 1px solid #3a3a37; }
+  .menu-panel .menu-more summary { position: relative; display: flex; flex-direction: column; gap: 4px;
+    padding: 16px 40px 16px 22px; color: #c9c7bf; font-weight: 700; font-size: 17px;
+    letter-spacing: -0.01em; cursor: pointer; list-style: none; }
+  .menu-panel .menu-more summary::-webkit-details-marker { display: none; }
+  /* The arrow is drawn rather than loaded, like the mark in the bar, and it turns when the drawer
+     opens so that the control says which way it goes. */
+  .menu-panel .menu-more summary::after { content: ""; position: absolute; right: 22px; top: 22px;
+    width: 7px; height: 7px; border-right: 2px solid #8f8e88; border-bottom: 2px solid #8f8e88;
+    transform: rotate(45deg); transition: transform 0.15s ease; }
+  .menu-panel .menu-more[open] summary::after { transform: rotate(-135deg); top: 26px; }
+  .menu-panel .menu-more summary:hover { color: var(--paper); }
+  .menu-panel .menu-more summary small { font: 11px var(--mono); text-transform: uppercase;
+    letter-spacing: 0.04em; color: #8f8e88; font-weight: 400; }
+  .menu-panel .menu-more a { font-size: 19px; padding-left: 34px; background: #171716; }
+  .menu-panel .menu-more a:first-of-type { border-top: 1px solid #3a3a37; }
   .menu-panel a small { font: 11px var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: #8f8e88; }
   .menu-panel a:hover, .menu-panel a:focus-visible { background: #1f1f1d; color: var(--signal); outline: none; }
   .menu-panel a[aria-current="page"] { color: var(--signal); }
@@ -236,6 +267,73 @@
   .card-meta div { border-top: 1px solid var(--ink); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .card-meta dd { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
   .card-meta dt { margin: 0; }
+  /* One row of tabs, drawn one way, wherever a page puts one. Written here as one rule over the
+     three places that have them — the settings, the two pages of names, the patient card and the
+     cuts of the timeline — because for one afternoon there were three different tab controls in
+     this interface and the owner had to point it out. The settings had the oldest and the right
+     one; the boxed tabs were invented for the page of doctors that morning and copied from there
+     to the card by the time anybody looked at the two side by side.
+
+     One gap above and below them as well as one appearance: the four rows had four — 26 pixels, 4,
+     18 and 26 — and on the page of doctors the tabs sat so close under the heading that the owner
+     read them as part of it. Where a row of tabs stands in relation to what it belongs to is the
+     same question on every page, so it is answered here and not on each of them. */
+  nav.tabs, .views, .materials, .settings-form .tabs {
+    display: flex; gap: 0; flex-wrap: wrap; align-items: center; margin: 30px 0 22px;
+    border-bottom: 1px solid var(--line); }
+  /* Captions standing along a rule, and nothing else: no frame and no fill. The boxed tab was
+     invented one morning for the page of doctors and spread from there; the owner asked for the
+     flat one back, which is the control the settings had from the beginning and the one the
+     comment on the settings panels has described all along.
+
+     The underline is three pixels and it is on every tab, transparent until it is wanted, so
+     that colouring it moves nothing: a border that appears only on the chosen one lifts the
+     whole row as the cursor crosses it. The row's own hairline runs under all of them and each
+     tab sits one pixel over it, so the red covers the grey rather than standing above it. */
+  nav.tabs a, .views a, .views [aria-disabled="true"], .materials a, .settings-form .tabs label {
+    background: none; border: 0; border-bottom: 3px solid transparent; margin-bottom: -1px;
+    padding: 8px 2px 10px; margin-right: 22px; color: var(--ink); text-decoration: none;
+    cursor: pointer; font-family: var(--mono); font-size: 12px; line-height: 1.4;
+    letter-spacing: .1em; text-transform: uppercase; }
+  /* The tabs you are not on are in ink, not in grey. Greyed, a row of five cuts read as five
+     things switched off with one of them working, and the owner called them shadows: every
+     caption here is a place you can go, and a place you can go is not a disabled control.
+
+     Where you are and where the cursor is are said the same way, in red, which is what was
+     asked for: the one you are standing on keeps its red when the cursor leaves, and that is
+     the whole difference between them. Said in one rule rather than two so that there goes on
+     being one place where this row is drawn. */
+  nav.tabs a:hover, .views a:hover, .materials a:hover, .settings-form .tabs label:hover,
+  nav.tabs a[aria-current="page"], .views a[aria-current], .materials a[aria-current] {
+    border-bottom-color: var(--signal); }
+  /* A cut this archive has nothing to choose from in is the one caption here that is not a place
+     you can go, so it is the one that may be grey. It is a span and not a link, and the hover
+     above does not name it. */
+  .views [aria-disabled="true"] { color: var(--muted); cursor: default; }
+  form.inline { display: inline; }
+
+  /* Who made the documents: a name, what kind of name it is, and how many it stands on. */
+  .makers { margin: 18px 0 0; display: grid; gap: 0; }
+  .makers div { border-top: 1px solid var(--line); padding: 10px 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 16px; }
+  .makers dt { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+  .makers dt .caps { margin-left: 8px; }
+  .makers dd { margin: 0; color: var(--muted); white-space: nowrap; }
+  /* A row that carries a sentence, not a count. The counts opposite a name must not wrap —
+     "3 documents · 2019" broken over two lines is unreadable — but a reason is a sentence,
+     and on a narrow window it ran off the right edge with the end of it unread. It takes a
+     line of its own, under the names it is about. */
+  .makers .reasoned { display: block; }
+  .makers .reasoned dd { white-space: normal; margin-top: 6px; }
+  .makers .reasoned .note { margin: 0 0 8px; max-width: 72ch; }
+  .makers .reasoned form { display: inline-block; margin-right: 8px; }
+  /* The spellings of one family, each with its own box. They sit under one another and not in a
+     row: a laboratory writes itself as its own name, that name with the software, the software
+     with a version and the version with a point release, and side by side those four differ by a
+     few characters at the end of a long line nobody reads twice. One per line, the difference at
+     the end of each, and the tick in front of it is the thing being decided. */
+  .makers .ticks { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 4px; }
+  .makers .ticks .check { display: flex; gap: 9px; align-items: flex-start; font-size: 15px; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }
+  .makers .ticks .check input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--signal); flex-shrink: 0; }
   .unchecked { margin-top: 18px; }
   .card-section { margin-top: 34px; padding-top: 12px; }
   .card-section h2 { margin: 0 0 12px; font-weight: 800; font-size: 28px; letter-spacing: -0.02em; }
@@ -271,6 +369,10 @@
   .docs-year[open] { padding-bottom: 12px; }
 
   .doc-date .date-flag { display: block; margin-top: 3px; color: var(--signal); font-size: 10px; }
+  /* The day as the form printed it, under the day it was read as. Its own line, because the two
+     are a pair and a printed date is as long as the form felt like making it — «12» 03 2011 г.
+     beside 12.03.2011 on one line pushed the next column off a 390px screen. */
+  .doc-date .date-printed { display: block; margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
   .doc-file-cell .path { font-size: 12px; }
   .doc-file-cell .file-id { margin-left: 0; }
   .date-form .btn { padding: 3px 10px; font-size: 13px; }
@@ -282,6 +384,11 @@
   .check-title { font-weight: 800; font-size: 22px; letter-spacing: -0.01em; }
   .docs-summary form { margin: 0; }
   .btn.small { padding: 4px 12px; font-size: 13px; }
+  /* Saying no to a proposal is not the opposite of saying yes to it: one is a claim about
+     a person's identity and the other is leaving the forms as they are. The quieter button
+     is the one that changes nothing in the archive. */
+  .btn.quiet { border-color: var(--line); color: var(--muted); font-weight: 400; }
+  .btn.quiet:hover { background: var(--faint); color: var(--ink); }
   .card-findings { margin-top: 18px; border-left: 4px solid var(--signal); padding: 6px 0 6px 14px; }
   .card-findings .caps { color: var(--signal); }
   .card-findings ul { margin: 6px 0 0; padding-left: 18px; }
@@ -353,6 +460,11 @@
   .related-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; font-size: 14px; }
   .related-row form { margin: 0; }
   .obs-row.corrected { background: color-mix(in srgb, var(--signal) 7%, transparent); }
+  /* What the model had read, under the row a person put right. Small, muted and only on those
+     rows: it is the answer to a question the "corrected" badge raises, not a column. */
+  .was-read-as { margin: 0; padding: 2px 0 4px; font-size: 11px; color: var(--muted);
+    background: color-mix(in srgb, var(--signal) 7%, transparent); overflow-wrap: anywhere; }
+  .was-read-as b { color: var(--ink); font-weight: 600; }
   .fix-row { border-top: 1px dashed var(--line); }
   .fix-row summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
   .fix-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; padding: 8px 0 12px; }
@@ -378,12 +490,27 @@
   .searchline input:focus { outline: 2px solid var(--signal); outline-offset: -2px; }
   .searchline button { border: 0; border-left: 1px solid var(--ink); background: transparent; padding: 0 18px; cursor: pointer; color: var(--ink); }
   .searchline button:hover { color: var(--signal); }
-  .views { display: flex; flex-wrap: wrap; gap: 14px; padding-bottom: 14px; }
-  .views a { color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; padding-bottom: 2px; }
-  .views a[aria-current] { color: var(--ink); border-bottom-color: var(--signal); font-weight: 600; }
-  .views a:hover { color: var(--signal); }
+  /* A cut the archive holds no names for: quieter than the rest and not a target for the cursor,
+     because it is there to say the option exists, not to be pressed. */
+  .views [aria-disabled="true"] { color: var(--faint); cursor: default; }
+  .nothing-to-cut { margin: 0 0 14px; max-width: 72ch; }
+  /* A way out of this row rather than a choice inside it: the box above holds every choice about
+     the archive, and this leads to the page where several spellings of a name are made one. Drawn
+     quiet so that it does not read as a third thing to pick. */
+  /* The row under a cut: the box at one end, the way out at the other. One choice, one line. */
+  .cut-chooser { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 12px; padding-top: 0; margin-top: 14px; }
+  .cut-chooser select { min-width: 260px; }
+  /* Said for a screen reader and nowhere else: the tab above the box names the cut already, and a
+     caption repeating it put two lines where there is one choice. A reader hearing an unlabelled
+     select hears nothing at all, which is a different kind of wrong. */
+  .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .quiet-link { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }
+  .quiet-link:hover { color: var(--signal); border-bottom-color: var(--signal); }
 
   .yearstrip { display: flex; align-items: flex-end; gap: 3px; padding: 14px 0 6px; border-top: 1px solid var(--ink); overflow-x: auto; }
+  .yearstrip.by-the-century .year { min-width: 28px; }  /* four digits need the room; see timeline.html */
   .yearstrip .year { flex: 1 1 0; min-width: 18px; display: flex; flex-direction: column; align-items: stretch; gap: 5px; text-decoration: none; color: var(--muted); }
   .yearstrip .count { text-align: center; font-size: 9px; }
   .yearstrip .bar { display: block; background: var(--ink); }
@@ -430,14 +557,6 @@
   .lane .count { text-align: right; font-size: 12px; color: var(--muted); }
   .lane .last-value { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
   .lane .last-value b { font-size: 16px; font-variant-numeric: tabular-nums; }
-  /* Which material is being looked at is the first thing to settle on this page, so the tabs
-     are a row of their own with room above them, not a line crowded under the heading. */
-  .materials { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; padding-bottom: 2px; }
-  .materials a { font-size: 13px; letter-spacing: .08em; color: var(--muted); text-decoration: none;
-    border: 1px solid var(--line); padding: 5px 11px; }
-  .materials a:hover { border-color: var(--ink); color: var(--ink); }
-  .materials a[aria-current] { color: var(--paper); background: var(--ink); border-color: var(--ink); font-weight: 600; }
-  .materials a[aria-current] .muted { color: var(--faint); }
 
   @media (max-width: 720px) {
     .timeline-head h1 { font-size: 40px; }
@@ -488,6 +607,9 @@
   .chart-what { margin: 10px 0 2px; font-size: 19px; font-weight: 700; line-height: 1.5; }
   .chart-what .chart-material { margin-left: 4px; }
   .materials-note { margin: 10px 0 0; max-width: 72ch; }
+  /* What the asterisk on a specimen means, on the page rather than in a tooltip. Caps at this
+     size wrap badly in a column 390px wide, so it is given the same measure as the note above. */
+  .read-by-model-note { margin: 10px 0 0; max-width: 72ch; }
 
   /* Saying one thing about a page of values that arrived together. */
   .settle-material { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 0;
@@ -528,6 +650,9 @@
   .rename[open] summary { color: var(--ink); }
   .rename form { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
   .owner-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+  /* What a button here does, under it and not beside it: a flex row would set the sentence next
+     to the button and on a 390px screen that leaves the button a few characters wide. */
+  .owner-row p { flex-basis: 100%; margin: 4px 0 0; max-width: 62ch; }
   /* Starting again is not the same kind of act as renaming, so it sits under its own line. */
   .start-again { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); flex-direction: column; align-items: flex-start; }
   .start-again form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
@@ -610,18 +735,11 @@
    siblings, so the switching is CSS alone: no script, nothing typed on another tab is lost, and
    Save posts the whole form whichever tab is showing. */
 .tab-pick { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.settings-form .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 26px 0 0;
-  border-bottom: 1px solid var(--line); }
-.settings-form .tabs label { background: none; border: 0; border-bottom: 3px solid transparent;
-  cursor: pointer; padding: 8px 2px 10px; margin-right: 22px; color: var(--muted);
-  font-family: var(--mono); font-size: 12px; line-height: 1.4; letter-spacing: .1em;
-  text-transform: uppercase; }
-.settings-form .tabs label:hover { color: var(--ink); }
 #tab-model:checked ~ .tabs label[for="tab-model"],
 #tab-reading:checked ~ .tabs label[for="tab-reading"],
 #tab-rules:checked ~ .tabs label[for="tab-rules"],
 #tab-network:checked ~ .tabs label[for="tab-network"] {
-  color: var(--ink); border-bottom-color: var(--signal); }
+  border-bottom-color: var(--signal); }
 /* A tab reached by keyboard has to show where it is, or the page cannot be used without a mouse. */
 #tab-model:focus-visible ~ .tabs label[for="tab-model"],
 #tab-reading:focus-visible ~ .tabs label[for="tab-reading"],

@@ -78,12 +78,64 @@ def _letters(text: str) -> int:
 
 
 def fold(text: str) -> str:
-    """One spelling for comparing: no case, no accents, one space where there were several."""
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKD", str(text)).casefold()).strip()
+    """One spelling for comparing: no case, no accents, one space where there were several.
+
+    The accents were promised by this line and not taken off by it: NFKD only pulls a letter
+    apart from its mark, and nothing here was dropping the mark. So "José" in an archive and
+    "Jose" in a commit were two strings to this check and one string to the program — and this
+    archive is in Spanish and Greek among five languages, which is exactly the shape §5 is
+    written about: "A plausible surname in the right language is usually a real one."
+
+    Measured when it was found: of seven pairs that differ only by an accent, this answered
+    "not the same" to five that printed_values.fold calls one. Taking the marks off can only
+    make this check find more, never less, which is the direction a guard is allowed to move in.
+    """
+    pulled_apart = unicodedata.normalize("NFKD", str(text)).casefold()
+    without_marks = "".join(mark for mark in pulled_apart if not unicodedata.combining(mark))
+    return re.sub(r"\s+", " ", without_marks).strip()
 
 
-def out_of_the_archive(data_dir: pathlib.Path) -> dict[str, str]:
-    """Every phrase that points at a person or a place, and what kind of thing it is.
+def _unreadable(gaps: list[str], what: str, where: str, trouble: Exception, advice: str) -> None:
+    """Write down that a half of the archive could not be read, in the words of a finding.
+
+    Every one of these is a line of the verdict and not a note, and they are all one sentence
+    because they are all one failure: this check looked for less than it was asked to look for,
+    and the person running it has to be told which less. "An archive it could not read in full is
+    an archive it cannot clear, and saying 'clean' about one is worse than crashing."
+
+    What went wrong is quoted, because it is structure and never content — "no such column:
+    doctor", "no such table: page_texts", "file is not a database" — and because it is the only
+    thing anybody can act on.
+    """
+    gaps.append(f"{what} was not looked for in this repository at all: {where} ({trouble}). An "
+                f"archive this check could not read in full is an archive it cannot clear — {advice}")
+
+
+def _asked(db: sqlite3.Connection, sql: str, what: str, index: pathlib.Path, gaps: list[str]):
+    """Every row of that question, or a finding saying this index cannot answer it.
+
+    An index built before a column existed is still an index, and a guard that answers a traceback
+    is a guard somebody reruns with --no-verify — which is the one failure this file warns about
+    twice. So the question is fenced. What the fence does with the answer is the part that was
+    wrong: for one morning it printed a note and carried on, so look() returned no line about the
+    hole, main() printed "Clean: N phrases" and returned 0, and the hook waved a push through. A
+    repository holding a doctor's surname was cleared by a run that never looked for one.
+
+    The fence stands round the walk and not round the call, so that a file which reads for a
+    thousand rows and then says "database disk image is malformed" is the same finding as one that
+    has no such table: a half-copied index was the second way into this, and it gave a traceback
+    from the middle of a scan. The rows gathered before it stopped are kept, because they are what
+    the archive does hold.
+    """
+    try:
+        yield from db.execute(sql)
+    except sqlite3.Error as trouble:
+        _unreadable(gaps, what, f"{index.name} cannot be asked for it", trouble,
+                    "build the index again before publishing")  # fmt: skip
+
+
+def out_of_the_archive(data_dir: pathlib.Path) -> tuple[dict[str, str], list[str]]:
+    """Every phrase that points at a person or a place, what kind it is, and what could not be read.
 
     Not everything written in an archive is somebody's: "Creatinine", "Общий анализ крови" and
     "Full blood count" are the words every form of that kind prints, and they belong in the code
@@ -91,20 +143,49 @@ def out_of_the_archive(data_dir: pathlib.Path) -> dict[str, str]:
     check nobody runs twice, and a check nobody runs is worth nothing. So what is looked for is
     what identifies: the people, the institutions that treated them, the folders and files their
     scans live in, and the hashes of those files.
+
+    The second half of the answer is what could not be read, and it is an answer and not an aside.
+    Half an archive read is not an archive cleared, so every one of those lines is a finding the
+    caller adds to the rest.
     """
     phrases: dict[str, str] = {}
+    gaps: list[str] = []
     sources = data_dir / "sources.json"
+    listed: list = []
     if sources.exists():
-        for source in json.loads(sources.read_text(encoding="utf-8")):
-            for field, what in (("owner", "the name of a person"), ("name", "the name of an archive")):
-                whole = fold(source.get(field) or "")
-                phrases[whole] = what
-                for part in whole.split():
-                    if len(part) >= 5:
-                        phrases[part] = what  # a surname on its own is the name of a person
-            phrases[fold(pathlib.Path(source.get("path") or "").name)] = "the name of an archive's folder"
+        # The list of whose archives these are, and the one read here that is not an index. Torn
+        # halfway through a write, or saved in some other encoding, it raised a ValueError from the
+        # middle of this function — and the names of every person in the instance are what it holds,
+        # so nothing at all was looked for when it would not parse.
+        try:
+            listed = json.loads(sources.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as trouble:
+            _unreadable(gaps, "the name of a person and the name of an archive",
+                        f"{sources.name} will not be read", trouble,
+                        "put that file right, or restore the copy kept beside it, before publishing")  # fmt: skip
+    for source in listed:
+        for field, what in (("owner", "the name of a person"), ("name", "the name of an archive")):
+            whole = fold(source.get(field) or "")
+            phrases[whole] = what
+            for part in whole.split():
+                if len(part) >= 5:
+                    phrases[part] = what  # a surname on its own is the name of a person
+        phrases[fold(pathlib.Path(source.get("path") or "").name)] = "the name of an archive's folder"
     for index in sorted(data_dir.glob("index*.sqlite")):
-        with sqlite3.connect(f"file:{index}?mode=ro", uri=True) as db:
+        # The file before the tables in it. An index copied while it was being written is a file
+        # sqlite opens and then refuses — "file is not a database", "database disk image is
+        # malformed" — and that came out of the middle of this function as a traceback, which is
+        # the one shape of failure this file says twice it must not have. One finding for the whole
+        # file, since every question put to it would say the same thing.
+        try:
+            db = sqlite3.connect(f"file:{index}?mode=ro", uri=True)
+            db.execute("SELECT name FROM sqlite_master").fetchall()
+        except sqlite3.Error as trouble:
+            _unreadable(gaps, "anything printed on the documents of this archive",
+                        f"{index.name} will not open as an index", trouble,
+                        "copy or build that index again before publishing")  # fmt: skip
+            continue
+        with db:
             # What is printed on somebody's documents and says who they are or what is wrong with
             # them. The first of these was here from the start and the other four were promised by
             # the sentence at the top of this file and never asked for: a department, the title of a
@@ -121,12 +202,20 @@ def out_of_the_archive(data_dir: pathlib.Path) -> dict[str, str]:
             # place is already in this list, from the institution beside it. A guard that shouts at
             # the generic is a guard somebody pushes past with --no-verify on the day it is right,
             # and that is a worse failure than the one it was guarding against.
+            #
+            # The doctor came last and nearly came too late. The column was added on a Friday, and
+            # on the Monday a real surname went into a module's docstring and a second into a test,
+            # and this guard said "Clean" about both: it had been told to ask for the institution
+            # and never retold when the archive learnt to keep the person beside it. A name on a
+            # signature line is the plainest "who" an archive holds. Whatever is added to the index
+            # next, it belongs in this list on the same day.
             for what, sql in (
                 ("the name of an institution", "SELECT DISTINCT provider FROM documents WHERE provider IS NOT NULL"),
+                ("the name of a doctor", "SELECT DISTINCT doctor FROM documents WHERE doctor IS NOT NULL"),
                 ("a line of diagnosis", "SELECT DISTINCT text FROM diagnoses"),
                 ("the name of a medication", "SELECT DISTINCT text FROM medications"),
             ):  # fmt: skip
-                for (value,) in db.execute(sql):
+                for (value,) in _asked(db, sql, what, index, gaps):
                     phrases[fold(value)] = what
             # And the text of the documents themselves, line by line, where a line is long enough to
             # be somebody's rather than any form's. This is where a paste comes from: a person
@@ -134,7 +223,8 @@ def out_of_the_archive(data_dir: pathlib.Path) -> dict[str, str]:
             # medical record. Whole sections are no use to compare — nobody pastes a page — so it
             # is the lines.
             for table in ("sections", "page_texts"):
-                for (value,) in db.execute(f"SELECT text FROM {table} WHERE text IS NOT NULL"):
+                for (value,) in _asked(db, f"SELECT text FROM {table} WHERE text IS NOT NULL",
+                                       f"a line of a document, out of {table}", index, gaps):  # fmt: skip
                     for line in str(value).splitlines():
                         said = fold(line)
                         # Letters, and enough of them. A row of dashes is forty characters long and
@@ -143,9 +233,11 @@ def out_of_the_archive(data_dir: pathlib.Path) -> dict[str, str]:
                         # first run and teaching the reader to skim the report.
                         if len(said) >= A_LINE_OF_A_DOCUMENT and _letters(said) >= WORDS_OF_A_LINE:
                             phrases.setdefault(said, "a line of a document")
-            for (value,) in db.execute("SELECT DISTINCT sha256 FROM files"):
+            for (value,) in _asked(db, "SELECT DISTINCT sha256 FROM files",
+                                   "the hash of a file in an archive", index, gaps):  # fmt: skip
                 phrases[fold(value)] = "the hash of a file in an archive"
-            for (value,) in db.execute("SELECT DISTINCT path FROM files WHERE path IS NOT NULL"):
+            for (value,) in _asked(db, "SELECT DISTINCT path FROM files WHERE path IS NOT NULL",
+                                   "the name of a file in an archive", index, gaps):  # fmt: skip
                 phrases[fold(pathlib.Path(value).name)] = "the name of a file in an archive"
     phrases.pop("", None)
     # What was published on purpose, from wherever it is kept: beside the data directory, as an
@@ -156,14 +248,83 @@ def out_of_the_archive(data_dir: pathlib.Path) -> dict[str, str]:
     for place in (data_dir, data_dir.parent, pathlib.Path.cwd()):
         found = place / ALLOWED_FILE
         if found.exists():
-            allowed |= {fold(line) for line in found.read_text(encoding="utf-8").splitlines()
-                        if line.strip() and not line.startswith("#")}  # fmt: skip
+            # Fenced like the rest. This half is the one that errs towards shouting rather than
+            # towards silence — a list nobody could read means a name its owner meant to publish
+            # is reported — but a traceback is a traceback, and the person is told which it is.
+            try:
+                allowed |= {fold(line) for line in found.read_text(encoding="utf-8").splitlines()
+                            if line.strip() and not line.startswith("#")}  # fmt: skip
+            except (OSError, ValueError) as trouble:
+                _unreadable(gaps, "what the owner of this archive publishes on purpose",
+                            f"{found} will not be read", trouble,
+                            f"put that file right, and until then read every line below knowing "
+                            f"that what {ALLOWED_FILE} allows is not allowed in this run")  # fmt: skip
+    kind_not_place = _words_the_program_keeps()
     return {phrase: what for phrase, what in phrases.items()
-            if len(phrase) >= SHORTEST and phrase not in allowed}  # fmt: skip
+            if len(phrase) >= SHORTEST and phrase not in allowed
+            and not (what in ("the name of an institution", "the name of a doctor")
+                     and phrase in kind_not_place)}, gaps  # fmt: skip
+
+
+def _words_the_program_keeps() -> set[str]:
+    """The words this program holds in order to recognise a kind of place or a kind of person.
+
+    "Whole phrases, not words" is the first rule written at the top of this file, and it was
+    enforced by length: nine characters. A word of eleven is still a word. An archive turned up
+    whose forms print, where the institution goes, nothing but the kind of institution — one common
+    noun, no name — and this said "Do not publish" about a word that stands in the program because
+    the program needs it to tell a doctor's signature from a laboratory's name. Red for ever, and
+    nothing anybody could fix, because the file it pointed at was right to hold that word.
+
+    One word only, and only from this list, and only against the two kinds that name somebody. A
+    laboratory's brand is one word too — a guard that waved every single word through would miss
+    the name of the place that printed half an archive. This waves through the word that means
+    "clinic", never the word that is the clinic.
+    """
+    try:
+        from epicrisis import suspects
+    except Exception:
+        # The guard runs against repositories that are not this one — its own tests build one in a
+        # temporary folder. Without the program there is no list, and nothing is waved through.
+        return set()
+    words = set(getattr(suspects, "ORGANISATION", ())) | set(getattr(suspects, "TITLES", ()))
+    return {fold(word) for word in words}
+
+
+def _what_travels(repo: pathlib.Path) -> list[str]:
+    """Which commits a reader of the published repository can actually reach.
+
+    "A file deleted in the tip is still published in the history" is true of a repository that is
+    pushed. This one is not: each release is one squashed commit made on the previous release, and
+    the public repository holds four commits for three versions. Local history never travels, and
+    a check that reads it is answering a question nobody asked here — loudly, and for ever, because
+    a commit cannot be unmade by fixing a file. A gate that is red whatever anybody does is not a
+    gate; it is the thing people learn to pass with --no-verify on the day it is right.
+
+    So: everything the published branch holds, which is what was published and cannot be recalled,
+    and the working tree, which is what the next release will carry. Between them lies the local
+    history, and nothing in it reaches anybody.
+
+    Both halves of this tool read what this says, and for a while only one did. The phrases were
+    read out of the published branch and the pictures out of `--all`, so the picture check answered
+    "do not publish" over versions of a screenshot in the working branches of half a dozen agents'
+    worktrees — branches that are not ancestors of main, that a squashed release carries nothing
+    out of, and that nobody standing on main can make the check forget. It was red on the day it
+    was right about something else, which is the whole of what this function is for.
+
+    Where there is no published branch to compare with — a fresh clone, somebody else's checkout,
+    the tests' own repository — every commit is a commit that may travel, and all of them are read.
+    """
+    for branch in ("origin/main", "origin/master"):
+        there = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", branch],
+                               capture_output=True, text=True)  # fmt: skip
+        if there.returncode == 0:
+            return [branch]
+    return ["--all"]
 
 
 def published(repo: pathlib.Path) -> tuple[dict[pathlib.Path, str], str]:
-    """What this repository shows today, and everything it has ever shown."""
+    """What this repository shows today, and everything it has ever shown anybody else."""
     tracked = subprocess.run(["git", "-C", str(repo), "ls-files"], capture_output=True, text=True, check=True)
     now = {}
     for name in tracked.stdout.split("\n"):
@@ -175,7 +336,7 @@ def published(repo: pathlib.Path) -> tuple[dict[pathlib.Path, str], str]:
     # a git that failed for any reason left history empty, nobody looked at a single commit, and the
     # last line of this program still said "in no commit" — the one sentence a person reads before
     # pushing. The asymmetry stood in two lines beside each other.
-    history = subprocess.run(["git", "-C", str(repo), "log", "--all", "-p", "--no-color"],
+    history = subprocess.run(["git", "-C", str(repo), "log", *_what_travels(repo), "-p", "--no-color"],
                              capture_output=True, text=True, check=True)  # fmt: skip
     return now, fold(history.stdout)
 
@@ -255,6 +416,10 @@ def pictures_of_nobody(repo: pathlib.Path) -> list[str]:
     pushed, and not one of them was ever compared with anything — the tip was hashed, and the
     history was only asked whether a name had disappeared from it. So every version is hashed and
     matched, and a version nothing declares is refused by name, with what to do about it.
+
+    "Every commit" is _what_travels, as it is for the phrases. This half read `--all` instead, and
+    refused to publish over versions of a screenshot held in agents' worktree branches, which a
+    squashed release carries nothing out of and which nobody on main can clear.
     """
     known, earlier, said = _manifest(repo)
     if said:
@@ -348,11 +513,13 @@ def _images_ever(repo: pathlib.Path) -> dict[str, str]:
     """Images any commit has ever held, and the commit that first showed each.
 
     A picture taken off the tip is still in the history and still reachable, which is the whole
-    reason this tool reads the history for everything else.
+    reason this tool reads the history for everything else. As far as it travels, and no further:
+    _what_travels says which commits those are, and says it for the phrases and the pictures alike.
     """
     seen: dict[str, str] = {}
     walked = subprocess.run(
-        ["git", "-C", str(repo), "log", "--all", "--name-only", "--pretty=format:%h", "--diff-filter=AM"],
+        ["git", "-C", str(repo), "log", *_what_travels(repo), "--name-only", "--pretty=format:%h",
+         "--diff-filter=AM"],
         capture_output=True, text=True, check=False,
     )  # fmt: skip
     commit = ""
@@ -370,12 +537,17 @@ def _images_ever(repo: pathlib.Path) -> dict[str, str]:
 def _every_version(repo: pathlib.Path) -> list[tuple[str, str, str]]:
     """Every version of every picture the history holds: its path, its blob, and the hash of it.
 
-    `git rev-list --objects --all` names every object anybody cloning this repository receives,
-    each blob beside a path some tree filed it under. That is the list to check, and not the list
-    of files in the tip: a picture replaced in a later commit is a blob of its own under the same
-    name, published exactly as much as the one standing today.
+    `git rev-list --objects` names every object a reader of those commits receives, each blob
+    beside a path some tree filed it under. That is the list to check, and not the list of files in
+    the tip: a picture replaced in a later commit is a blob of its own under the same name,
+    published exactly as much as the one standing today.
+
+    Those commits are _what_travels and were `--all`, which is every object in anybody's local
+    clone whether it has been published or ever will be. The version standing in the tip is
+    answered for by its own hash in pictures_of_nobody, so nothing is lost by not reading the
+    branch it stands on.
     """
-    listed = subprocess.run(["git", "-C", str(repo), "rev-list", "--objects", "--all"],
+    listed = subprocess.run(["git", "-C", str(repo), "rev-list", "--objects", *_what_travels(repo)],
                             capture_output=True, text=True, check=True)  # fmt: skip
     versions = []
     for line in listed.stdout.splitlines():
@@ -413,24 +585,76 @@ def _hashes_of(repo: pathlib.Path, blobs: list[str]) -> list[str]:
 
 
 def _a_commit_showing(repo: pathlib.Path, blob: str) -> str:
-    """One commit that holds that version, so the person reading the report can go and look at it."""
-    found = subprocess.run(["git", "-C", str(repo), "log", "--all", "--format=%h", "--find-object", blob, "-1"],
+    """One commit that holds that version, so the person reading the report can go and look at it.
+
+    Looked for among the commits that travel, like everything else here: a blob named by this
+    report came out of those, and naming a local commit that holds it too would send the reader to
+    a commit nobody will ever receive.
+    """
+    found = subprocess.run(["git", "-C", str(repo), "log", *_what_travels(repo), "--format=%h",
+                            "--find-object", blob, "-1"],
                            capture_output=True, text=True, check=False)  # fmt: skip
     return found.stdout.strip().split("\n")[0] or "a commit git could not name"
 
 
-def look(repo: pathlib.Path, data_dir: pathlib.Path) -> list[str]:
-    """Everything wrong with publishing this repository, as lines. An empty list is the answer."""
+def the_journal_of_this_instance(data_dir: pathlib.Path, phrases: dict[str, str]) -> list[str]:
+    """What the log of this instance holds out of the archive it is the log of.
+
+    The journal is not published and not tracked, so nothing above looks at it: every other check
+    here asks about files in the repository. It is still the one file of a running instance most
+    likely to be read out loud — it exists to be pasted into a question about why a step failed,
+    and a person debugging their own archive will hand it to whoever is helping them. A line of
+    somebody's diagnosis in it travels exactly as far as one in a commit.
+
+    It is written to be safe: counts rather than names, an archive's random id rather than whose
+    it is, the place in the source rather than the message of the exception. `layout.MADE_AGAIN_BY_CODE`
+    and never `THEIR_OWN_WORK`. That is the intent, and `tests/test_journal_shows_nothing.py`
+    holds it for journals the tests write. What nothing held until now is the intent against the
+    journal this machine actually has, which is the only one that can be leaked.
+
+    A journal that cannot be read is reported rather than skipped. The word "Clean" over a file
+    this check could not open is the same defect this guard already had once about a half-read
+    archive.
+    """
+    from epicrisis import layout
+
+    journal = data_dir / layout.JOURNAL
+    if not journal.exists():
+        return []
+    try:
+        written = journal.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as trouble:
+        return [f"{journal.name} of this instance could not be read, so nothing is cleared about "
+                f"it: {type(trouble).__name__}. Look at it by hand, or move it aside."]  # fmt: skip
+    # Folded to compare, raw to look for a secret: the phrases out of an archive are kept folded,
+    # because a line printed in one case and written down in another is the same line, while a key
+    # is the characters it is and nothing else.
+    text = fold(written)
+    found = [what for phrase, what in phrases.items() if phrase in text]
+    if found:
+        # Said by kind and counted, never quoted — the same rule as everywhere else in here.
+        return [f"{len(found)} thing(s) out of the archive are in {journal.name} of this instance: "
+                + ", ".join(sorted(set(found))[:4])]  # fmt: skip
+    return [f"a secret has the shape of one in {journal.name} of this instance"] if _secrets_in(written) else []
+
+
+def look(repo: pathlib.Path, data_dir: pathlib.Path) -> tuple[list[str], int]:
+    """Everything wrong with publishing this repository, as lines. An empty list is the answer.
+
+    What could not be read out of the archive stands first among those lines, because it is the
+    one kind of trouble no file in this repository can be edited to put right.
+    """
+    phrases, gaps = out_of_the_archive(data_dir)
     now, history = published(repo)
     everything = history + " ".join(now.values())
-    trouble = secrets_of_this_server(repo, everything, data_dir) + pictures_of_nobody(repo)
+    trouble = (gaps + secrets_of_this_server(repo, everything, data_dir) + pictures_of_nobody(repo)
+               + the_journal_of_this_instance(data_dir, phrases))  # fmt: skip
     for what, shape in NEVER_PUBLISHED:
         for file, text in now.items():
             if _real_matches(shape, text):
                 trouble.append(f"{what} is in {file.relative_to(repo)}")
         if _real_matches(shape, history):
             trouble.append(f"{what} is somewhere in the history")
-    phrases = out_of_the_archive(data_dir)
     for phrase, what in phrases.items():
         where = [str(file.relative_to(repo)) for file, text in now.items() if phrase in text]
         if where:
@@ -454,14 +678,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     trouble, checked = look(args.repo.resolve(), args.data_dir.resolve())
     if trouble:
-        print(f"Do not publish. {len(trouble)} thing(s) out of the archive or secret are in this repository:",
-              file=sys.stderr)  # fmt: skip
+        # "or could not be read", because one of these lines is not about this repository at all:
+        # an archive read in half is an archive this check cannot clear, and the word "Clean" about
+        # one of those is worse than a crash.
+        print(f"Do not publish. {len(trouble)} thing(s) out of the archive or secret are in this "
+              "repository, or could not be read out of the archive at all:", file=sys.stderr)  # fmt: skip
         for line in trouble:
             print(f"  - {line}", file=sys.stderr)
         print("\nNothing matched is printed here on purpose. Go and look at the files named above.", file=sys.stderr)
         return 1
     print(f"Clean: {checked} phrases out of the archive, and the secrets of this server, "
-          "are in no tracked file and in no commit.")
+          "are in no tracked file, in no commit, and in no line of this instance's journal.")
     return 0
 
 

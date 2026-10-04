@@ -6,14 +6,18 @@ by anything before: they raced over the same ledgers, and over temporary files w
 fixed, so two `epicrisis index` runs wrote the same `index-<id>.sqlite.tmp` and each renamed
 whatever the other had half-written into place.
 
-The lock is a file holding the pid that holds it, created with O_EXCL so that the check and the
-claim are one act rather than two. A lock left behind by a process that is gone is not a lock:
-it is taken over, because a crash must not make a step unusable until somebody deletes a file.
+The lock is a file holding the pid that holds it, and it is put there whole: the pid is written
+under a name of its own and that name is linked to the lock's, so the check and the claim are one
+act and there is no instant in which the lock exists and says nothing. It was O_EXCL and then a
+write, which is two acts, and the hole that left is written down over one_at_a_time. A lock left
+behind by a process that is gone is not a lock: it is taken over, because a crash must not make a
+step unusable until somebody deletes a file.
 """
 
 import json
 import os
 import shutil
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from contextlib import contextmanager
@@ -86,12 +90,26 @@ def _older_than_believing(started_at) -> bool:
 
 @contextmanager
 def one_at_a_time(lock: Path, what: str) -> Iterator[None]:
-    """Hold the lock for the length of a run, or refuse with Busy and touch nothing."""
+    """Hold the lock for the length of a run, or refuse with Busy and touch nothing.
+
+    The lock arrives whole, through _taken below, and that is the whole of this fix. It used to be
+    created with O_EXCL and filled a moment later, which is the same two acts that `write_whole`
+    and `put_in_place` exist in this file to avoid: a reader that got in between found an empty
+    file, `holder` read it as held by nobody, and this went on to delete it and take the lock over.
+    Two runs then held one lock. Every writer under it is read-modify-write, so the loser's whole
+    file was written back as it had been read, and the constitution's eighth entry was broken with
+    nothing said.
+
+    Measured, two processes started at the same instant and each joining a name under this lock:
+    in 14 of 30 runs both were told they had written and only one of the two names was in the file
+    afterwards, and one of those 30 left a file that would not read at all. Sixty runs after this
+    change: none of either.
+    """
     lock = Path(lock)
     lock.parent.mkdir(parents=True, exist_ok=True)
     for attempt in (1, 2):
         try:
-            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            mine = _taken(lock)
         except FileExistsError:
             running = holder(lock)
             if running is not None:
@@ -108,22 +126,61 @@ def one_at_a_time(lock: Path, what: str) -> Iterator[None]:
                            lock=lock, what=what) from None  # fmt: skip
             lock.unlink(missing_ok=True)
             continue
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as file:
-                json.dump({"pid": os.getpid(), "started_at": now()}, file)
-        except OSError:
-            # The file is made first and written second, so a disk with no room left in it left an
-            # empty lock file behind — one per press of a button on the dashboard — from before the
-            # try/finally that takes the lock off. An empty file is read as held by nobody, so this
-            # healed itself; it still littered a full disk with locks while a person was trying to
-            # clear one.
-            lock.unlink(missing_ok=True)
-            raise
-        break
+        if _still_the_one_linked(lock, mine):
+            break
+        # Somebody else took a lock they had judged dead out from under the one we had just put
+        # there — the deletion above, run by two takers at once. The file on disk is now theirs,
+        # and ours is gone, so asking again is how we find out who holds it: the second turn round
+        # reads their pid and refuses by name. Not breaking here is the point; breaking would mean
+        # running while the file says somebody else.
+        if attempt == 2:
+            raise Busy(f"{what} could not take its lock ({lock}): it is being taken by somebody else.",
+                       lock=lock, what=what)  # fmt: skip
     try:
         yield
     finally:
         lock.unlink(missing_ok=True)
+
+
+def _taken(lock: Path) -> int:
+    """Put the lock there with its pid already in it, and answer the inode it went in as.
+
+    Raises FileExistsError when the name is taken, which is what O_EXCL gave and what the caller
+    reads as "somebody holds this". os.link is used rather than the os.replace of `put_in_place`
+    for exactly that: replace would take a live lock off its holder without a word, while link
+    refuses, and refusing is the whole job here.
+
+    The bytes are written under a name of this process and this thread before they are linked, so
+    two takers never share the file they write — the web server takes these locks on threads of
+    one process, where the pid alone does not tell them apart, which is why this is not
+    `temporary_name`. A disk with no room left now fails before the lock's own name exists at all
+    and leaves nothing behind. It used to leave an empty lock file per press of a button on the
+    dashboard, on the very disk somebody was trying to clear.
+
+    This asks of the data directory a filesystem that has hard links. Every one that can carry the
+    sqlite indexes beside these locks has them; a stick formatted for a camera does not, and that
+    is where a person's scans may sit, never these.
+    """
+    claim = lock.with_name(f"{lock.name}.{os.getpid()}.{threading.get_ident()}.claim")
+    try:
+        handle = os.open(claim, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            json.dump({"pid": os.getpid(), "started_at": now()}, file)
+        # Read before the link and not after it: linking is the moment the lock becomes ours, and
+        # nothing that could fail belongs between that moment and the caller hearing about it.
+        mine = claim.stat().st_ino
+        os.link(claim, lock)
+        return mine
+    finally:
+        claim.unlink(missing_ok=True)
+
+
+def _still_the_one_linked(lock: Path, mine: int) -> bool:
+    """Whether the file under the lock's name is the one we linked there, and not a later one."""
+    try:
+        return os.stat(lock).st_ino == mine
+    except OSError:
+        return False
 
 
 def belongs_to_the_folder(path: Path) -> None:

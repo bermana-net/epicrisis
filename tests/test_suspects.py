@@ -20,8 +20,14 @@ def value(name, number, unit, indicator="creatinine", sha="a" * 64, page=1, **re
 
 
 def document(sha="a" * 64, page=1, **rest):
+    """One row of the index's documents table, as suspects.rows_from_index reads it.
+
+    person_printed_as_the_institution is what the index wrote down about a name the form printed
+    where the institution goes; None on an ordinary document, as the column is.
+    """
     return {"file_sha256": sha, "first_page": page, "date": "2020-01-01", "doc_type": "lab_panel",
-            "title": "Biochemistry", "provider": "City Laboratory", "transcribed": 1, **rest}  # fmt: skip
+            "title": "Biochemistry", "provider": "City Laboratory",
+            "person_printed_as_the_institution": None, "transcribed": 1, **rest}  # fmt: skip
 
 
 def test_a_number_far_from_every_other_reading_of_the_same_test_is_a_candidate():
@@ -47,17 +53,31 @@ def test_units_differing_between_laboratories_are_not_suspicious_but_a_missing_o
 
 
 def test_an_institution_read_as_a_person_and_a_lab_form_with_no_title():
+    """The rule reads what the index recorded, and the common shape is a provider left empty.
+
+    Both of these are a document the rule as it stood could not find: the index had taken the
+    name out of the provider column and the rule asked that column. The second is the other half
+    of the record — a name still standing in the institution's place because the form also named
+    a doctor — and the rule marks it the same.
+    """
     found = {item.file_id: item for item in find([], [
-        document(sha="1" * 64, provider="Кедров В. П."),
-        document(sha="2" * 64, provider="TRW, KLN"),
+        document(sha="1" * 64, provider=None, person_printed_as_the_institution="Кедров В. П."),
+        document(sha="2" * 64, provider="TRW, KLN", person_printed_as_the_institution="TRW, KLN"),
         document(sha="3" * 64, title=None),
         document(sha="4" * 64),
     ])}  # fmt: skip
 
     assert found["1" * 8].codes["institution_looks_like_a_name"] == 1
+    assert "Кедров В. П." in found["1" * 8].lines[0] and "read here as the doctor" in found["1" * 8].lines[0]
     assert found["2" * 8].codes["institution_looks_like_a_name"] == 1
+    assert "read here as the doctor" not in found["2" * 8].lines[0]  # it was not moved anywhere
     assert found["3" * 8].codes["lab_form_without_a_title"] == 1
     assert "4" * 8 not in found
+    # A provider that reads like a person and no record of the index having seen it is not a
+    # finding of this rule: the record is the whole point, and a rule guessing at it again is the
+    # permanent zero this replaces.
+    assert not any("institution_looks_like_a_name" in item.codes
+                   for item in find([], [document(sha="5" * 64, provider="Кедров В. П.")]))  # fmt: skip
     assert not provider_looks_like_a_person("Aegean Laboratories Cyprus Ltd")
     assert provider_looks_like_a_person("Гриценко С.А.")
     # A title before the name, and the institution's own words standing in the title instead.

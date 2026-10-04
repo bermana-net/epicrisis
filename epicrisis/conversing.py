@@ -79,8 +79,6 @@ def through_the_api(data_dir: Path, prompt: str, system: str, call, server=None,
                               "messages": messages, "tools": tools})  # fmt: skip
         blocks = said.get("content") or []
         wanted = [block for block in blocks if block.get("type") == "tool_use"]
-        for block in wanted:
-            yield {"kind": "tool", "step": {"tool": block.get("name", ""), "input": block.get("input") or {}}}
         if said.get("stop_reason") != "tool_use" or not wanted:
             text = _said(blocks)
             yield {"kind": "answer", "text": text} if text else {"kind": "error", "text": "no answer"}
@@ -88,6 +86,12 @@ def through_the_api(data_dir: Path, prompt: str, system: str, call, server=None,
 
         results = []
         for block in wanted:
+            # The step as the call goes out and `answered` as it comes back, around the one line
+            # that does the work: the page records what the archive itself took, and it can only
+            # be that in a conversation answered over the API if this loop says when a call
+            # started and when it ended. Every step of this engine used to be yielded before any
+            # of them ran, which left nothing in between to time.
+            yield {"kind": "tool", "step": {"tool": block.get("name", ""), "input": block.get("input") or {}}}
             try:
                 got = asyncio.run(server.call_tool(block["name"], block.get("input") or {}))
                 results.append({"type": "tool_result", "tool_use_id": block["id"], "content": _answer_of(got)})
@@ -97,6 +101,7 @@ def through_the_api(data_dir: Path, prompt: str, system: str, call, server=None,
                 # worse for the person than one that carries on with less.
                 results.append({"type": "tool_result", "tool_use_id": block["id"], "is_error": True,
                                 "content": f"the tool failed: {type(trouble).__name__}"})  # fmt: skip
+            yield {"kind": "answered"}
         messages.append({"role": "assistant", "content": blocks})
         messages.append({"role": "user", "content": results})
 

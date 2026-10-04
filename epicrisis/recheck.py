@@ -23,7 +23,14 @@ from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
 from epicrisis.printed_values import fold
 from epicrisis.sources import Source, source_output_dir
 
-HEADER_FIELDS = ("title_as_printed", "date_of_study_as_printed", "provider_as_printed")
+# The doctor was not here, and the one question a second reading is most often asked is about
+# the doctor. Every transcription of all three archives on this machine — 706 of them — was read
+# before this program had a field for one, so the archive's side of the comparison is absent and
+# the second reading's side is a name: shown here as a disagreement, which is exactly what it is,
+# and the only way the owner can see what re-reading a file would buy before he spends a run on
+# all of them.
+HEADER_FIELDS = ("title_as_printed", "date_of_study_as_printed", "provider_as_printed",
+                 "doctor_as_printed")  # fmt: skip
 COMPARED = ("value_as_printed", "unit_as_printed", "reference_as_printed", "flag_as_printed")
 
 

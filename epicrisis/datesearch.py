@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from epicrisis import layout
+from epicrisis import journal, layout
 from epicrisis import records
 from epicrisis.classify.backend import STRONG_MODEL, BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, _clean_image, _close_ups, _file_bytes, _page_image, page_refs
@@ -115,6 +115,47 @@ def load_search_results(output: Path) -> dict[tuple, dict]:
     return latest
 
 
+def documents_without_a_date(source: Source, output: Path) -> list[tuple[dict, tuple[int, ...]]]:
+    """Which documents of this archive have no date and could still be given one. One answer.
+
+    Each is the inventory record of its file and the pages it covers, which is what search_source
+    takes. Three places walked the documents and decided this for themselves, and the third left
+    a condition out: a blank page is a kind of document in its own right (doc_types.blank) and
+    there is no date to find on one, so it is not a document waiting for a search. `epicrisis
+    find-dates` filtered it out of the documents it searched and not out of the ones it counted
+    afterwards, and printed both numbers one under the other:
+
+        Documents without a date: 4
+        Documents still without a date: 7
+
+    — with the second larger than the first on an archive holding blank pages, even when a date
+    was found on every one of the four. A count that differs from another count on the same page
+    is a defect, not a detail.
+
+    It lives here because this is the step it is about: what the search for a date is for is the
+    documents that have none. The command line prints numbers and decides nothing, and the module
+    that runs every step in order is not where a step's own question belongs.
+
+    The view is asked for here and not kept: web.documents imports this module, so the import is
+    made where it is used, and that view holds every document of the archive with its reading —
+    far more than this question needs, but it is the one place that settles which date a document
+    carries, and asking it a second way is how the three copies of this walk came about. It is
+    cheap to ask twice: the view is kept behind the moment its files last changed, so a second
+    call after a run that found nothing costs a handful of stat calls, and after a run that wrote
+    something it is the rebuild that makes the answer true.
+    """
+    from epicrisis.web.documents import source_documents
+
+    view = source_documents(source, output) or {"years": []}
+    records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
+    return [
+        (records[row["file"]["sha256"]], tuple(row["pages"]))
+        for group in view["years"]
+        for row in group["documents"]
+        if row["date"]["value"] is None and not row.get("unreadable") and row["doc_type"] != "blank"
+    ]
+
+
 def search_source(data_dir: Path, source: Source, backend, targets: list[tuple[dict, tuple[int, ...]]], workers: int = DEFAULT_WORKERS) -> SearchStats:
     """Search the given documents (inventory record, pages) not yet searched with this model and prompt."""
     output = source_output_dir(data_dir, source.id)
@@ -156,6 +197,11 @@ def _search_document(record: dict, pages: tuple[int, ...], output: Path, source:
         _write(output, record, pages, backend, status, [], None, str(exc))
         with STATE_LOCK:
             setattr(stats, status, getattr(stats, status) + 1)
+        if isinstance(exc, PageUnreadable):
+            # A backend that failed is the network or the model and is recorded by the step
+            # itself; a page that could not be read is this project's own decision, at a line of
+            # it that nothing else names.
+            journal.a_page_would_not_read(output, source.id, exc, "date search")
         return True
     _write(output, record, pages, backend, "done", found, ", ".join(sorted(models)))
     with STATE_LOCK:

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from epicrisis import layout
 from epicrisis import records
-from epicrisis.printed_values import fold
+from epicrisis.printed_values import as_a_name, fold
 from epicrisis.runs import copy_whole, one_at_a_time, write_whole
 from epicrisis.state import Unreadable
 from epicrisis.values import only_results
@@ -62,6 +62,18 @@ def load(data_dir: Path) -> list[Indicator]:
     groups of spellings, approved one at a time by a person, replaced by one, with a 303 for
     "saved". Nothing rebuilds them: a model can propose groups, only a person can approve them,
     so this is the one file under data/ whose contents no code and no money can make again.
+
+    The spellings are folded again on the way out, and that is what keeps this file working when
+    the fold changes. They are stored folded, so every one of them was folded by the fold of the
+    day it was approved; the day the apostrophe went out of the fold, 28 spellings in this
+    archive's own file — "об'ем правои доли", "e/e' medial vm", "билирубин зв'язании" and
+    twenty-five more — stopped being what the printed name folds to, and the values under them
+    would have fallen quietly out of their indicator. Folding here costs one pass over a few
+    thousand short strings and makes that impossible, whichever fold wrote the file.
+
+    It is read-only on purpose. Nothing of a person's own work is rewritten by a change of ours
+    (eighth entry): the file keeps the spellings as they were approved until the person's own next
+    edit writes it through save(), which keeps the version it replaces beside it.
     """
     file = path(data_dir)
     try:
@@ -77,7 +89,30 @@ def load(data_dir: Path) -> list[Indicator]:
             "change. Moving it aside instead starts the vocabulary from nothing, and the groups "
             "would have to be approved again by hand.",
         ) from broken
-    return [Indicator(**item) for item in stored.get("indicators", [])]
+    return [_folded_again(Indicator(**item)) for item in stored.get("indicators", [])]
+
+
+def _folded_again(indicator: Indicator) -> Indicator:
+    """One group with its stored spellings folded by today's fold, in the order they were in.
+
+    Two spellings of one group folding to the same thing is not new and is not an error: this
+    archive's file already holds "еозинофили" beside "эозинофилы" and "шое за панченковим" beside
+    "шое за панченковым", which the fold has paired for longer than the file has existed. The
+    duplicate is dropped, because a list of spellings is a set of them and the page prints it.
+    Measured over the 541 groups here: 11 pairs collapse and every one of the 11 is inside a
+    single group — no spelling moves from one indicator to another, which it must not, because
+    which group a spelling belongs to is the person's answer and not a fold's.
+
+    One of the 11 collapses across the two lists rather than inside one ("эр" approved, "ер"
+    waiting, under erythrocyte), and a spelling that is approved is not also waiting: every change
+    in this file takes an approved spelling out of the proposals, and a fold that put one back
+    would have the page counting it twice, once in each line of its header.
+    """
+    indicator.names = list(dict.fromkeys(fold(name) for name in indicator.names))
+    approved = set(indicator.names)
+    indicator.proposed_names = [name for name in dict.fromkeys(fold(name) for name in indicator.proposed_names)
+                                if name not in approved]  # fmt: skip
+    return indicator
 
 
 def while_editing(change):
@@ -147,28 +182,16 @@ def approved_names(data_dir: Path) -> dict[str, str]:
     return {name: indicator.id for indicator in load(data_dir) if indicator.status == "approved" for name in indicator.names}
 
 
-# Letters of the alphabets this archive is written in, as an address can carry them. A label in
-# Cyrillic or Greek used to leave nothing behind after the Latin letters were kept, so every such
-# indicator was called "indicator", "indicator-2", "indicator-3" — opaque in a URL, and unmatched
-# by every table in this program that is keyed by what a test is.
-TRANSLITERATED = {
-    "а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d", "е": "e", "є": "ie", "ж": "zh",
-    "з": "z", "и": "y", "і": "i", "ї": "i", "й": "i", "к": "k", "л": "l", "м": "m", "н": "n",
-    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
-    "ч": "ch", "ш": "sh", "щ": "shch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "iu", "я": "ia",
-    "α": "a", "β": "b", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "i", "θ": "th", "ι": "i",
-    "κ": "k", "λ": "l", "μ": "m", "ν": "n", "ξ": "x", "ο": "o", "π": "p", "ρ": "r", "σ": "s",
-    "ς": "s", "τ": "t", "υ": "y", "φ": "f", "χ": "ch", "ψ": "ps", "ω": "o",
-}
-
-
 def slug(label: str, taken: set[str]) -> str:
-    latin = "".join(TRANSLITERATED.get(letter, letter) for letter in fold(label))
-    base = re.sub(r"[^a-z0-9]+", "-", latin).strip("-")[:40] or "indicator"
-    candidate, number = base, 2
-    while candidate in taken:
-        candidate, number = f"{base}-{number}", number + 1
-    return candidate
+    """What an indicator's file-and-URL id is called, given the label a person approved.
+
+    The answer itself is printed_values.as_a_name, where the transliteration table and the
+    unique-name loop now live: rules.slug asked the same question of the same alphabets and
+    answered it differently, with no transliteration at all. This stays as the door indicators
+    come in by, because the fallback is the word this program uses for a label that leaves no
+    Latin letter behind, and that word is an indicators decision.
+    """
+    return as_a_name(label, taken, fallback="indicator")
 
 
 @while_editing

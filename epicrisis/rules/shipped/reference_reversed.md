@@ -14,7 +14,16 @@ on_by_default = true
 
 # What it looks at
 
-Ranges of the plain form "low - high", where the first number is larger than the second.
+Any printed range this program can read at all, where the first of its two ends stands above the
+second. The range is read by `reference.py`, the one reader of a printed range here, so every
+spelling that reader knows is covered: a dash, two dots, and the word a Spanish, Greek, Russian,
+Ukrainian or English form puts between the ends; a label in front of the range; a unit after it;
+thousands grouped with a space. It had a pattern of its own before, which knew the dash and
+nothing else, and on the two languages that print a range with a word it never fired.
+
+Why this of all the checks must see every spelling: a range that reads backwards is read as no
+range at all, so the band under the chart goes missing and the third answer mode has nothing to
+compare the number with. This check is the only thing that tells a person why.
 
 
 # How it can be wrong

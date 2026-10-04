@@ -46,7 +46,32 @@ Rules:
 # rule range_read_two_ways, which only reports the disagreement.
 THE_RANGE_AS_NUMBERS = """- reference_low and reference_high: the reference range printed beside this value, as two numbers, in the unit it is printed in. Copy the numbers, do not convert them. "3,5 - 5,5" is 3.5 and 5.5. "< 5,0" is null and 5.0; "> 60" is 60 and null. Both null where the form prints no range beside this value, or prints something that is not one range for this person: a table of ranges by age or sex, a ratio such as 1:80, a share of another measurement, or words. Never choose a range yourself, never pick the line of a table that seems to fit, and never take a range printed for another row."""
 
-SYSTEM_PROMPT = WHAT_THE_VERSION_WAS_TAKEN_FROM + "\n" + THE_RANGE_AS_NUMBERS
+# Left out of PROMPT_VERSION for the reason written over it below: this asks for *less* than what
+# was asked before, and a document already read is not wrongly read because of it.
+#
+# A page that goes as text goes from a file this program holds — a text file, a sheet of a
+# workbook, the text layer of a PDF. Asking the model to write those twenty thousand characters
+# back is most of its answer, and therefore most of the waiting: two documents of this archive
+# never finished inside the fifteen minutes a call is given. It is also where the one thing this
+# program promises was quietly broken — four letters came back changed, Russian spellings tidied
+# into Ukrainian ones, in a hundred thousand. The text we sent is the text we keep.
+THE_TEXT_WE_ALREADY_HAVE = """- page_texts: leave out any page given to you as text between markers. That text is the file itself, which this program keeps; there is nothing to copy back, and a copy is not what is stored. Pages given as an image file still need their text in full, as above."""
+
+# Left out of PROMPT_VERSION for the reason written above it: this asks for something *beside*
+# what was already transcribed. A document read without the doctor is not wrongly read; it has
+# nothing in that field, and the archives already read keep what they have until their owner
+# decides to read them again.
+#
+# It was asked for by the archive that has no institutions in it at all. An export of a hospital's
+# own records names the department, the room and the doctor who saw the person, and takes the
+# hospital for granted — there is no letterhead, because there is no paper. With nowhere to put a
+# doctor, every one of its 256 documents put the doctor where the institution goes, and every one
+# of them was then flagged, rightly, as an institution field holding a person's name.
+THE_DOCTOR = """- doctor_as_printed: the person who saw, performed or signed, exactly as printed, with any initials or title: "Нетудихата І.В", "проф. Дорошенко Д.Г.". Null where the document names nobody.
+- provider_as_printed is the institution — a hospital, a clinic, a laboratory, a practice. A person's name is never an institution: where the document prints only the doctor, that name goes in doctor_as_printed and provider_as_printed is null. Where it prints both, both are filled."""
+
+SYSTEM_PROMPT = (WHAT_THE_VERSION_WAS_TAKEN_FROM + "\n" + THE_RANGE_AS_NUMBERS + "\n"
+                 + THE_TEXT_WE_ALREADY_HAVE + "\n" + THE_DOCTOR)  # fmt: skip
 
 NULLABLE_STRING = {"type": ["string", "null"]}
 PAGE = {"type": "integer", "minimum": 1}
@@ -85,7 +110,10 @@ def _observation(read_twice: bool) -> dict:
 OBSERVATION = _observation(read_twice=True)
 
 
-def _document(read_twice: bool) -> dict:
+def _document(read_twice: bool, with_the_doctor: bool = True) -> dict:
+    """The shape of a transcription. The flags leave out what was added after a version was taken:
+    the version is what decides whether four hundred documents are read again, and a field asked
+    for *beside* what is already transcribed does not make an earlier reading wrong."""
     return _object(
     {
         "title_as_printed": NULLABLE_STRING,
@@ -93,6 +121,7 @@ def _document(read_twice: bool) -> dict:
         "date_of_report_as_printed": NULLABLE_STRING,
         "provider_as_printed": NULLABLE_STRING,
         "department_as_printed": NULLABLE_STRING,
+        **({"doctor_as_printed": NULLABLE_STRING} if with_the_doctor else {}),
         "language": {"type": "string", "pattern": "^[a-z]{2}$"},
         "observations": {"type": "array", "items": _observation(read_twice)},
         "sections": {
@@ -115,6 +144,8 @@ DOCUMENT_SCHEMA = _document(read_twice=True)
 REQUEST_HEAD = "Transcribe this document. It has {count} pages. Read every page before answering."
 IMAGE_LINE = "Page {number}: the image file {name} in the current directory."
 TEXT_LINE = "Page {number}: the text between the markers.\n<<<PAGE {number}\n{text}\nPAGE {number}>>>"
+# Said again where the page is, for the same reason and left out of PROMPT_VERSION the same way.
+TEXT_KEPT_NOTE = " This page is kept by the program as it stands: leave it out of page_texts."
 
 # Left out of PROMPT_VERSION on purpose: the close-up pass is recorded in the document's
 # provenance, and adding it must not mark every earlier transcription as out of date.
@@ -132,7 +163,7 @@ CLOSE_UP_LINE = (
 # effect of a field being added. Until they choose it, the two numbers are null on everything read
 # before, and the rule that compares the two readings says nothing where one of them is missing.
 PROMPT_VERSION = hashlib.sha256(
-    "\n".join([WHAT_THE_VERSION_WAS_TAKEN_FROM, json.dumps(_document(read_twice=False), sort_keys=True),
+    "\n".join([WHAT_THE_VERSION_WAS_TAKEN_FROM, json.dumps(_document(read_twice=False, with_the_doctor=False), sort_keys=True),
                 REQUEST_HEAD, IMAGE_LINE, TEXT_LINE]).encode()  # fmt: skip
 ).hexdigest()[:12]
 
@@ -154,7 +185,9 @@ def build_request(payloads: list[Payload]) -> str:
         elif payload.image_path is not None:
             lines.append(IMAGE_LINE.format(number=number, name=payload.image_path.name))
         else:
-            lines.append(TEXT_LINE.format(number=number, text=payload.text or ""))
+            line = TEXT_LINE.format(number=number, text=payload.text or "")
+            head, marked = line.split("\n", 1)
+            lines.append(head + TEXT_KEPT_NOTE + "\n" + marked)
     return "\n\n".join(lines)
 
 

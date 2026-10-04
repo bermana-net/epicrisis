@@ -14,12 +14,18 @@
      heading, a lead about hovering dates, and a scale from 0% to 100% of nothing. #}
   {% set anything = sources | selectattr("document_count") | list %}
   {% if not anything %}
-  {{ nothing("Documents") }}
+  {{ nothing("Documents", stage) }}
   {% else %}
 
   <section class="rule" style="padding-top: 18px;">
     <h1>Documents</h1>
-    <p class="lead caps">Documents by the date printed on them, newest first. Hover a date to see it as printed; open a page to check it against the original.</p>
+    {# The date as printed used to live in a title= on the date, and the lead said "hover a date to
+       see it as printed". There is no hovering on a phone and none on a keyboard, and this is the
+       page the readme offers for showing a doctor from one — so on the screen it is read on, the
+       printed date was not on the page at all. It now stands under the read date, in the small
+       line this sentence names, and the seventh entry of the constitution is satisfied where it
+       was not: a page says out loud what it did to a date. #}
+    <p class="lead caps">Documents by the date printed on them, newest first. Under a read date stands the day as the form itself printed it, where the two are not the same words; open a page to check it against the original.</p>
     <p class="lead caps reading-legend">File ID colour shows how much text was read: {% for item in legend %}<span class="file-id" style="background: {{ item.background }}; color: {{ item.color }}">{{ item.label }}</span> {% endfor %}<span class="file-id" style="background: var(--line); color: var(--ink)">not transcribed yet</span></p>
   </section>
 
@@ -49,10 +55,14 @@
         {% for document in group.documents %}
         {% set file = document.file %}
         <div class="doc-row{% if not document.goes_to_extract %} skipped{% endif %}">
-          <span class="doc-date">{% if document.date.label %}<span class="mono" title="As printed: {{ document.date.printed }}">{{ document.date.label }}</span>{% if document.date.by_hand %}<span class="caps muted date-flag-hand">set by hand</span>{% endif %}{% elif document.date.printed %}<span title="As printed">{{ document.date.printed }}</span>{% else %}–{% endif %}{% for flag in document.date.flags %}<span class="caps date-flag">{{ flag.label }}</span>{% endfor %}</span>
-          <span>{% if document.unreadable %}<span class="caps muted">Could not be read</span>{% else %}<a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type }}</a>{% if document.extracted %} <span class="caps extracted">transcribed</span>{% endif %}{% if not document.goes_to_extract %} <span class="caps muted">not extracted</span>{% endif %}{% if document.illegible %} <span class="caps muted">hard to read</span>{% endif %}{% endif %}</span>
+          <span class="doc-date">{% if document.date.label %}<span class="mono">{{ document.date.label }}</span>{% if document.date.printed and document.date.printed != document.date.label %}<span class="mono muted date-printed">{{ document.date.printed }}</span>{% endif %}{% if document.date.by_hand %}<span class="caps muted date-flag-hand">set by hand</span>{% endif %}{% elif document.date.printed %}<span class="mono">{{ document.date.printed }}</span>{% else %}–{% endif %}{% for flag in document.date.flags %}<span class="caps date-flag">{{ flag.label }}</span>{% endfor %}</span>
+          <span>{% if document.unreadable %}<span class="caps muted">Could not be read</span>{% else %}<a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type | in_words }}</a>{% if document.extracted %} <span class="caps extracted">transcribed</span>{% endif %}{% if not document.goes_to_extract %} <span class="caps muted">not extracted</span>{% endif %}{% if document.illegible %} <span class="caps muted">hard to read</span>{% endif %}{% endif %}</span>
           <span class="doc-file-cell"><span class="file-id" style="background: {{ file.reading.background }}; color: {{ file.reading.color }}" title="File ID {{ file.file_id }}. {{ file.reading.title }}.">{{ file.file_id }}</span> <span class="path mono">{{ file.path }}</span> <span class="caps muted">p. {{ document.page_label }}</span></span>
-          <span>{{ document.provider or "–" }}</span>
+          {# The institution as the form printed it, in the tongue the form was printed in:
+             this column is Russian, Ukrainian and Greek down most of an archive, and the
+             page around it is English. The column beside it names the same language in
+             words, for a person; this says it to the browser. #}
+          <span{{ document.language_code | said_in }}>{{ document.provider or "–" }}</span>
           <span>{{ document.language or "–" }}</span>
           <span class="page-links">{% for number in document.pages %}<a href="/sources/{{ source.id }}/files/{{ file.sha256 }}/pages/{{ number }}">p{{ number }}</a>{% endfor %}</span>
         </div>

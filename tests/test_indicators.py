@@ -47,7 +47,7 @@ def test_proposed_spellings_wait_for_a_person(tmp_path):
 
 def test_a_model_fills_groups_it_is_sure_of_and_leaves_the_rest_waiting(archive_index):  # noqa: F811
     data_dir, source, _ = archive_index
-    connection = open_index(data_dir)
+    connection = open_index(data_dir, None)
     printed = store.printed_names(connection)
     connection.close()
     # The fixture also holds measurements of a scan; only the lab name matters here.
@@ -65,14 +65,14 @@ def test_a_model_fills_groups_it_is_sure_of_and_leaves_the_rest_waiting(archive_
     assert "цистатин с" not in [item["folded"] for item in unassigned(data_dir, printed)]
 
     build_index(data_dir, [source])
-    connection = open_index(data_dir)
+    connection = open_index(data_dir, None)
     assert [item["indicator_id"] for item in values(connection, indicator="cystatin-c")] == ["cystatin-c"]
     connection.close()
 
 
 def test_an_unsure_group_waits_for_a_person(archive_index):  # noqa: F811
     data_dir, _, _ = archive_index
-    connection = open_index(data_dir)
+    connection = open_index(data_dir, None)
     printed = store.printed_names(connection)
     connection.close()
     store.upsert(data_dir, None, "Cystatin C", ["цистатин с"], "approved")
@@ -154,7 +154,7 @@ def test_the_same_name_in_urine_and_in_blood_stays_apart(archive_index):  # noqa
     assert material_of({"name_as_printed": "Occult Blood"}, {"title_as_printed": "Аналіз калу"}) == "stool"
     assert material_of({"name_as_printed": "Blood"}, {}) is None
 
-    connection = open_index(data_dir)
+    connection = open_index(data_dir, None)
     history = values(connection, indicator="protein")
     assert sorted((item["material"], item["value"]) for item in history) == [("blood", "71"), ("urine", "0,033")]
     assert [item["value"] for item in values(connection, indicator="protein", material="urine")] == ["0,033"]
@@ -571,3 +571,37 @@ def test_two_writers_of_the_vocabulary_do_not_lose_each_other_s_edits(tmp_path):
         with pytest.raises(Busy, match="Editing the indicators"):
             store.upsert(tmp_path, None, "Creatinine", ["Креатинін"], "approved")
     assert [item.label for item in store.load(tmp_path)] == ["Haemoglobin"]
+
+
+def test_a_find_that_matches_no_group_says_what_that_means_and_where_to_go(archive_index):  # noqa: F811
+    """The Find box answered nothing with nothing: counters, white space, "Showing 0 of 0 groups".
+
+    No sentence and no way out, while the one list of every name there is sat beside the box in a
+    <datalist>, which is on no screen. The search page was taken off this same dead end and says
+    what an empty answer means, what it does not mean, and where to go next.
+    """
+    data_dir, _, _ = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    store.upsert(data_dir, None, "Cystatin C", ["Цистатин С"], "approved")
+
+    page = client.get("/indicators", params={"find": "sugar"}).text
+
+    assert "No indicator here is named that" in page
+    # What it is not: a group is a label somebody put over printed names, and this archive's own
+    # ungrouped names are not under one to be found by. They are listed, unnarrowed, below.
+    assert "not the same as the archive not holding the test" in page
+    assert "Names in no indicator" in page and "which this box does not narrow" in page
+    # Two ways on, and the word stays out of the address on the way to the documents.
+    assert 'href="/indicators">All 1 indicators' in page
+    assert 'action="/search"' in page and 'name="q" value="sugar"' in page
+
+    # Which of the three boxes emptied the page: two of them are remembered from an earlier visit.
+    narrowed = client.get("/indicators", params={"find": "cystatin", "show": "disagreed"}).text
+    assert "the groups two readers disagree about" in narrowed
+    assert "No indicator here is named that" in narrowed
+
+    # And a vocabulary that is empty is not a filter that matched nothing.
+    store.remove(data_dir, store.load(data_dir)[0].id)
+    empty = client.get("/indicators").text
+    assert "This instance has no indicators at all yet" in empty
+    assert "No indicator here is named that" not in empty

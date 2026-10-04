@@ -11,7 +11,7 @@
      the index could not be built at all, and that is exactly the branch that drew no page. #}
   {% if trouble %}<div class="notice caps"><span class="alert">{{ trouble }}</span></div>{% endif %}
   {% if missing %}
-  {{ nothing("Indicators") }}
+  {{ nothing("Indicators", stage) }}
   {% else %}
   <section class="rule" style="padding-top: 18px;">
     <h1>Indicators</h1>
@@ -52,6 +52,16 @@
       <button class="btn small" type="submit">Add</button>
     </form>
   </details>
+
+  {% if said_instead %}
+  {# Found by the word people use rather than the one a laboratory prints. "sugar" is printed on no
+     form anywhere, so this box answered nothing over an archive holding forty-four values of
+     Glucose, and the one way on from here needed a model and is off by default. The page says
+     which word it answered by instead of letting a reader believe they typed a printed name. #}
+  <section class="card-section">
+    <p class="caps muted">Nothing in this vocabulary is named <span class="mono">{{ said_instead }}</span>. That is an everyday word for the {{ rows_total }} group{{ "s" if rows_total != 1 }} below, from a small list this program ships with — the printed names are under each label. Nothing was read and no model was asked to say so.</p>
+  </section>
+  {% endif %}
 
   {% for row in rows %}
   {% set indicator = row.indicator %}
@@ -123,8 +133,12 @@
     </div>
 
     {% if row.related %}
+    {# The number the archive holds, not the length of the list below it: the list is cut at
+       twelve, and the summary printed that cut as a claim about the archive — "12 names in the
+       archive share a word with this one" over thirty-nine of the sixty groups of one archive,
+       where the true numbers run to 78. See RELATED in web/indicators_page.py. #}
     <details class="related">
-      <summary class="caps">{{ row.related|length }} name{{ "s" if row.related|length != 1 }} in the archive {{ "share" if row.related|length != 1 else "shares" }} a word with this one</summary>
+      <summary class="caps">{{ row.related_total }} name{{ "s" if row.related_total != 1 }} in the archive {{ "share" if row.related_total != 1 else "shares" }} a word with this one</summary>
       <div class="related-list">
         {% for item in row.related %}
         <div class="related-row">
@@ -138,6 +152,16 @@
           </form>
         </div>
         {% endfor %}
+        {% if row.related_total > row.related|length %}
+        {# What is not here, and where it stands instead. A lookalike is either in another group,
+           which the Find box above reaches by any spelling that group holds, or in none — and
+           those are the block at the foot of this page. Said rather than left as a list that
+           stops without a word, which is what the count above it was doing. #}
+        <p class="caps muted">The {{ row.related|length }} most used are here. {{ row.related_total - row.related|length }} more
+          share a word with this one: each of those is either in another group &mdash; the Find box
+          above opens it by any spelling it holds &mdash; or in none, and &laquo;Names in no
+          indicator&raquo; below lists those.</p>
+        {% endif %}
       </div>
     </details>
     {% endif %}
@@ -159,13 +183,52 @@
 
     </form>
   </details>
+  {% else %}
+  {# A filter that matches nothing left this page as a row of counters, white space, and "Showing
+     0 of 0 groups" in small print at the foot. Not a sentence, not a way out, and the one list of
+     every name there is sits beside the box in a <datalist>, which is not on the screen at all.
+     The search page was taken off this same dead end and says what an empty answer means, what it
+     does not mean, and where to go; these are the same three things for this box. #}
+  <section class="card-section">
+    {% if find or show != "all" or status != "all" %}
+    <p class="empty">{% if find %}No indicator here is named that, in its label or in any printed spelling it holds &mdash; matched without case, accents or the Ukrainian and Russian letter pairs.{% else %}Nothing is left of the vocabulary after those choices.{% endif %}
+      {% if find %}That is not the same as the archive not holding the test. An indicator is a label somebody put over printed names, so this box can only find a test that is already under one: a name nobody has grouped yet is under no label to be found by{% if waiting %}, and {{ waiting|length }} of those {{ waiting_total }} are listed under &laquo;Names in no indicator&raquo; below, which this box does not narrow{% endif %}.{% endif %}</p>
+    {% if show != "all" or status != "all" %}
+    {# Which of the three boxes emptied the page, because two of them are remembered from a visit
+       before this one: an address kept with "not looked at yet" in it answers a narrower question
+       than the words typed into it, and said so nowhere. #}
+    <p class="caps muted">And only part of them was looked at: {% if show == "to_review" %}the groups nobody has looked at yet{% elif show == "disagreed" %}the groups two readers disagree about{% else %}every group{% endif %}{% if status != "all" %}, and of those the {{ status }} ones{% endif %}.</p>
+    {% endif %}
+    <p class="buttons-in-a-row"><a class="btn" href="/indicators">All {{ all_indicators | length }} indicators</a>
+      {% if find %}
+      {# Posted, not linked: the word a person typed stays out of the address, the way the search
+         page and the By test view keep it out. #}
+      <form method="post" action="/search" class="as-a-button">
+        <input type="hidden" name="q" value="{{ find }}">
+        <button class="btn" type="submit">Look for it in the documents</button>
+      </form>
+      {% endif %}
+    </p>
+    {% else %}
+    {# Nothing is filtered and there is still nothing: an instance whose vocabulary is empty. The
+       form above this is the way out, and it is the only one. #}
+    <p class="empty">This instance has no indicators at all yet. The vocabulary is shared between
+      every archive on this server and starts empty: «New indicator» above is where the first one
+      is made, and the printed names waiting for one are listed below.</p>
+    {% endif %}
+  </section>
   {% endfor %}
 
   {% if waiting %}
-  <details class="docs-year">
+  {# Both numbers, because this block said one of them. It printed "307 names, most used first"
+     over exactly two hundred rows: the list is cut at WAITING_PAGE and nothing said so — no
+     count of what was shown, no footer, and no way to the two hundred and first, unlike the
+     groups above, which page. The cut stays, since this is the longest list on the page; what
+     it shows now says how much of the whole it is, and the whole is one press away. #}
+  <details class="docs-year" id="waiting"{% if all_waiting %} open{% endif %}>
     <summary>
       <span class="check-title">Names in no indicator</span>
-      <span class="caps muted">{{ waiting_total }} names, most used first</span>
+      <span class="caps muted">{% if waiting|length < waiting_total %}{{ waiting|length }} of {{ waiting_total }} names{% else %}{{ waiting_total }} name{{ "s" if waiting_total != 1 }}{% endif %}, most used first</span>
     </summary>
     <div class="doc-table">
       <div class="doc-row head caps waiting-row"><span>Printed name</span><span>Values</span><span>Units</span><span>Years</span><span>Put into</span></div>
@@ -186,6 +249,15 @@
         </span>
       </div>
       {% endfor %}
+    </div>
+    <div class="feed-foot">
+      <span class="caps muted">Showing {{ waiting | length }} of {{ waiting_total }} name{{ "s" if waiting_total != 1 }} in no indicator</span>
+      {% if waiting | length < waiting_total %}
+      {# The way to the rest, as the By test view offers it for its own cut list. The three boxes
+         above do not narrow this block, so without this there is nothing at all behind the two
+         hundredth name — and a dead end with no way out is the seventh entry of the constitution. #}
+      <a class="caps" href="/indicators?status={{ status }}&show={{ show }}&find={{ find | urlencode }}&skip={{ skip }}&all_waiting=1#waiting">show every name &rarr;</a>
+      {% endif %}
     </div>
   </details>
   {% endif %}

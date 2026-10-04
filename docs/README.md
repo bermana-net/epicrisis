@@ -26,3 +26,10 @@ uv run --with playwright python docs/take-the-pictures.py \
 
 Playwright brings its own browser: `uv run --with playwright playwright install chromium` once,
 or point `--chrome` at one that is already on the machine.
+
+`images/taken-from-the-demo.json` declares every picture and PDF this project publishes, by hash,
+and `tools/nothing-of-yours.py` refuses to publish anything that is not in it. Three scripts print
+such files — this one, `tools/make-one-pager.py` and `tools/make-og-image.py` — and all three write
+that manifest through `tools/the_manifest.py`, which only ever adds: a run declares what it printed
+and leaves every other entry alone, and a hash it displaces or a picture that leaves the tree is
+kept under `earlier`, because the bytes stay in the history and cannot be unpublished.

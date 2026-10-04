@@ -91,7 +91,9 @@ def test_every_step_takes_its_model_from_the_one_place_that_holds_it(data_dir):
                                  "second_reader": "claude-fable-5-1"})  # fmt: skip
 
     assert engines.classifier(data_dir).model == "claude-haiku-4-5-20251001>claude-sonnet-5"
-    assert engines.extractor(data_dir).model == "claude-haiku-4-5-20251001>claude-sonnet-5"
+    # Pages are classified by the quick model with the expert one behind it; the values of a
+    # document are read once, by the expert model alone.
+    assert engines.extractor(data_dir).model == "claude-sonnet-5"
     assert engines.date_search(data_dir).model == "claude-sonnet-5"
     assert engines.second_reader(data_dir).model == "claude-fable-5-1"
     assert engines.a_call(data_dir, "first").model == "claude-haiku-4-5-20251001"

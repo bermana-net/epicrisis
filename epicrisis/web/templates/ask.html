@@ -9,8 +9,8 @@
 
   {# When there is nothing to show, the empty state is the page. Printing the heading and its
      explanation first and the same heading again underneath is two pages stacked. #}
-  {% if stage().state != "ready" %}
-  {{ nothing("Ask") }}
+  {% if stage.state != "ready" %}
+  {{ nothing("Ask", stage) }}
   {% else %}
 
   <section class="rule" style="padding-top: 18px;">
@@ -64,8 +64,15 @@
         {% else %}
         {% if message.steps %}
         <details class="steps"{% if message.state == "running" %} open{% endif %}>
-          <summary class="caps">{{ message.steps|length }} queries to the archive</summary>
-          <ul>{% for step in message.steps %}<li class="mono">{{ step.tool }}({% for key, value in step.input.items() %}{{ key }}={{ value }}{% if not loop.last %}, {% endif %}{% endfor %})</li>{% endfor %}</ul>
+          <summary class="caps">{{ message.steps|length }} queries to the archive{% if message.archive_seconds is defined %}, {{ message.archive_seconds }} s of the wait{% endif %}</summary>
+          {# When the model asked, what the archive took to answer, and what the model spent
+             before the next thing it did. Measured by this program's own clock on the events as
+             they arrive, and kept the first time: the question "why did that take ninety-two
+             seconds" used to be answerable only by asking the same question again with the
+             stream timestamped, which is another run on the owner's subscription and more of
+             his waiting. A conversation written before these numbers existed has none of them
+             and prints the line it always did. #}
+          <ul>{% for step in message.steps %}<li class="mono">{{ step.tool }}({% for key, value in step.input.items() %}{{ key }}={{ value }}{% if not loop.last %}, {% endif %}{% endfor %}){% if step.asked_after is defined %} <small class="caps muted">&middot; {{ step.asked_after }} s in{% if step.archive_seconds is defined %} &middot; the archive {{ step.archive_seconds }} s{% endif %}{% if step.then_seconds is defined %} &middot; then the model {{ step.then_seconds }} s{% endif %}</small>{% endif %}</li>{% endfor %}</ul>
         </details>
         {% endif %}
         {% if message.state == "running" %}<p class="caps signal running-note">Reading the archive&hellip;</p>{% endif %}
@@ -77,7 +84,12 @@
              read by a model, pasted into a message to a doctor, arrived with nothing to say that it
              was a reading and not what the documents print — so it goes with the text. #}
           <button class="btn small copy" type="button" data-copy="{{ message.text }}&#10;&#10;{% if message.mode == "direct" %}&mdash; Answered through Epicrisis Companion with no limits set on that instance: this is a model&#39;s reading, not what the documents print. Not a medical device.{% elif message.mode == "with_meaning" %}&mdash; Answered through Epicrisis Companion, which on that instance may read the values as well as show them: anything beyond what the documents print is the model&#39;s reading. Not a medical device.{% else %}&mdash; Answered through Epicrisis Companion, values as printed, with the document behind each number. Not a medical device.{% endif %}">Copy answer</button>
-          <span class="caps muted">{% if message.seconds %}Answered in {{ message.seconds }} seconds{% endif %}{% if message.mode == "with_meaning" %} &middot; this answer may read the values, not only show them{% elif message.mode == "direct" %} &middot; answered with no limits set here{% endif %}</span>
+          {# Where the wait went, under the answer and in one line. The three are that same wait
+             divided in three and they add up to it, which is why ask.py divides the whole rather
+             than rounding each part on its own: three measured numbers rounded apart print as a
+             whole that is short of itself. The number in front of them is the wait rounded to a
+             second, as it has been printed since before the parts existed. #}
+          <span class="caps muted">{% if message.seconds %}Answered in {{ message.seconds }} seconds{% if message.archive_seconds is defined %} &middot; of it the archive {{ message.archive_seconds }} s, the model {{ message.model_seconds }} s{% if message.writing_seconds is defined %} ({{ message.writing_seconds }} s of that writing this answer){% endif %}, the rest {{ message.rest_seconds }} s{% endif %}{% endif %}{% if message.mode == "with_meaning" %} &middot; this answer may read the values, not only show them{% elif message.mode == "direct" %} &middot; answered with no limits set here{% endif %}</span>
         </div>
         {% endif %}
         {% endif %}
@@ -135,7 +147,14 @@
           list.innerHTML = steps.map((step) => `<li class="mono"></li>`).join("");
           steps.forEach((step, index) => {
             const args = Object.entries(step.input).map(([key, value]) => `${key}=${value}`).join(", ");
-            list.children[index].textContent = `${step.tool}(${args})`;
+            {# The same three facts the drawn page prints beside a step, so that a conversation
+               being answered now and the same one reloaded afterwards say the same thing. #}
+            const clock = [
+              step.asked_after === undefined ? null : `${step.asked_after} s in`,
+              step.archive_seconds === undefined ? null : `the archive ${step.archive_seconds} s`,
+              step.then_seconds === undefined ? null : `then the model ${step.then_seconds} s`,
+            ].filter((part) => part !== null);
+            list.children[index].textContent = `${step.tool}(${args})` + (clock.length ? ` · ${clock.join(" · ")}` : "");
           });
           summary.textContent = `${steps.length} queries to the archive`;
         }

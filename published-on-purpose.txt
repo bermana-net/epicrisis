@@ -2,3 +2,10 @@
 # the licence, the copyright line and the project page. Everything else out of a data directory
 # is a leak, and tools/nothing-of-yours.py says so before a push.
 Artem Berman
+
+# A common noun of the forms' own language, standing here because one archive's diagnosis field
+# prints nothing but that word — "examination" — where a diagnosis would go, and because the date
+# tests print it as the label of a field. It is in no vocabulary of this program, so the rule that
+# waves through the word meaning "clinic" does not reach it; it names nobody and identifies nothing,
+# and it is written out here rather than silenced in code, so that the decision has a reader.
+обстеження

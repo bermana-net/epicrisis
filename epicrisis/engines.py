@@ -324,7 +324,20 @@ def classifier(data_dir: Path | None):
 
 
 def extractor(data_dir: Path | None):
-    """The two passes that read the values out of a page, as the person chose them."""
+    """The reading that takes the values out of a document, with the expert model.
+
+    It began as two passes, a quick reading checked and then read again by the expert one where a
+    check failed. Counted over three archives and 457 documents, the quick reading was accepted
+    five times — once in 413, three times in 37, once in 7. The other 99% were read twice and the
+    first reading thrown away, which is a whole reading of a document spent on nothing, and on a
+    long document it is also time: both readings share one person's wait. What the checks caught
+    is mostly what a small model cannot do with a scan — unreadable parts, letters inside a
+    number — so the quick pass is kept where it does hold up, on classifying pages, and the
+    document itself is read once, by the expert model.
+
+    Where a check fails now there is nobody stronger to ask: the transcription is kept with the
+    complaint written beside it, and the document is on the Review page for a person to open.
+    """
     from epicrisis.extract.backend import ClaudeCodeExtractBackend, ExtractLadder
 
     def stage(which: str) -> ClaudeCodeExtractBackend:
@@ -335,7 +348,22 @@ def extractor(data_dir: Path | None):
                         most_tokens=ClaudeCodeExtractBackend.MOST_TOKENS),  # fmt: skip
         )
 
-    return ExtractLadder(stage("first"), stage("strong"))
+    return ExtractLadder(stage("strong"))
+
+
+def boundary_reader(data_dir: Path | None):
+    """The reader that marks out where one document ends and the next begins in a text file.
+
+    It is the first reading of a file, so it takes the first pass's model, and it is asked for
+    here like every other step's reader. It was the one model-backed step that built its own:
+    `BoundaryBackend()` with no model named falls back to the constant in `classify/backend.py`,
+    so a person who chose another model for the first reading on the Settings page got it for
+    every page of their archive and Haiku for the cuts in their text files.
+    """
+    from epicrisis.boundaries import TIMEOUT_SECONDS, BoundaryBackend
+
+    return BoundaryBackend(model=_model(data_dir, "first"), timeout_seconds=TIMEOUT_SECONDS,
+                           data_dir=data_dir)  # fmt: skip
 
 
 def date_search(data_dir: Path | None):

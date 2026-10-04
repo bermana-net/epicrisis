@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from epicrisis import layout
+from epicrisis import journal, layout
 from epicrisis.classify.backend import PROMPT_VERSION, BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, materialize, page_refs
 from epicrisis.classify.report import latest_pages
@@ -169,6 +169,10 @@ def _classify_page(ref, stats, output, source, backend) -> bool:
                 append_line(output / layout.CLASSIFY, _page_line(ref, backend, model=None, error=str(exc)))
                 append_line(output / layout.LEDGER, _ledger_line(ref, backend, "unreadable"))
                 stats.unreadable += 1
+            # The ledger says this page could not be read; the journal says which line of this
+            # project decided so, which is the thing a person debugging it has no other way to
+            # learn. Outside the lock: the journal takes its own.
+            journal.a_page_would_not_read(output, source.id, exc, "classify")
             return True
         try:
             result = backend.classify(payload, workdir)
@@ -182,6 +186,12 @@ def _classify_page(ref, stats, output, source, backend) -> bool:
                 stats.failed += 1
             return True
         line = _page_line(ref, backend, model=result.model, fields=result.fields)
+        # Why the stronger model was asked, in the codes `classification_problems` returned, and
+        # only on the lines where it was asked. A line with no `escalation` says the small model
+        # answered this page on its own and there was nothing to escalate — it does not say the
+        # reasons are unknown, and nothing may read the absence as "no reasons were recorded".
+        # One of the codes is `small_model_failed`, which is the small model not answering at all:
+        # a fault and not a doubt, and the two must never be counted together.
         if result.escalation:
             line["provenance"]["escalation"] = result.escalation
         with STATE_LOCK:
@@ -208,7 +218,14 @@ def _done_keys(ledger: Path, results: Path) -> set[tuple]:
 
 
 def _page_line(ref: PageRef, backend, model: str | None, fields: dict | None = None, error: str | None = None) -> dict:
-    line = {"file_sha256": ref.file_sha256, "page": ref.page, "route": ref.route}
+    # What kind of page this is, beside how it was read: a page of a text file has no page break
+    # of its own — this program cut it — and what follows from that is decided on the stored
+    # classification alone, by everything that groups pages into documents.
+    line = {"file_sha256": ref.file_sha256, "page": ref.page, "route": ref.route, "part": ref.part}
+    if ref.document is not None:
+        # Which document of the file this page is a piece of, settled before anything read it.
+        # Where this is known the grouping follows it and asks the reader nothing about it.
+        line["of_document"] = ref.document
     if error is not None:
         line["error"] = error
     else:

@@ -2,20 +2,35 @@
 {# A page appears in the menu when it has something to show. A new instance offers one thing to
    do; the rest arrive as the documents do. Typing an address still reaches any page, and the
    page then says which step is missing. #}
-{% set here = stage() %}
+{% set here = stage %}
 {# The order is the order a person uses them: the archive itself first, because the timeline is
    what this is for and what the front page shows; then the two ways of asking it something; then
-   the pages that are about the reading rather than about the records. #}
+   what it says about the person, then the two pages that decide what one name means.
+
+   Eleven of them in one column ran off the bottom of a 1280×900 screen, and a menu a person has
+   to scroll is a menu that has stopped being a map. Four of them are not about the records at
+   all: they are about the reading — which file became which page, what has yet to be checked, how
+   far each archive got, what is sent to a model. Somebody reads those when something is wrong or
+   when they are setting the thing up, not while they are looking at a history. They stand under
+   one heading, folded, and the top of the menu is the six pages this program is for. #}
+{# "Who made them" was named for the question it answers, and said nothing from a menu: a person
+   reading it has to open the page to find out whether it is about people, about machines or about
+   this program. It is now named for what it holds, and it stands beside the indicators, because
+   the two are the same act — several printed spellings, one thing — worded as if they were not. #}
 {% set all_pages = [
   ("/", "timeline", "Timeline", "The archive by its own dates", "read"),
   ("/search", "search", "Search", "One line over every document", "read"),
   ("/ask", "ask", "Ask", "Questions about the archive", "read"),
+  ("/card", "card", "Patient card", "Diagnoses and medications, as printed", "read"),
+  ("/indicators", "indicators", "Indicators", "Printed names grouped by test", "read"),
+  ("/who", "who", "Doctors and clinics", "Printed names grouped by who", "read"),
+  ("/settings", "settings", "Settings", "What this instance allows", "scanned"),
+] %}
+{% set housekeeping = [
   ("/documents", "documents", "Documents", "What each page is", "scanned"),
   ("/review", "review", "To check", "Findings of the validation", "read"),
-  ("/indicators", "indicators", "Indicators", "Printed names grouped by test", "read"),
   ("/status", "status", "Archive status", "Archives and progress", "always"),
   ("/consent", "consent", "Model processing", "What is sent and where", "scanned"),
-  ("/settings", "settings", "Settings", "What this instance allows", "scanned"),
 ] %}
 {# A brand new instance offers the one thing there is to do, because nine pages that all say
    "nothing yet" is not an interface. From the moment a folder is added the menu is whole and
@@ -28,9 +43,14 @@
 {# Whatever page a person typed their way to stays in the menu, so they can see where they are
    and get back out of it. #}
 {% set menu = [] %}
+{% set below = [] %}
 {% set here_reaches = reached.get(here.state, whole) %}
 {% for page in all_pages %}{% if page[4] in here_reaches or page[1] == current %}{% set _ = menu.append(page) %}{% endif %}{% endfor %}
-{% set who = owners() %}
+{% for page in housekeeping %}{% if page[4] in here_reaches or page[1] == current %}{% set _ = below.append(page) %}{% endif %}{% endfor %}
+{# Folded, unless the page a person is standing on is one of them: arriving at "To check" and
+   finding the menu claiming it is somewhere else is the interface telling them they are lost. #}
+{% set open_below = below | selectattr(1, "equalto", current) | list | length > 0 %}
+{% set who = owners %}
 <header class="topbar">
   {# The mark, then the name, and under it in small letters what this is not. That last line is a
      standing statement about the program, not a label on the bar, and it belongs with the name it
@@ -101,13 +121,21 @@
     {% for href, key, title, hint, needs in menu %}
     <a href="{{ href }}"{% if current == key %} aria-current="page"{% endif %}><span>{{ title }}</span><small>{{ hint }}</small></a>
     {% endfor %}
+    {% if below %}
+    <details class="menu-more"{% if open_below %} open{% endif %}>
+      <summary><span>Housekeeping</span><small>How the reading went, and what it sends</small></summary>
+      {% for href, key, title, hint, needs in below %}
+      <a href="{{ href }}"{% if current == key %} aria-current="page"{% endif %}><span>{{ title }}</span><small>{{ hint }}</small></a>
+      {% endfor %}
+    </details>
+    {% endif %}
   </nav>
 </header>
 {# Said under the bar of every page, because the page a person is standing on when it matters is
    the card they just corrected, and the page it matters on is the chart they open next. The card
    is drawn from this archive's own files and the chart is drawn from the index, and until the
    index is built again the two disagree. That used to be silent. #}
-{% set catch = catching_up() %}
+{% set catch = catching_up %}
 {% if catch %}
 <div class="notice caps catching-up">
   {# Short, because it is drawn in capitals at the top of every page and three lines of that is a

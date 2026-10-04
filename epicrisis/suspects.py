@@ -28,12 +28,21 @@ CAP = 3  # times one signal can count in one document
 
 @dataclass
 class Suspect:
-    file_id: str
+    # The whole hash, not the eight characters a person reads: a page that shows these has to be
+    # able to link to the document, and the address of a document is its full hash. Held short,
+    # this was the one thing standing between the command line and a page — every caller had the
+    # eight characters a person recognises and nothing a link could be made of.
+    file_sha256: str
     first_page: int
     date: str | None
     codes: Counter = field(default_factory=Counter)
     lines: list[str] = field(default_factory=list)
     weights: dict = field(default_factory=dict)  # what each rule that found this one says it weighs
+
+    @property
+    def file_id(self) -> str:
+        """The eight characters every page and every command of this program names a file by."""
+        return self.file_sha256[:8]
 
     @property
     def weight(self) -> int:
@@ -73,6 +82,14 @@ def provider_looks_like_a_person(provider: str | None, title: str | None = None)
 
     With the title given, one more sign: the institution's own words stand in the title while the
     institution field holds none of them — the two were swapped.
+
+    **Two callers, and both give the title.** `index/build.institution_and_doctor`, which acts on
+    the answer, and the extract step's own check, which decides whether a document is read again by
+    a stronger model. The rule of this name was the third and asked without a title, so the program
+    held two different answers to one question about a person's name; it now reads what the index
+    recorded instead of asking again. Measured before they were brought together: the title adds 0
+    findings on the three archives here either way — 15, 4 and 255 documents with it and without —
+    so the one that reads the page more fully is the one kept, and it cost nothing.
     """
     if not provider:
         return False
@@ -151,12 +168,26 @@ def number_far_from_the_others(archive, settings: dict) -> list[Found]:
 
 
 def institution_looks_like_a_name(archive, settings: dict) -> list[Found]:
-    """The doctor under the stamp read as the laboratory."""
+    """The doctor under the stamp read as the laboratory, as the index recorded it.
+
+    It asked the provider column and `provider_looks_like_a_person` itself, and so it could never
+    find one: `index/build.institution_and_doctor` moves every such name out of that column and
+    into the doctor's before this ever sees it. 0 documents on all three archives here, which read
+    on the settings page as "nothing wrong" and meant "looking in the wrong place". The same fact
+    was found by the extract step's own check on 274 documents and counted into
+    `checks_still_failing` — a line with no name, no explanation and no switch of its own.
+
+    So the question is not asked a second time here. The index writes down the string the form
+    printed in the institution's place whenever it read it as a person's, and this reads that:
+    one predicate, asked where the decision is taken, and a count beside the switch that is the
+    number of documents the decision was taken on.
+    """
     return [
         Found(document["file_sha256"], document["first_page"], document.get("date"),
-              f'institution as printed: {document["provider"]}')  # fmt: skip
+              f'institution as printed: {document["person_printed_as_the_institution"]}'
+              + ("" if document["provider"] else " — read here as the doctor of this document"))  # fmt: skip
         for document in archive.documents
-        if provider_looks_like_a_person(document["provider"])
+        if document.get("person_printed_as_the_institution")
     ]
 
 
@@ -247,7 +278,7 @@ def find(rows: list[dict], documents: list[dict], spellings: dict, found_by) -> 
         weights[rule.id] = rule.settings.get("weight", 1)
         for item in rule.check.run(archive, rule.settings):
             key = (item.file_sha256, item.first_page)
-            suspect = suspects.setdefault(key, Suspect(item.file_sha256[:8], item.first_page, item.date))
+            suspect = suspects.setdefault(key, Suspect(item.file_sha256, item.first_page, item.date))
             suspect.codes[rule.id] += 1
             suspect.lines.append(item.line)
             suspect.weights = weights
@@ -275,7 +306,8 @@ def rows_from_index(connection) -> tuple[list[dict], list[dict], dict[str, str]]
     documents = [
         dict(row)
         for row in connection.execute(
-            "SELECT file_sha256, first_page, date, doc_type, title, provider, transcribed FROM documents"
+            "SELECT file_sha256, first_page, date, doc_type, title, provider, person_printed_as_the_institution,"
+            " transcribed FROM documents"
         )
     ]
     return values, documents, spellings_from_index(connection)

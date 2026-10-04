@@ -3,12 +3,16 @@
 It lists and shows. It never rates, flags or summarises anything about health.
 """
 
+import re
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
+from markupsafe import Markup
+
 from epicrisis import layout
-from epicrisis.classify.pages import page_refs
+from epicrisis.classify.pages import (PageUnreadable, cannot_be_read, has_no_image,
+                                      original_text, page_refs)  # fmt: skip
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.classify.run import is_running
 from epicrisis.corrections import line_key, load_corrections, load_value_corrections
@@ -16,27 +20,13 @@ from epicrisis.datesearch import load_search_results
 from epicrisis.document_dates import document_date, provider_key, source_day_first
 from epicrisis.extract.run import earlier_readings, load_extracted
 from epicrisis.indicators import approved_names
+from epicrisis.index.build import institution_and_doctor
 from epicrisis.printed_values import fold
 from epicrisis.records import read_records
 from epicrisis.validate import load_validation, validation_state, vocabulary
 from epicrisis import judgements
 from epicrisis.sources import data_dir_of, Source
 from epicrisis.values import is_result
-
-DOC_TYPE_LABELS = {
-    "lab_panel": "Lab results",
-    "imaging_report": "Imaging report",
-    "consultation": "Consultation",
-    "discharge": "Discharge summary",
-    "prescription": "Prescription",
-    "referral": "Referral",
-    "admin": "Administrative",
-    "insurance": "Insurance, billing",
-    "id_document": "ID document",
-    "blank": "Blank page",
-    "other": "Other",
-}
-
 
 FILE_ID_LENGTH = 8
 
@@ -73,6 +63,18 @@ def file_id(sha256: str) -> str:
     return sha256[:FILE_ID_LENGTH]
 
 
+# The word a person reads for each printed field they may put right. The card says what the model
+# had read in the fields they changed, and it says it on the row: "1,35" on its own would not say
+# which of five fields that number had stood in. The order here is the order of the table columns.
+PRINTED_FIELD_WORDS = {
+    "name_as_printed": "name",
+    "value_as_printed": "value",
+    "unit_as_printed": "unit",
+    "reference_as_printed": "range",
+    "flag_as_printed": "flag",
+}
+
+
 def _corrected(document: dict, output: Path, file_sha256: str, pages: list[int], data_dir: Path | None = None) -> list[dict]:
     """The document's values as they stand after a person's corrections, each marked.
 
@@ -90,7 +92,19 @@ def _corrected(document: dict, output: Path, file_sha256: str, pages: list[int],
         if correction and correction.get("removed"):
             item["correction"] = {"removed": True}
         elif correction:
-            item = {**item, **correction["changes"], "correction": {"changes": correction["changes"], "printed": {field: observation.get(field) for field in correction["changes"]}}}
+            # "was" is what the row says out loud, and it is narrower than "printed" twice over.
+            # The form posts all five printed fields whichever one a person retyped, so "printed"
+            # holds every one of them; saying "as the model read it" over four fields nobody
+            # touched is the noise this line would be rejected for. And the form carries the
+            # material a person set, which is nothing a model ever read at all.
+            item = {**item, **correction["changes"], "correction": {
+                "changes": correction["changes"],
+                "printed": {field: observation.get(field) for field in correction["changes"]},
+                "was": [{"field": word, "text": observation.get(field)}
+                        for field, word in PRINTED_FIELD_WORDS.items()
+                        if field in correction["changes"]
+                        and (observation.get(field) or "") != (correction["changes"][field] or "")],
+            }}  # fmt: skip
         shown.append(item)
     return shown
 
@@ -189,6 +203,29 @@ def language_name(code: str | None) -> str | None:
     return LANGUAGE_NAMES.get(code, code)
 
 
+# Two lowercase letters, which is what classify's schema asks a model for and all a lang= needs.
+A_LANGUAGE_CODE = re.compile(r"[a-z]{2}")
+
+
+def said_in(code: str | None) -> Markup:
+    """` lang="uk"` for an element that carries printed text, or nothing where nobody knows.
+
+    The shell of every page is lang="en" and stays so: the words around the content — the
+    headings, the labels, the sentences this program writes — are English. The content is not.
+    Most of this archive is Russian, Ukrainian and Greek, and a browser reads lang to choose a
+    fallback face for a character the page's own font has not got, and to decide how to read a
+    line aloud. One document is one language, which is why this goes on the elements holding that
+    document's printed text rather than on the page.
+
+    Nothing is invented. The code is the one classify read off the page, and anything that is not
+    exactly two lowercase letters renders no attribute at all: a wrong lang is worse than none,
+    because a browser acts on it.
+    """
+    if not isinstance(code, str) or not A_LANGUAGE_CODE.fullmatch(code):
+        return Markup("")
+    return Markup(f' lang="{code}"')
+
+
 # (kind, folder) -> (when its inputs last changed, view). By folder, not by archive id: two data
 # folders on one machine can hold the same id, and one would then answer for the other.
 _VIEWS: dict[tuple, tuple[float, dict]] = {}
@@ -267,7 +304,7 @@ def source_documents(source: Source, output: Path) -> dict | None:
             row = {
                 "doc_type": "Could not be read", "pages": numbers, "page_label": ", ".join(map(str, numbers)),
                 "provider": None, "language": None, "goes_to_extract": False, "illegible": True, "unreadable": True,
-                layout.EXTRACTED: False, "file": file, "date": {"value": None, "year": None, "label": None, "printed": None, "flags": [], "by_hand": False},
+                layout.EXTRACTED: False, "file": file, "date": {"value": None, "year": None, "label": None, "precision": None, "printed": None, "flags": [], "by_hand": False},
             }  # fmt: skip
             years[None].append(row)
 
@@ -294,6 +331,30 @@ def source_documents(source: Source, output: Path) -> dict | None:
             for year, rows in sorted(years.items(), key=lambda item: (item[0] is None, -(item[0] or 0)))
         ],
     })
+
+
+def how_many_documents_to_check(view: dict) -> int:
+    """The N of "N of M documents to check": the documents this page in fact puts work on.
+
+    It was `len(result["documents"])` — every document any finding hangs on, whether or not this
+    page then draws it, and it drops findings in two places. One is `and row` below: a finding
+    whose document the classification no longer groups the same way has no row to draw, and the
+    file of findings is older than the grouping every time the checks have not been run since.
+    The other is `possible_copy`, which `app.py` takes out of the blocks once the index has
+    grouped the copies, because a group is one decision and not three documents to read — it is
+    drawn as its own block instead, and the documents in that block are work on this page too.
+
+    So it is counted off what is drawn, like every other count beside a list here: nine documents
+    of the archive read on 4 October 2026 carry no finding but `possible_copy`, and the header's
+    372 was right about them only by the accident of the copies block holding exactly those nine.
+    Asked again by whoever changes what the page draws, which is the whole point of its taking
+    the view rather than the findings.
+    """
+    drawn = {(entry["sha256"], entry["pages"]) for check in view["checks"] for entry in check["entries"]}
+    # Said the way an entry says it, because a group's members carry their pages as a list.
+    drawn |= {(item["file_sha256"], ",".join(str(page) for page in item["pages"]))
+              for group in view.get("copy_groups") or () for item in group["members"]}  # fmt: skip
+    return len(drawn)
 
 
 def review_view(source: Source, output: Path) -> dict | None:
@@ -355,7 +416,9 @@ def review_view(source: Source, output: Path) -> dict | None:
         "whose": source.whose,
         "validated_at": result["validated_at"],
         "documents_checked": result["documents_checked"],
-        "documents_with_findings": len(result["documents"]),
+        # Of the blocks above, not of the file of findings: see how_many_documents_to_check, and
+        # `_from_the_index` in app.py, which asks it again once it has changed what is drawn.
+        "documents_with_findings": how_many_documents_to_check({"checks": checks}),
         "outdated": validation_state(output)["state"] == "partial",
         "checks": checks,
     })
@@ -400,6 +463,16 @@ def document_card(source: Source, output: Path, file_sha256: str, first_page: in
     day_first_documents, day_first_providers = source_day_first(output, group_documents(latest_pages(output / layout.CLASSIFY)))
     writes_day_first = ((file_sha256, on_pages) in day_first_documents
                         or provider_key(document, classified) in day_first_providers)  # fmt: skip
+    # What the index did with a name the form printed where the institution goes — asked of the
+    # index's own decision rather than taken again here. This card prints the two fields as the
+    # model read them, so on such a document it showed a person under "Institution as printed" and
+    # a dash under "Doctor as printed", while every page drawn from the index named that person the
+    # doctor of this document and no institution at all. The seventh entry of the constitution: two
+    # answers to one question on one screen is a defect, not a detail.
+    institution, _doctor, printed_as_a_person = institution_and_doctor(document, classified)
+    printed_as_the_institution = (
+        {"name": printed_as_a_person, "read_as_the_doctor": not institution} if printed_as_a_person else None
+    )  # fmt: skip
     return {
         "source_id": source.id,
         "sha256": file_sha256,
@@ -417,9 +490,13 @@ def document_card(source: Source, output: Path, file_sha256: str, first_page: in
             day_first=writes_day_first,
         ),  # fmt: skip
         "document": document,
+        "printed_as_the_institution": printed_as_the_institution,
         "observation_tables": observation_tables(_corrected(document, output, file_sha256, [page["page"] for page in classified], output.parent.parent)) if document else [],
         "findings": document_findings(output, file_sha256, [page["page"] for page in classified]),
         "language": language_name(document["language"]) if document else None,
+        # The code as well as the name: the name is for a person to read, the code is what goes
+        # on the elements carrying this document's printed text, as a lang= a browser acts on.
+        "language_code": (document or {}).get("language"),
         # Readings of this file that a later reading displaced, kept beside the archive because
         # they were somebody's. Written from the day the folder existed, and shown nowhere until
         # now: a person who changed the model, had the archive read again and finds the new reading
@@ -475,13 +552,112 @@ def _document_row(pages: list[dict]) -> dict:
     first = pages[0]
     numbers = [page["page"] for page in pages]
     return {
-        "doc_type": DOC_TYPE_LABELS.get(first["doc_type"], first["doc_type"]),
+        # The machine name, which is what every other reader of this row compares against; the
+        # pages print it through the `in_words` filter. It was the words that were stored here,
+        # and two steps then tested a document for being a blank page by comparing it with the
+        # string "Blank page" -- so rewording a tab would have quietly sent every blank page of
+        # the archive to the model that looks for a printed date.
+        "doc_type": first["doc_type"],
         "pages": numbers,
         "page_label": str(numbers[0]) if len(numbers) == 1 else f"{numbers[0]}–{numbers[-1]}",
         "date": next((page["date_on_page"] for page in pages if page.get("date_on_page")), None),
         "provider": next((page["provider_on_page"] for page in pages if page.get("provider_on_page")), None),
         "language": language_name(first.get("language")),
+        "language_code": first.get("language"),
         "confidence": min(page["confidence"] for page in pages),
         "goes_to_extract": goes_to_extract(first),
         "illegible": any(not page.get("legible", True) for page in pages),
     }
+
+
+def nothing_read_yet(output: Path) -> bool:
+    """Whether anything at all has been read out of this archive's folder.
+
+    Its own answer, apart from "no page of this archive is at that address", because the two are
+    different sentences and were before the page of one scan moved here: an archive whose folder
+    has not been walked yet is answered as the archive having been switched, which is what it is
+    from the reader's side, and a file or a page the walk does not hold is answered as the
+    address. The route picks between the two; which case it is, is decided here.
+    """
+    return not (output / layout.INVENTORY).exists()
+
+
+def the_scan_at(source: Source, output: Path, sha256: str, page: int):
+    """The one page of the one file this address names, or nothing where the reading holds none.
+
+    Which archive comes in as a `Source` with no default of its own, as every door into an
+    archive does, and here it has already been through the one in `web/app.py`: a scan is
+    content, and an address under another archive answers as though it does not exist.
+    """
+    inventory = output / layout.INVENTORY
+    if not inventory.exists():
+        return None
+    record = next((one for one in read_records(inventory) if one.get("sha256") == sha256), None)
+    return next((ref for ref in (page_refs(record) if record else []) if ref.page == page), None)
+
+
+def record_path(source: Source, output: Path, sha256: str) -> str:
+    """The name of the file a page came from. The folder it sits in is not shown anywhere."""
+    record = next((one for one in read_records(output / layout.INVENTORY)
+                   if one.get("sha256") == sha256), None)  # fmt: skip
+    return (record or {}).get("path", "")
+
+
+def one_scanned_page(source: Source, output: Path, sha256: str, page: int) -> dict | None:
+    """The scan of one page, with enough around it to know what one is looking at.
+
+    This was the image alone, opened in a tab of its own: no page number, no name of the file
+    it came from, no way to the next page of the same form and no way back. Checking a
+    four-page form against its card meant four tabs and no captions. The image itself is
+    still one address of its own, which is what this page draws.
+
+    Which archive comes in as a `Source` with no default of its own, as every door into an
+    archive does, and here it has already been through the one in `web/app.py`.
+    """
+    inventory = output / layout.INVENTORY
+    if not inventory.exists():
+        return None
+    record = next((one for one in read_records(inventory) if one.get("sha256") == sha256), None)
+    refs = page_refs(record) if record else []
+    ref = next((one for one in refs if one.page == page), None)
+    if ref is None:
+        return None
+    numbers = sorted(one.page for one in refs)
+    at = numbers.index(page)
+    # Which document this page belongs to, so there is a way back to the card it was opened
+    # from. A page can belong to none, in a file whose pages were never grouped.
+    view = source_documents(source, output)
+    belongs = next((row for group in (view or {}).get("years", []) for row in group["documents"]
+                    if row["file"]["sha256"] == sha256 and page in row["pages"]), None)  # fmt: skip
+    return {
+        "current": "documents", "source_id": source.id, "sha256": sha256, "page": page,
+        "path": Path(record_path(source, output, sha256) or "").name,
+        "pages": numbers,
+        "previous": numbers[at - 1] if at else None,
+        "next": numbers[at + 1] if at + 1 < len(numbers) else None,
+        "document": belongs,
+        # Why this scan cannot be shown, where it cannot, in words on the page. It used to ask
+        # one question — is the folder there — and say a sentence for that and nothing at all
+        # for the likelier trouble: one file changed under the archive, rescanned or resaved or
+        # damaged, where the page stayed whole with a broken image in the middle of it. Over the
+        # one promise this program makes about every value it shows: that the page it was read
+        # from is one click away.
+        **_what_this_page_shows(ref, source),
+    }  # fmt: skip
+
+
+def _what_this_page_shows(ref, source: Source) -> dict:
+    """The scan, or the text where the page is text, or why neither can be shown.
+
+    A text file, a sheet of a workbook, the text of a Word document: there is no picture of
+    such a page anywhere, and this page drew an <img> at an address that answered 409 — a
+    broken image in the middle of the one page this program promises is always one click away
+    from a value. What there is instead is the text the values were read from.
+    """
+    cannot = cannot_be_read(ref, Path(source.path))
+    if cannot or not has_no_image(ref):
+        return {"cannot_be_shown": cannot, "as_text": None}
+    try:
+        return {"cannot_be_shown": "", "as_text": original_text(ref, Path(source.path))}
+    except PageUnreadable as why:
+        return {"cannot_be_shown": str(why), "as_text": None}

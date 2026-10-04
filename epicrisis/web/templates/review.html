@@ -18,11 +18,11 @@
      full model re-read, while the one Run checks button on the site sat inside the branch that
      state was hiding. Not read at all is still the general empty state: there the model is the
      step, and it is the same sentence every other page says. #}
-  {% set here = stage() %}
+  {% set here = stage %}
   {# "Nothing to read in that folder" belongs with the states that have nothing to show, not with a
      "Run checks" button over nought documents: it is the same noise the other pages were making. #}
   {% if not sources or here.state in ("no_archive", "unread", "nothing_to_read", "scanning") %}
-  {{ nothing("To check") }}
+  {{ nothing("To check", stage) }}
   {% else %}
 
   <section class="rule" style="padding-top: 18px;">
@@ -99,6 +99,26 @@
     </div>
     {% endif %}
 
+    {# One line, and the list behind it. These come from the rules of the search over the index
+       rather than from the checks over the transcriptions, and there are a hundred of them where
+       there are ten of everything else: drawn in among the checks they would bury the ones a
+       person works through one at a time. The count is the same call the page behind it makes and
+       the same call `epicrisis suspects` makes, so the three cannot disagree. #}
+    {% if source.misread and not source.misread.missing %}
+    <div class="card-findings">
+      {% if source.misread.every_rule_off %}
+      <span class="caps muted">Lines that look misread: every rule of that search is turned off for this archive.</span>
+      <p class="caps muted">Each of them says what it looks at and how it can be wrong, beside its own switch. <a href="/settings?tab=rules">The rules and their switches</a>.</p>
+      {% elif source.misread.documents %}
+      <span class="caps signal">Lines that look misread: {{ source.misread.findings }} on {{ source.misread.documents }} document{{ "s" if source.misread.documents != 1 }}</span>
+      <p class="caps muted">A number many times away from every other reading of the same test, a unit nobody else on that test prints. Not errors: pages worth opening beside the original, heaviest first. Found in the index each time the page is asked for, without a model.</p>
+      <p><a class="btn small" href="/misread">Looks misread</a></p>
+      {% else %}
+      <span class="caps muted">Nothing looks misread in this archive.</span>
+      {% endif %}
+    </div>
+    {% endif %}
+
     {% if source.copy_groups %}
     <details class="docs-year copies" id="copies"{% if open_copies %} open{% endif %}>
       <summary>
@@ -116,10 +136,10 @@
         <div class="copy-row{% if item.chosen %} chosen{% endif %}">
           <span class="copy-mark caps">{% if item.chosen %}Answers{% else %}&nbsp;{% endif %}</span>
           <span class="copy-what">
-            <a class="doc-link" href="/documents/{{ source.id }}/{{ item.file_sha256 }}/{{ item.pages[0] }}">{{ item.title or item.doc_type }}</a>
+            <a class="doc-link" href="/documents/{{ source.id }}/{{ item.file_sha256 }}/{{ item.pages[0] }}">{{ item.title or (item.doc_type | in_words) }}</a>
             <span class="path mono">{{ item.path }}</span>
           </span>
-          <span class="copy-why caps muted">{{ item.doc_type }} &middot; {{ item.values_count }} value{{ "s" if item.values_count != 1 }}{% if item.unreadable_count %} &middot; {{ item.unreadable_count }} unreadable{% endif %}{% if item.model %} &middot; {{ item.model.replace("claude-", "") }}{% endif %}</span>
+          <span class="copy-why caps muted">{{ item.doc_type | in_words }} &middot; {{ item.values_count }} value{{ "s" if item.values_count != 1 }}{% if item.unreadable_count %} &middot; {{ item.unreadable_count }} unreadable{% endif %}{% if item.model %} &middot; {{ item.model.replace("claude-", "") }}{% endif %}</span>
           <span class="copy-pick">
             {% if not item.chosen %}
             <form method="post" action="/review/{{ source.id }}/{{ item.file_sha256 }}/{{ item.pages[0] }}/copy">
@@ -161,7 +181,7 @@
         {% set document = entry.row %}{% set file = document.file %}
         <div class="doc-row review-row">
           <span class="mono">{{ document.date.label or "–" }}</span>
-          <span><a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type }}</a></span>
+          <span><a class="doc-link" href="/documents/{{ source.id }}/{{ file.sha256 }}/{{ document.pages[0] }}">{{ document.doc_type | in_words }}</a></span>
           <span class="doc-file-cell"><span class="file-id" style="background: {{ file.reading.background }}; color: {{ file.reading.color }}" title="File ID {{ file.file_id }}. {{ file.reading.title }}.">{{ file.file_id }}</span> <span class="path mono">{{ file.path }}</span> <span class="caps muted">p. {{ document.page_label }}</span></span>
           <span class="mono">{{ entry.count }}{% for copy in entry.copies %}<br><a class="doc-link" href="/documents/{{ source.id }}/{{ copy.file.sha256 }}/{{ copy.pages[0] }}">{{ copy.file.file_id }} p. {{ copy.page_label }}</a>{% endfor %}</span>
           {# Marks, never hides: one mistaken click must not be able to lose a real finding. #}

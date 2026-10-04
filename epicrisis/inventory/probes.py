@@ -1,11 +1,14 @@
-"""File type detection and per-format probes.
+"""What kind of file this is, and the few things every reader of one needs.
 
-A probe reads a file, or the payload inside a saved HTTP response, without modifying it and
-returns format-specific facts. It raises UnsupportedFormat for files it cannot parse by
-design, and any other exception for files that are damaged.
+Telling a kind of file from its first bytes, reading past the headers of a file saved as a raw
+HTTP response, and the small measures of text that more than one format asks of itself. What is
+true of a file *of a kind* — how many pages, how much text, what is pasted inside it — belongs to
+that kind's own reader, in epicrisis/readers/.
+
+UnsupportedFormat means a file this program does not read, by design; anything else raised while
+reading one means the file is damaged.
 """
 
-import logging
 import re
 import unicodedata
 import zipfile
@@ -13,11 +16,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 
-import docx
-import openpyxl
-import xlrd
-from PIL import Image, UnidentifiedImageError
-from pypdf import PasswordType, PdfReader
 
 # A page with fewer visible characters than this is treated as having no text layer.
 # Scans carry stamps and page numbers as text: the real archive showed scanned pages with
@@ -29,8 +27,29 @@ MIN_TEXT_CHARS_PER_PAGE = 100
 # In the real archive broken pages had 45-63% of these characters, readable ones 1.1% at most.
 MAX_GARBLED_SHARE = 0.1
 
+# How much of one page's text a reader hands over, whatever kind of file the page came out of.
+#
+# A ceiling and not a size. A printed page carries a few thousand characters, so no page of a
+# scan or a PDF comes near this. What it is here for is the page that is not a printed page: a
+# Word document is one page however long it is, because a document is not paginated until it is
+# printed, and a sheet of a workbook has as many rows as somebody typed. Without a ceiling such
+# a file goes to a model whole, in one call, and a call that is too long is not a slow call but a
+# failed one — the measurement for that is written beside extract/run.TEXT_CHARS_PER_CALL, which
+# is the ceiling on a whole call of up to eight pages. This is the ceiling on one page of one;
+# the two are separate numbers that happen to be equal today.
+#
+# One name in one place because it was three: readers/word.py and readers/pdf.py each had a
+# MAX_TEXT_CHARS of their own and readers/excel.py cut by the bare literal. Raised for a document
+# and a scan, every sheet of every workbook would have stayed cut where it was, and no page says
+# that part of a table never reached the model.
+MAX_TEXT_CHARS = 20_000
+
 HEAD_BYTES = 64 * 1024
 HEADER_LINE = re.compile(rb"^[ \t]*[A-Za-z0-9-]+:[^\n]*$")
+
+
+# Text files this program does not read: markup is a file about a page, not a page.
+MARKUP_MIMES = {"text/html", "text/xml", "text/css", "text/javascript", "text/x-script"}
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -42,7 +61,6 @@ LEGACY_OFFICE_MIMES = {
     "application/CDFV2",
 }
 
-logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 Source = Path | BinaryIO
 
@@ -174,115 +192,6 @@ def text_looks_garbled(text: str) -> bool:
     return bool(visible) and sum(map(_garbled_char, visible)) / len(visible) > MAX_GARBLED_SHARE
 
 
-def probe_pdf(source: Source, mime: str) -> dict:
-    reader = PdfReader(source)
-    encrypted = reader.is_encrypted
-    if encrypted and reader.decrypt("") == PasswordType.NOT_DECRYPTED:
-        return {"encrypted": True}
-
-    chars_per_page = []
-    garbled_pages = []
-    has_images = False
-    for number, page in enumerate(reader.pages, 1):
-        text = page.extract_text() or ""
-        chars_per_page.append(_visible_chars(text))
-        if chars_per_page[-1] >= MIN_TEXT_CHARS_PER_PAGE and text_looks_garbled(text):
-            garbled_pages.append(number)
-        has_images = has_images or _has_images(page.get("/Resources"))
-
-    pages = len(chars_per_page)
-    pages_with_text = sum(1 for chars in chars_per_page if chars >= MIN_TEXT_CHARS_PER_PAGE) - len(garbled_pages)
-    if pages and pages_with_text == pages:
-        text_layer = "full"
-    elif pages_with_text:
-        text_layer = "partial"
-    else:
-        text_layer = "none"
-
-    return {
-        "encrypted": encrypted,
-        "pages": pages,
-        "pages_with_text": pages_with_text,
-        "text_layer": text_layer,
-        "text_chars_per_page": chars_per_page,
-        "garbled_text_pages": garbled_pages,
-        "has_images": has_images,
-    }
-
-
-def _has_images(resources, depth: int = 0) -> bool:
-    # Images sit in the page's XObject resources, possibly nested inside Form XObjects.
-    if resources is None or depth > 5:
-        return False
-    xobjects = resources.get_object().get("/XObject")
-    if xobjects is None:
-        return False
-    for ref in xobjects.get_object().values():
-        xobject = ref.get_object()
-        subtype = xobject.get("/Subtype")
-        if subtype == "/Image":
-            return True
-        if subtype == "/Form" and _has_images(xobject.get("/Resources"), depth + 1):
-            return True
-    return False
-
-
-def probe_image(source: Source, mime: str) -> dict:
-    try:
-        with Image.open(source) as image:
-            dpi = image.info.get("dpi")
-            facts = {
-                "format": image.format,
-                "width": image.width,
-                "height": image.height,
-                "dpi": [round(float(value)) for value in dpi] if dpi else None,
-                "frames": getattr(image, "n_frames", 1),
-            }
-            # Decoding the pixels is the only reliable way to catch truncated files.
-            image.load()
-    except UnidentifiedImageError as exc:
-        # Pillow knows the format but cannot read this file: damaged. Otherwise: unsupported.
-        Image.init()
-        if mime in Image.MIME.values():
-            raise
-        raise UnsupportedFormat("image format not supported by Pillow") from exc
-    return facts
-
-
-def probe_excel(source: Source, mime: str) -> dict:
-    # Pictures pasted into a workbook are often scans and need the vision pass.
-    embedded_images = sum(1 for name in _zip_names(source) if name.startswith("xl/media/"))
-    workbook = openpyxl.load_workbook(source, read_only=True, data_only=True)
-    try:
-        dimensions = []
-        for sheet in workbook.worksheets:
-            rows, columns = sheet.max_row, sheet.max_column
-            if rows is None or columns is None:
-                # The sheet has no stored dimension; count by reading it.
-                rows = columns = 0
-                for row in sheet.iter_rows(values_only=True):
-                    rows += 1
-                    columns = max(columns, len(row))
-            dimensions.append({"rows": rows, "columns": columns})
-    finally:
-        workbook.close()
-    return {"sheets": len(dimensions), "sheet_dimensions": dimensions, "embedded_images": embedded_images}
-
-
-def probe_legacy_excel(source: Source, mime: str) -> dict:
-    """Excel 97-2003 workbooks. Raises UnsupportedFormat for other legacy Office files (.doc)."""
-    try:
-        data = source.read_bytes() if isinstance(source, Path) else _read_all(source)
-        workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
-    except xlrd.biffh.XLRDError as exc:
-        raise UnsupportedFormat("legacy Office file that is not an Excel workbook") from exc
-    try:
-        dimensions = [{"rows": sheet.nrows, "columns": sheet.ncols} for sheet in (workbook.sheet_by_index(i) for i in range(workbook.nsheets))]
-    finally:
-        workbook.release_resources()
-    return {"sheets": len(dimensions), "sheet_dimensions": dimensions, "embedded_images": 0, "format": "xls"}
-
-
 def _read_all(source: BinaryIO) -> bytes:
     source.seek(0)
     data = source.read()
@@ -290,12 +199,3 @@ def _read_all(source: BinaryIO) -> bytes:
     return data
 
 
-def probe_word(source: Source, mime: str) -> dict:
-    # Pictures pasted into a document are often scans and need the vision pass.
-    embedded_images = sum(1 for name in _zip_names(source) if name.startswith("word/media/"))
-    document = docx.Document(str(source) if isinstance(source, Path) else source)
-    texts = [paragraph.text for paragraph in document.paragraphs]
-    for table in document.tables:
-        for row in table.rows:
-            texts.extend(cell.text for cell in row.cells)
-    return {"text_chars": sum(_visible_chars(text) for text in texts), "embedded_images": embedded_images}

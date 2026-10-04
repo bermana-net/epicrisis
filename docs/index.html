@@ -8,6 +8,25 @@
 <link rel="icon" href="favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="description" content="Self-hosted, free for you and your family. Scanned medical records become structured data: every value exactly as printed, in the language it was printed in, one click from the original page.">
+<!-- What a link to this page shows where it is pasted: a chat, a channel, a message to a doctor.
+     Without these a service makes its own picture out of whatever it finds first, and what it found
+     here was a screenshot of somebody's test results — invented ones, since every picture here is
+     of the demo, but a page of medical results all the same. The picture is drawn for this and
+     carries no results at all: tools/og-image.html prints it. Absolute addresses, because the
+     services that unfurl a link do not resolve relative ones. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Epicrisis Companion">
+<meta property="og:url" content="https://epicrisis.bermana.net/">
+<meta property="og:title" content="Epicrisis Companion — a lifetime of medical paper, on your own machine">
+<meta property="og:description" content="Scanned medical records in five languages become an archive you host yourself: every value exactly as printed, next to the range printed beside it, one click from the original page. Not a medical device.">
+<meta property="og:image" content="https://epicrisis.bermana.net/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Epicrisis Companion: the box of paper in the cupboard, or wherever your archive lives, turned into something you can read and work with — with one test drawn over thirteen years.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Epicrisis Companion — a lifetime of medical paper, on your own machine">
+<meta name="twitter:description" content="Every value exactly as printed, next to the range printed beside it, one click from the original page. Self-hosted. Not a medical device.">
+<meta name="twitter:image" content="https://epicrisis.bermana.net/og.png">
 <style>
   /* The page is drawn on the same paper as the program, so a screenshot sits in it rather
      than on it. Every picture is framed the way this program frames what matters: a thin red
@@ -375,7 +394,7 @@
       <div><div class="n">5</div><div class="k">languages</div></div>
       <div><div class="n">200+</div><div class="k">institutions on the forms</div></div>
       <div><div class="n">492</div><div class="k">approved test groups</div></div>
-      <div><div class="n">761</div><div class="k">tests, no network, no model</div></div>
+      <div><div class="n">1571</div><div class="k">tests, no network, no model</div></div>
     </div>
   </div>
 </section>
@@ -488,7 +507,7 @@
         </div>
         <div class="sheet-card">
           <a href="epicrisis-for-underwriting.pdf" target="_blank" rel="noopener">
-            <img src="images/one-pager.png?v=2" alt="One page: Epicrisis for underwriting and claims teams"></a>
+            <img src="images/one-pager.png?v=3" alt="One page: Epicrisis for underwriting and claims teams"></a>
           <div class="grab">
             <a href="epicrisis-for-underwriting.pdf" download>Download the PDF &mdash; one page, A4</a>
           </div>
@@ -537,7 +556,7 @@
         </div>
         <div class="sheet-card">
           <a href="epicrisis-for-clinics.pdf" target="_blank" rel="noopener">
-            <img src="images/one-pager-clinics.png?v=1" alt="One page: Epicrisis for clinics and hospitals"></a>
+            <img src="images/one-pager-clinics.png?v=2" alt="One page: Epicrisis for clinics and hospitals"></a>
           <div class="grab">
             <a href="epicrisis-for-clinics.pdf" download>Download the PDF &mdash; one page, A4</a>
           </div>
@@ -620,7 +639,7 @@ const SHOTS = [
   ["17-indicators", "Indicators", "Five spellings of one test, grouped by a model, read again by a second, and approved by the person whose archive it is."],
   ["18-review", "To check", "What the checks found: a number that disagrees with the page, a date nobody could read, an unreadable corner, and one blood draw filed three times."],
   ["19-status", "Status", "Three archives, five steps each, and the read-only network tools with the lock that guards them. Sources are read-only."],
-  ["20-settings", "Settings", "Which model does which reading: a cheap one for every page, a strong one wherever a check failed, and a third, deliberately different one to disagree with both."],
+  ["20-settings", "Settings", "Which model does which reading: a cheap one to sort every page, a strong one to read the values out of a document, and a third, deliberately different one to disagree with both."],
   ["21-ask", "Ask", "A question about your own archive, answered by an isolated model call that can read this archive and nothing else. Shown here in its default state: off."],
   ["22-card-words", "A card that is words", "A consultation: the text as printed, the diagnoses as printed, the medications as printed. Nothing summarised, nothing inferred."],
 ];

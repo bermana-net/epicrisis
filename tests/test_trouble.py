@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from epicrisis import consent, indicators, layout, records, settings, state
+from epicrisis import consent, indicators, layout, people, records, settings, state
 from epicrisis.cli import app
 from epicrisis.index.build import SCHEMA_VERSION, index_path
 from epicrisis.query import IndexMissing, open_index
@@ -200,6 +200,57 @@ def test_a_torn_vocabulary_is_never_written_over(tmp_path: Path):
     assert page.status_code == 503 and "indicators.json" in page.text
     assert "Every spelling a person approved is still in that file" in page.text
     assert "0 indicators" not in page.text  # what it used to say: "the work has not been done yet"
+
+
+def test_a_torn_conversation_is_never_written_over_and_never_quietly_missing(tmp_path: Path):
+    """What a person asked about their own health, and what was answered, in the sixth file.
+
+    layout.CHATS is in THEIR_OWN_WORK and was the one reader there that did not refuse: a torn
+    conversation dropped out of the list without a word — a person's own questions gone from the
+    page with nothing saying where — and `load_chat` answered None, which is the shape §8 names.
+    `answer` reads, changes and saves on every event of a running answer and falls back to the
+    copy it is holding where the read gives nothing, so an unreadable file was written over with
+    whatever happened to be in memory: an empty read writing the emptiness back.
+
+    people.load and indicators.load have refused this since the day it happened to each of them.
+    This module was reached last, which is the whole argument for the three of them saying one
+    thing in one voice.
+    """
+    from epicrisis import ask
+
+    data_dir, _ = an_instance(tmp_path)
+    kept = ask.new_chat(data_dir)
+    asked = {"role": "person", "text": "a question only I asked", "at": "2026-01-01T00:00:00+00:00"}
+    kept = {**kept, "title": "A question of my own", "messages": [asked]}
+    ask._save(data_dir, kept)
+    ask._save(data_dir, {**kept, "messages": [asked, {**asked, "text": "and a second one"}]})
+    beside = ask.new_chat(data_dir)
+    torn = ask.chats_dir(data_dir) / f"{kept['id']}.json"
+    _tear(torn)
+
+    # Reading it is not "there is no such conversation", which is what let the emptiness be written.
+    with pytest.raises(state.Unreadable, match=kept["id"]) as refusal:
+        ask.load_chat(data_dir, kept["id"])
+    assert refusal.value.safe and refusal.value.mend  # what is not lost, and what puts it right
+    with pytest.raises(state.Unreadable, match=kept["id"]):
+        ask.list_chats(data_dir)
+    # The copy from before the last save is beside it, as it is for the other five.
+    before = json.loads(torn.with_name(torn.name + ".previous").read_text(encoding="utf-8"))
+    assert [said["text"] for said in before["messages"]] == ["a question only I asked"]
+    # And the half-written file is still exactly as it was found: nothing wrote over it.
+    was = torn.read_bytes()
+    ask._save(data_dir, {**beside, "title": "Another question"})
+    assert torn.read_bytes() == was
+
+    client = dashboard(data_dir)
+    page = client.get("/ask")
+    assert page.status_code == 503 and f"{kept['id']}.json" in page.text
+    assert "Every question and every answer in it is still in that file" in page.text
+    assert "No chats yet" not in page.text  # what it used to say about a file it could not read
+    # And a door that answers. Nothing but this page reads the conversations, so both ways on
+    # stand — and a file named nowhere in SHUT_WHILE_TORN is given none at all.
+    door = _the_way_out(page)
+    assert door is not None and client.get(door, follow_redirects=True).status_code == 200, door
 
 
 def test_an_index_that_is_there_and_will_not_open_is_answered_in_words(tmp_path: Path):
@@ -397,6 +448,42 @@ def test_a_backup_takes_what_nothing_can_make_again_and_leaves_the_rest(tmp_path
     assert {layout.CORRECTIONS, layout.JUDGEMENTS, layout.INDICATORS} <= took
     assert not any(name.startswith("index-") for name in took)
     assert (tmp_path / "kept" / "sources" / source_id / layout.CORRECTIONS).exists()
+
+
+def test_a_backup_carries_every_kind_of_work_the_lists_call_nobody_elses(tmp_path: Path):
+    """layout.THEIR_OWN_WORK named six kinds and the backup carried four of them.
+
+    people.json was the one left out, at both levels, before it moved inside the archive and after.
+    Worse than silently: the line that says what an instance holds none of is built from the same
+    list, so the file sat on the disk holding somebody's joined doctors while the command printed
+    its name under "none of these in this instance yet". This asserts against the list rather than
+    against a hand-written set of names, so a seventh kind added to layout cannot be forgotten here.
+    """
+    from epicrisis.backup import back_up
+
+    data_dir, source_id = an_instance(tmp_path)
+    output = data_dir / "sources" / source_id
+    output.mkdir(parents=True, exist_ok=True)
+    (output / layout.CORRECTIONS).write_text('{"field": "value_as_printed"}\n', encoding="utf-8")
+    (output / layout.JUDGEMENTS).write_text('{"verdict": "noise"}\n', encoding="utf-8")
+    (output / layout.REPLACED).mkdir(exist_ok=True)
+    (output / layout.REPLACED / "a-reading-a-later-one-displaced.json").write_text("{}", encoding="utf-8")
+    indicators.upsert(data_dir, None, "Haemoglobin", ["гемоглобін"], "approved")
+    people.join(data_dir, source_id, "institution",
+                ["Квазитрофиновый центр", "Квазитрофиновий центр"], "Квазитрофиновый центр")  # fmt: skip
+    (data_dir / layout.CHATS).mkdir(exist_ok=True)
+    (data_dir / layout.CHATS / "one.json").write_text("{}", encoding="utf-8")
+    # A check written for this instance's own forms: a header a machine reads and a body in prose
+    # saying what it looks at and how it can be wrong. Nothing but the person makes that again.
+    (data_dir / layout.RULES).mkdir(exist_ok=True)
+    (data_dir / layout.RULES / "a-rule-of-this-instance.md").write_text("+++\n+++\n", encoding="utf-8")
+
+    copied = back_up(data_dir, tmp_path / "kept")
+
+    took = {Path(name).name for name in copied.took}
+    assert set(layout.THEIR_OWN_WORK) <= took, f"not carried: {set(layout.THEIR_OWN_WORK) - took}"
+    assert layout.PEOPLE not in copied.missing, "named as absent while it was on the disk"
+    assert (tmp_path / "kept" / "sources" / source_id / layout.PEOPLE).exists()
 
 
 def test_a_backup_refuses_to_write_inside_what_it_is_copying(tmp_path: Path):
@@ -738,8 +825,12 @@ def test_a_transcription_that_will_not_parse_is_named_and_the_rest_is_whole(tmp_
     with pytest.raises(state.Unreadable) as broken:
         load_extracted(extracted, sha)
 
-    # Named as a person would look for it, and never above the data directory.
-    assert broken.value.file.startswith(layout.EXTRACTED + "/") and str(tmp_path) not in str(broken.value)
+    # Named as a person would look for it — the whole way from the data directory, because the
+    # file is two folders down and "extracted/<sha>.json" named a place that does not exist — and
+    # never above the data directory, because the folder above it carries somebody's surname.
+    named = extracted_path(extracted, sha).name
+    assert broken.value.file == f"{layout.ARCHIVES}/{source_id}/{layout.EXTRACTED}/{named}"
+    assert str(tmp_path) not in str(broken.value)
     assert "Every other document is whole" in broken.value.safe
     assert "epicrisis extract" in broken.value.mend and layout.REPLACED in broken.value.mend
     # A document nobody ever read is not this, and still answers with nothing.
@@ -1389,3 +1480,216 @@ def test_the_button_that_starts_a_reading_says_when_a_lock_is_in_the_way(tmp_pat
     # And with nothing holding it, the button is a button again.
     assert client.post("/update", follow_redirects=False).status_code == 303
     assert os.path.exists(data_dir)
+
+
+# ---------------------------------------------------------------------------------------------
+# The way out of the page that says a file will not read.
+
+
+def _tear(path: Path) -> None:
+    """Half a file, which is what a machine that dies mid-write leaves behind."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    whole = path.read_bytes() if path.exists() else b'{"half of a line'
+    path.write_bytes(whole[: len(whole) // 2] or b"{")
+
+
+def _a_built_archive(tmp_path: Path) -> tuple[Path, str]:
+    """One archive read all the way through, holding every file of state this program keeps.
+
+    The files that take a page down are only read where there is something to read: a torn
+    reading of one document is reached through the inventory and the findings, a torn vocabulary
+    through the index. An empty instance is blind to all of it — which is how the page about a
+    torn file came to offer a button to a page that answered with the same page.
+    """
+    from test_extract import FakeExtractBackend, build_archive
+
+    from epicrisis.extract.run import extract_source
+    from epicrisis.index.build import build_index
+    from epicrisis.validate import validate_source
+
+    data_dir, source, output, _records = build_archive(tmp_path)
+    registry = SourceRegistry(data_dir)
+    registry.set_active(source.id)
+    extract_source(data_dir, source, FakeExtractBackend())
+    # A person's own work in both of the files that hold it, so that tearing them tears
+    # something: both readers answer with their default over a file that is not there at all.
+    settings.set_answer_mode(data_dir, "with_meaning")
+    indicators.upsert(data_dir, None, "Zhubroteks", ["жубротекс", "ЖУБРОТЕКС"], "approved")
+    people.join(data_dir, source.id, "doctor", ["Вжукарпіль Щ.Ю", "Вжукарпіль Щ. Ю."], "Вжукарпіль Щ.Ю")
+    validate_source(output)
+    build_index(data_dir, [registry.get(source.id)])
+    return data_dir, source.id
+
+
+def _every_page(client: TestClient, data_dir: Path, source_id: str) -> dict:
+    """Every page this dashboard serves, asked for the archive that is open.
+
+    The routes come from the application, as in test_the_wall_between_people, so a page added
+    next month is swept without anybody adding it to a list here.
+    """
+    extracted = sorted((data_dir / layout.ARCHIVES / source_id / layout.EXTRACTED).glob("*.json"))
+    standing_in = {"chat_id": "none", "source_id": source_id, "indicator_id": "zhubroteks",
+                   "sha256": extracted[0].stem if extracted else "0" * 64,
+                   "first_page": "1", "page": "1"}  # fmt: skip
+    answers = {}
+    for route in client.app.routes:
+        path = getattr(route, "path", "")
+        if "GET" not in getattr(route, "methods", set()) or path.startswith("/static"):
+            continue
+        address = path
+        for name, value in standing_in.items():
+            address = address.replace("{" + name + "}", value)
+        if "{" not in address:
+            answers[address] = client.get(address, follow_redirects=True)
+    return answers
+
+
+def _the_way_out(page) -> str | None:
+    """The address the trouble page offers, or nothing where it offers no button."""
+    if 'class="btn" href="' not in page.text:
+        return None
+    return page.text.split('class="btn" href="')[1].split('"')[0]
+
+
+@pytest.mark.parametrize("which", ["sources", "settings", "indicators", "people", "validation",
+                                  "extracted", "corrections", "index"])  # fmt: skip
+def test_the_page_about_a_torn_file_never_offers_a_door_onto_that_same_page(tmp_path: Path, which: str):
+    """Every kind of file of state, torn, and the button it offers followed to see what answers.
+
+    This is the whole promise of that page, and for three of the eight files it was false. The
+    button said "Archive status" for everything but the list of archives, and the status page is
+    drawn out of three of them. Torn extracted/<sha>.json — the reading of one document a model
+    was paid for — took down the status page, the page of things to check and the list of
+    documents, and the one door each of them offered was the status page. The same for
+    validation.json. A person pressing it arrived at the page they were standing on.
+    """
+    data_dir, source_id = _a_built_archive(tmp_path)
+    output = data_dir / layout.ARCHIVES / source_id
+    torn = {
+        "sources": data_dir / layout.SOURCES,
+        "settings": data_dir / layout.SETTINGS,
+        "indicators": data_dir / layout.INDICATORS,
+        "people": output / layout.PEOPLE,
+        "validation": output / layout.VALIDATION,
+        "extracted": sorted((output / layout.EXTRACTED).glob("*.json"))[0],
+        "corrections": output / layout.CORRECTIONS,
+        "index": index_path(data_dir, source_id),
+    }[which]
+    if which == "corrections":
+        torn.write_text('{"field": "value_as_printed", "was"\n', encoding="utf-8")
+    elif which == "index":
+        torn.write_bytes(b"\x00" * 4096)  # there, and not a database sqlite will open
+    else:
+        assert torn.exists(), f"{which} is not in a built archive, so tearing it proves nothing"
+        _tear(torn)
+
+    client = dashboard(data_dir)
+    pages = _every_page(client, data_dir, source_id)
+    assert len(pages) >= 15, "the sweep found almost no pages; it is testing nothing"
+    # Which of the two ways on answers at all, asked of the server rather than of the table that
+    # chooses between them. A door is offered only where one of them does.
+    answers = [address for address in ("/status", "/") if pages[address].status_code == 200]
+
+    refused = {address: page for address, page in pages.items() if page.status_code == 503}
+    for address, page in refused.items():
+        assert "cannot be read" in page.text, address
+        door = _the_way_out(page)
+        if answers:
+            assert door is not None, f"{address} offers no way out while {answers} answer"
+            assert door in answers, f"{address} offers {door}, which answers {pages[door].status_code}"
+            assert client.get(door, follow_redirects=True).status_code == 200, door
+        else:
+            # Nowhere to go, said in words rather than with a button back to here. The list of
+            # archives is the one file every page of this dashboard begins by reading.
+            assert door is None, f"{address} offers {door} while nothing answers"
+            assert "nowhere in this interface to go" in page.text, address
+    # And the kinds that do take a page down, named, so that a reader of this test that stopped
+    # refusing would be a failure rather than a parametrisation quietly proving nothing.
+    if which in ("sources", "indicators", "people", "validation", "extracted", "index"):
+        assert refused, f"a torn {which} took no page down at all"
+
+
+def test_a_file_that_table_has_never_heard_of_is_given_no_door_rather_than_a_wrong_one(tmp_path: Path, monkeypatch):
+    """The strict side of a measured table: a file nobody listed shuts both doors.
+
+    Which pages a torn file takes down is measured and written down, and a file added next year
+    will not be in that table. The choice then is between a button that may lead back to this
+    same page and no button at all, and the second is the one that tells the truth.
+    """
+    from epicrisis.web import app as web
+
+    data_dir, source_id = an_instance(tmp_path)
+    unlisted = state.where(data_dir / layout.ARCHIVES / source_id / layout.MATERIALS)
+    assert web.a_way_on(state.Unreadable(unlisted)) is None
+
+    def will_not_read(*_args, **_rest):
+        raise state.Unreadable(unlisted, "Nothing that was read is lost.", "Read them again.")
+
+    monkeypatch.setattr(web, "validation_state", will_not_read)
+    page = dashboard(data_dir).get("/status")
+
+    assert page.status_code == 503
+    assert layout.MATERIALS in page.text
+    assert 'class="btn"' not in page.text
+    assert "cannot name another that would answer" in page.text
+
+
+def test_starting_again_puts_aside_every_reading_and_not_one_only_copy(tmp_path: Path):
+    """"Start again" moved replaced/ out of sight, and that folder is the only copy there is.
+
+    Two lists answered one question — what a reading of an archive wrote — and they disagreed.
+    layout names it twice over, as what code makes again and what a model makes again; sources.py
+    kept a hand-written copy beside it, and the copy held `replaced`, which layout's own list of a
+    person's own work calls "the only copy of a reading that a later reading displaced". So the
+    button that exists to read an archive again from nothing carried that folder into
+    forgotten-<when>/ — and backup.py looks for a person's own work at the top of an archive's
+    folder and never inside forgotten-…, so the loss was reported as `copied.missing`, on another
+    page, to somebody who had pressed a button somewhere else. The eighth entry of the
+    constitution is written about exactly that file.
+
+    What is asserted is the disagreement itself and not the one name: what moves is every name
+    layout says a reading wrote, and what stays is every name layout says is theirs. The next file
+    forgotten by one list and not the other fails this too.
+    """
+    data_dir, source_id = an_instance(tmp_path)
+    registry = SourceRegistry(data_dir)
+    output = data_dir / layout.ARCHIVES / source_id
+    output.mkdir(parents=True, exist_ok=True)
+    # One of everything layout says lives inside an archive's own folder, so that the two lists
+    # are compared over the whole of what either could name rather than over what a run happens
+    # to have written by the time somebody presses the button.
+    for name in layout.IN_AN_ARCHIVE:
+        if name in (layout.EXTRACTED, layout.RECHECKED, layout.REPLACED):
+            (output / name).mkdir()
+            (output / name / ("0" * 8)).write_text("{}\n", encoding="utf-8")
+        else:
+            (output / name).write_text("{}\n", encoding="utf-8")
+
+    aside = registry.forget(source_id)
+
+    assert aside is not None and aside.is_dir()
+    assert {item.name for item in aside.iterdir()} == set(layout.READING_ARTEFACTS)
+    theirs = {name for name in layout.THEIR_OWN_WORK if name in layout.IN_AN_ARCHIVE}
+    assert {item.name for item in output.iterdir() if item.name != aside.name} == theirs
+    # And the only copy is still a copy: the file inside it, not only the folder's name.
+    assert (output / layout.REPLACED / ("0" * 8)).read_text(encoding="utf-8") == "{}\n"
+
+
+def test_every_file_this_program_writes_is_filed_for_whose_it_is_and_for_where_it_lives(tmp_path: Path):
+    """The next name added to layout.py, caught before a second list is written out somewhere.
+
+    Both questions are asked of every name: whose work it is — which decides whether a backup
+    carries it and whether "start again" may touch it — and which of the two folders it sits in,
+    which is what tells a reading of an archive from the instance's own files. A name in neither
+    set of lists is a file that every list about it will be short by, which is how both of the
+    lists `changed_since` replaced came to be short by one, and how sources.py came to carry off
+    a person's only copy.
+    """
+    whose = (layout.THEIR_OWN_WORK + layout.THEIR_CHOICES + layout.MADE_AGAIN_BY_CODE
+             + layout.MADE_AGAIN_BY_A_MODEL + layout.ASKED_FOR_AGAIN)  # fmt: skip
+    for name, value in sorted(vars(layout).items()):
+        if not name.isupper() or not isinstance(value, str) or name == "ARCHIVES":
+            continue  # ARCHIVES is the folder every archive's folder sits in, and is nobody's work
+        assert whose.count(value) == 1, f"{name} is in {whose.count(value)} of the lists of whose work it is"
+        here = layout.IN_AN_ARCHIVE.count(value) + layout.IN_THE_INSTANCE.count(value)
+        assert here == 1, f"{name} is in {here} of the lists of where it lives"

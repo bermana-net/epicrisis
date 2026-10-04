@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import sqlite3
+from contextlib import closing
+from html.parser import HTMLParser
 import os
 import re
 from datetime import date
@@ -11,8 +14,12 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
+from epicrisis import doc_types
+from epicrisis import indicators
+from epicrisis.index.build import build_index, index_path
 from epicrisis.web.app import create_app
 from epicrisis.web.jobs import InventoryJobs
+from conftest import A_DAY_FOR_AN_ILLUSTRATION
 from test_inventory import SYNTHETIC_TEXT, make_scan_pdf, make_text_pdf
 from test_ask import archive_index  # noqa: F401
 from epicrisis import query as query_index
@@ -202,8 +209,8 @@ def test_browse_lists_folders_only(client, tmp_path):
     assert [folder["name"] for folder in data["folders"]] == ["alpha", "Beta"]
     assert (data["folder_count"], data["file_count"]) == (2, 1)
     assert "scan.pdf" not in json.dumps(data)
-    assert data["crumbs"][0] == {"name": "/", "path": "/"}
-    assert data["crumbs"][-1] == {"name": "browse", "path": str(root)}
+    assert data["crumbs"][0] == {"name": "/", "path": "/", "inside": False}
+    assert data["crumbs"][-1] == {"name": "browse", "path": str(root), "inside": True}
     assert data["can_add"] is True
 
 
@@ -232,9 +239,41 @@ def test_browse_default_starts_in_archive_folder(client, data_dir):
 
 def test_add_button_opens_picker(client):
     page = client.get("/status").text
-    assert '<button type="button" id="open-picker">' in page
+    assert '<button type="button" class="browse" id="open-picker">' in page
     assert '<dialog class="picker" id="picker"' in page
     assert ".innerHTML" not in page
+
+
+def test_browse_stays_at_the_end_of_the_path_line_on_a_phone():
+    """Everything else in that bar takes a row of its own on a narrow screen; Browse does not.
+
+    It is what fills the path field in, so it belongs to that line. A row of its own put it
+    between the path and the name, where it read as a step between them.
+    """
+    import epicrisis.web.app as web
+
+    style = Path(web.__file__).parent / "static" / "app.css"
+    narrow = style.read_text().split("@media (max-width:")[1]
+
+    assert "form.add #path { flex: 1 1 0; }" in narrow
+    assert "form.add button.browse { flex: 0 0 auto;" in narrow
+
+
+def test_choosing_a_folder_fills_the_path_in_and_adding_is_a_step_of_its_own(client):
+    """Browse, then the name, then Add. Choosing a folder in the picker adds nothing by itself.
+
+    It used to post the form from script the moment a folder was chosen. That skipped the name —
+    a form submitted by script runs none of the browser's own checks — and took the decision
+    away from the person at the one point where it is theirs.
+    """
+    page = client.get("/status").text
+
+    assert ">Browse<" in page and ">Choose this folder<" in page
+    assert '<button type="submit" id="add-source">' in page
+    picking = page[page.index("choose.addEventListener") :]
+    assert "form.submit()" not in picking  # the picker fills the path in; Add is what posts
+    assert "picker.close()" in picking
+    assert page.index('id="path"') < page.index('id="open-picker"') < page.index('id="owner"')
 
 
 def test_source_ids_are_random(archive, tmp_path):
@@ -390,6 +429,32 @@ def test_documents_page_and_original_pages(client, archive, data_dir):
     assert "text/html" in alone.headers["content-type"]
 
 
+def test_a_page_that_is_text_shows_the_text_and_not_a_broken_image(client, archive, data_dir):
+    """A document can arrive as plain text, and then there is no picture of it anywhere.
+
+    The page of a value drew an <img> at an address that answers 409 for such a page — a broken
+    image in the middle of the one page this program promises is always one click away from a
+    number. The text the values were read from is what stands there instead.
+    """
+    lines = "Гемоглобин 134 г/л (130 - 160)\nЗаключение: отклонений не выявлено.\n"
+    (archive / "2004" / "blood.txt").write_bytes(lines.encode("cp1251"))
+    add(client, archive)
+    source_id = json.loads((data_dir / "sources.json").read_text())[0]["id"]
+    output = data_dir / "sources" / source_id
+    inventory = {record["name"]: record for record in map(json.loads, (output / "inventory.jsonl").read_text().splitlines())}
+    text_file = inventory["blood.txt"]
+
+    assert text_file["category"] == "text" and text_file["text"]["pages"] == 1
+
+    page = client.get(f"/sources/{source_id}/files/{text_file['sha256']}/pages/1")
+
+    assert page.status_code == 200
+    assert "Гемоглобин 134 г/л" in page.text  # read with the coding the inventory settled on
+    assert "<img" not in page.text
+    assert "the image on its own" not in page.text
+    assert "the text as it stands in the file" in page.text
+
+
 @pytest.mark.parametrize(("url", "current"), [("/status", "/status"), ("/documents", "/documents"), ("/consent", "/consent")])
 def test_menu_on_every_page_marks_current(client, url, current):
     page = client.get(url).text
@@ -399,6 +464,243 @@ def test_menu_on_every_page_marks_current(client, url, current):
     assert f'<a href="{current}" aria-current="page">' in page
     assert page.count('aria-current="page"') == 1
     assert "Not a medical device" in page
+
+
+VOID_ELEMENTS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+                           "meta", "source", "track", "wbr"})  # fmt: skip
+# The one row of links in this interface that is not a row of tabs, named here because the sweep
+# below cannot tell the two apart by looking. It is the row of document types over the feed: a
+# line of counts that narrow the list under it, drawn as text with the chosen one in red and never
+# as a box. Taking this name out is how somebody says it has become a row of tabs, and the sweep
+# then holds it to the same rule as the rest.
+NOT_A_ROW_OF_TABS = frozenset({"types"})
+
+
+def css_rules(style: str) -> list[tuple[str, str]]:
+    """Every rule of a stylesheet as (what it is over, what it sets), at-rules descended into.
+
+    Written because the test below used to read that file a line at a time: in this stylesheet a
+    rule's selectors and its declarations stand on separate lines, so `line.split("{")[1]` was the
+    empty string, the set of properties made from it was empty, and the loop reached its assertion
+    on none of the rules it was written to check. It passed over a fifth row of tabs added with a
+    rule of its own, which is the one thing it was there to catch.
+    """
+    without_comments = re.sub(r"/\*.*?\*/", "", style, flags=re.DOTALL)
+    rules, piled, depth, heading = [], "", 0, ""
+    for piece in re.split(r"([{}])", without_comments):
+        if piece == "{":
+            depth += 1
+            if depth == 1:
+                heading = piled
+            piled = ""
+        elif piece == "}":
+            depth -= 1
+            if depth == 0 and not heading.strip().startswith("@"):
+                rules.append((" ".join(heading.split()), " ".join(piled.split())))
+            piled = ""
+        else:
+            piled += piece
+    return rules
+
+
+class RowsOfTabs(HTMLParser):
+    """The rows of tabs in a served page, found by their shape rather than by their class.
+
+    A row of tabs here is a row of captions with one of them the one you are standing on: two or
+    more links or labels under one element, in the small uppercase this interface writes captions
+    in, exactly one of them marked `aria-current` — or, where the switching is a hidden radio and
+    not a page, every one of them a label for one. Found by shape and not by looking for a class
+    this test already knows, because a class it already knows is a class a fifth row would not
+    have.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.open = []
+        self.rows = []
+
+    def handle_starttag(self, tag, attrs):
+        if self.open:
+            self.open[-1][2].append((tag, dict(attrs)))
+        if tag not in VOID_ELEMENTS:
+            self.open.append([tag, dict(attrs), []])
+
+    def handle_startendtag(self, tag, attrs):
+        if self.open:
+            self.open[-1][2].append((tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        for depth in range(len(self.open) - 1, -1, -1):
+            if self.open[depth][0] != tag:
+                continue
+            _tag, attributes, children = self.open.pop(depth)
+            del self.open[depth:]
+            classes = frozenset(attributes.get("class", "").split())
+            if "caps" in classes and self._a_row_of_tabs(children):
+                self.rows.append(classes)
+            return
+
+    @staticmethod
+    def _a_row_of_tabs(children) -> bool:
+        if len(children) < 2 or any(tag not in ("a", "label", "span") for tag, _ in children):
+            return False
+        standing_on = [tag for tag, attributes in children if "aria-current" in attributes]
+        radios = [tag for tag, attributes in children if tag == "label" and attributes.get("for")]
+        return len(standing_on) == 1 or len(radios) == len(children)
+
+
+def rows_of_tabs(client: TestClient, standing_in: dict) -> dict[str, list[frozenset]]:
+    """Every row of tabs on every page this program serves, by the address it was found on.
+
+    The addresses come from the application, as in test_the_wall_between_people, so a page added
+    next month is swept without anybody adding it to a list here. The three written out at the end
+    are the other cuts of the timeline: one address, and a row of tabs drawn differently on each.
+    """
+    found = {}
+    addresses = []
+    for route in client.app.routes:
+        path = getattr(route, "path", "")
+        if "GET" not in getattr(route, "methods", set()) or path.startswith("/static"):
+            continue
+        for name, value in standing_in.items():
+            path = path.replace("{" + name + "}", value)
+        if "{" not in path:
+            addresses.append(path)
+    for address in (*addresses, "/?view=lanes", "/?view=indicators", "/?cut=doctor"):
+        page = client.get(address, follow_redirects=True)
+        parser = RowsOfTabs()
+        parser.feed(page.text)
+        if parser.rows:
+            found[address] = [classes for classes in parser.rows if not classes & NOT_A_ROW_OF_TABS]
+    return {address: rows for address, rows in found.items() if rows}
+
+
+def test_every_row_of_tabs_in_this_interface_is_drawn_by_one_rule(archive_index):  # noqa: F811
+    """For one afternoon this program had three different tab controls, and the owner found them.
+
+    The settings had the oldest; a boxed one was invented for the page of doctors that morning and
+    copied from there to the patient card before anybody saw the two side by side; the cuts of the
+    timeline had a third. Three places to change, and changing one of them is how it happened. The
+    owner asked for one thing: every row of tabs in this interface regulated in one place.
+
+    So it is asked of the pages and of the stylesheet together, because either side alone can be
+    told a lie. From the pages: every row of tabs this program serves carries a class that the one
+    rule names, so a fifth row written with a rule of its own fails here. From the stylesheet: the
+    look of a tab is declared in that rule and nowhere else, so copying those declarations under
+    another selector fails too.
+
+    What this replaces read the stylesheet a line at a time and reached its assertion on no line
+    at all — see css_rules. The one live thing left in it was that an exact string of three
+    declarations appeared twice, which any reformatting of the file broke and a fifth row of tabs
+    did not.
+    """
+    data_dir, source, labs = archive_index
+    style = (Path(__file__).resolve().parent.parent / "epicrisis" / "web" / "static" / "app.css").read_text(encoding="utf-8")
+    rules = css_rules(style)
+    assert len(rules) > 100, "the stylesheet did not parse into rules, so this test reads nothing"
+
+    # The look of a tab: a caption along a rule, carrying a three-pixel underline that is
+    # transparent until it is wanted, which is what makes a row of them read as tabs and the one
+    # under you as the one you are on. The frame this replaced was the boxed control the owner
+    # asked to have taken back out.
+    draws_a_tab = [selectors for selectors, sets in rules
+                   if "border-bottom: 3px solid transparent" in sets]  # fmt: skip
+    assert len(draws_a_tab) == 1, f"a tab is drawn by {len(draws_a_tab)} rules and not one: {draws_a_tab}"
+    # Which rows that rule reaches. Each of its selectors names a tab inside a row — "nav.tabs a",
+    # ".settings-form .tabs label" — so the row is the step of the selector before the last one.
+    reached = set()
+    for selector in draws_a_tab[0].split(","):
+        steps = selector.split()
+        reached |= set(re.findall(r"\.([\w-]+)", steps[-2] if len(steps) > 1 else ""))
+    assert reached, f"no row of tabs is named in {draws_a_tab[0]}"
+    # The tab you are standing on carries the red underline, and that is said twice rather than
+    # once: on the settings page the tab is a checked radio and not a page you are on, so it
+    # cannot be named in the selector that says it for the rest. Twice, and over rows of the same
+    # one rule — a third place saying it is a third tab control, whatever its selector is called.
+    #
+    # Counted among the rows this rule draws and not across the whole stylesheet, because the red
+    # underline is how this interface marks a thing in several places that are not tabs at all.
+    underlined = [selectors for selectors, sets in rules
+                  if "border-bottom-color: var(--signal)" in sets
+                  and set(re.findall(r"\.([\w-]+)", selectors)) & reached]  # fmt: skip
+    assert len(underlined) == 2, (
+        f"the tab you are on is underlined in {len(underlined)} places: {underlined}")
+
+    # One test under a name, and one of its two values measured in another specimen, so that the
+    # row of material tabs is drawn and swept with the rest: it is one of the four rows, and it is
+    # the one an archive of a single specimen never shows. The second specimen is written into the
+    # index rather than read off a form, because what is under test here is the row and not the
+    # reading that fills it.
+    indicators.upsert(data_dir, None, "Analyte 2", ["Analyte 2"], "approved")
+    build_index(data_dir, [source])
+    with closing(sqlite3.connect(index_path(data_dir, source.id))) as index:
+        with index:
+            index.execute("UPDATE observations SET material = 'urine' WHERE rowid = "
+                          "(SELECT min(rowid) FROM observations WHERE name = 'Analyte 2')")  # fmt: skip
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050",
+                        raise_server_exceptions=False)  # fmt: skip
+    found = rows_of_tabs(client, {"source_id": source.id, "sha256": labs, "first_page": "1",
+                                  "page": "1", "chat_id": "none", "indicator_id": "analyte-2"})  # fmt: skip
+    rows = [(address, classes) for address, drawn in found.items() for classes in drawn]
+    assert rows, "the sweep found no rows of tabs at all, so it is testing nothing"
+    # And it found every row the rule names. Without this the sweep could go blind to one of them
+    # — a row drawn only for an archive this fixture does not hold — and say nothing about it,
+    # which is how the test this replaces came to say nothing about any of them.
+    seen = set().union(*(classes for _address, classes in rows))
+    assert reached <= seen, (
+        f"the one rule draws {sorted(reached - seen)}, and the sweep never met a row of it: either "
+        f"the row is gone from the pages or this fixture does not hold the archive that shows it"
+    )
+
+    # Every row under that one rule — the spacing above and below included, which is in the same
+    # rule because it was not: the four rows had four gaps, 26 pixels, 4, 18 and 26, and on the
+    # page of doctors the tabs sat so close under the heading that they read as part of it.
+    for address, classes in rows:
+        assert classes & reached, (
+            f"a row of tabs on {address} carries {sorted(classes)}, and the one rule that draws a "
+            f"tab reaches {sorted(reached)}: that row is drawn somewhere else"
+        )
+
+
+def test_the_pages_about_the_reading_stand_in_a_drawer_of_their_own(client, archive):
+    """Eleven entries in one column ran off the bottom of the screen, and a menu you scroll is
+    not a map any more. Four of them are not about the records: they are about the reading.
+
+    Folded — except on the page a person is standing on. Arriving at "To check" and finding the
+    menu claiming it is somewhere else is the interface telling them they are lost.
+    """
+    add(client, archive)
+    page = client.get("/").text
+    menu = page.split('id="menu-panel"')[1]
+    top, drawer = menu.split('class="menu-more"')
+
+    assert "Housekeeping" in drawer
+    for about_the_reading in ("/documents", "/review", "/status", "/consent"):
+        assert f'href="{about_the_reading}"' in drawer
+        assert f'href="{about_the_reading}"' not in top, f"{about_the_reading} is still in the top of the menu"
+    # What the program is for stays where it was, in one screenful.
+    for its_own in ("/", "/search", "/ask", "/card", "/indicators", "/who", "/settings"):
+        assert f'href="{its_own}"' in top
+    assert "<details class=\"menu-more\">" in page  # shut
+
+    standing_there = client.get("/review").text
+    assert "<details class=\"menu-more\" open>" in standing_there
+    assert standing_there.count('aria-current="page"') == 1
+
+
+def test_the_page_of_names_is_named_for_what_it_holds(client, archive):
+    """"Who made them" is a question, and a question in a menu has to be opened to be answered.
+
+    It sits beside the indicators now, and is worded as what it is: the same act as grouping the
+    printed names of one test, done for the people and the places instead.
+    """
+    add(client, archive)
+    menu = client.get("/").text.split('id="menu-panel"')[1]
+
+    assert "Doctors and clinics" in menu and "Who made them" not in menu
+    assert menu.index("Indicators") < menu.index("Doctors and clinics")
+    assert "Doctors and clinics" in client.get("/who").text
 
 
 def test_the_menu_grows_as_the_archive_does(tmp_path):
@@ -462,6 +764,23 @@ def test_extract_progress_on_dashboard(client, archive, data_dir):
     assert ("Read new documents" in allowed) or ("not installed on this server" in allowed)
 
 
+def test_the_button_that_deletes_nothing_says_so_where_it_stands(client, archive):
+    """"Take off the list" sits beside "Start again" and reads as the harsher of the two.
+
+    The only words saying it deletes nothing were in a title= on the button, which a phone and a
+    keyboard never show — so on a phone the one button of that pair that is safe looked like the
+    one that is not. The row below it has said what it does, in a line of its own, since it was
+    written; this is the same thing in the same place.
+    """
+    add(client, archive)
+
+    page = client.get("/status").text
+
+    assert "Take off the list" in page
+    assert "Nothing is deleted: the folder of scans, the transcriptions and your corrections" in page
+    assert 'title="Takes this archive off the list' not in page
+
+
 def test_names_are_escaped(client, tmp_path):
     folder = tmp_path / "<b>bold"
     folder.mkdir()
@@ -498,6 +817,33 @@ def test_documents_are_grouped_by_their_own_date_not_the_folder(client, archive,
     assert page.count('<details class="docs-year">') == 3
 
 
+def test_the_day_as_the_form_printed_it_is_on_the_page_and_not_in_a_tooltip(client, archive, data_dir):
+    """It lived in a title= on the date, under a lead reading "hover a date to see it as printed".
+
+    A phone has no hovering and neither has a keyboard, and the readme offers this very page for
+    showing a doctor from a phone — so on the screen it is read on, the date as printed was not
+    on the page at all. The seventh entry of the constitution is about saying out loud what the
+    program did, and reading "«12» 03 2011 г." as 12.03.2011 is something it did.
+    """
+    add(client, archive)
+    source_id = json.loads((data_dir / "sources.json").read_text())[0]["id"]
+    output = data_dir / "sources" / source_id
+    inventory = {record["name"]: record for record in map(json.loads, (output / "inventory.jsonl").read_text().splitlines())}
+    line = {"file_sha256": inventory["scan.pdf"]["sha256"], "page": 1, "route": "vision", "doc_type": "lab_panel",
+            "page_role": "first", "language": "ru", "date_on_page": "«12» 03 2011 г.", "provider_on_page": None,
+            "has_tabular_results": False, "legible": True, "confidence": 0.9}  # fmt: skip
+    (output / "classify.jsonl").write_text(json.dumps(line) + "\n")
+
+    page = client.get("/documents").text
+
+    assert "12.03.2011" in page
+    assert '<span class="mono muted date-printed">«12» 03 2011 г.</span>' in page
+    assert "Hover a date" not in page  # and the lead names the line instead of a gesture
+    assert "the day as the form itself printed it" in page
+    # Not said twice where the form printed exactly what was read: that is noise on every row.
+    assert 'title="As printed' not in page
+
+
 def test_a_date_by_hand_has_to_be_a_date_a_document_could_carry(client, archive, data_dir):
     """A hand-set date is taken as truth afterwards, so the future and the far past are refused."""
     add(client, archive)
@@ -521,11 +867,15 @@ def test_a_date_by_hand_has_to_be_a_date_a_document_could_carry(client, archive,
         assert "That date was not taken" in refused.text and said in refused.text, wrong
         assert "One server can hold several archives" not in refused.text, wrong
         assert "Internal Server Error" not in refused.text, wrong
+    # The example the first of those three shows is a day off no form in any archive here, and the
+    # same day the tests illustrate with — it used to be a day one of these forms prints as the
+    # hour a sample was taken, published on a page with every release since the first.
+    assert A_DAY_FOR_AN_ILLUSTRATION.isoformat() in client.post(url, data={"value": "not-a-date"}).text
     # And both limits are in the field itself, so the picker says so as a person types.
     field = client.get(f"/documents/{source_id}/{labs}/1").text
     assert 'min="1900-01-01"' in field and f'max="{date.today().isoformat()}"' in field
-    assert client.post(url, data={"value": "2019-07-08"}, follow_redirects=False).status_code == 303
-    assert "2019-07-08" in (output / "corrections.jsonl").read_text()
+    assert client.post(url, data={"value": A_DAY_FOR_AN_ILLUSTRATION.isoformat()}, follow_redirects=False).status_code == 303
+    assert A_DAY_FOR_AN_ILLUSTRATION.isoformat() in (output / "corrections.jsonl").read_text()
 
 
 def test_a_document_date_set_by_hand_wins_and_can_be_cleared(client, archive, data_dir):
@@ -957,7 +1307,7 @@ def test_a_document_and_its_scan_answer_for_the_open_archive_only(client, archiv
     assert client.get(card).status_code == 404
     assert client.get(scan).status_code == 404
     # And nothing about it can be changed from there either.
-    for path, data in ((f"{card}/date", {"value": "2019-07-08"}),
+    for path, data in ((f"{card}/date", {"value": A_DAY_FOR_AN_ILLUSTRATION.isoformat()}),
                        (f"{card}/value", {"key": "1|x|1", "action": "save"}),
                        (f"/review/{mine.id}/{sha}/{first}/copy", {})):  # fmt: skip
         assert client.post(path, data=data, follow_redirects=False).status_code == 404, path
@@ -1307,6 +1657,204 @@ def test_a_settings_file_that_cannot_be_read_is_not_written_over(tmp_path):
     assert (tmp_path / "settings.json").read_text(encoding="utf-8") == was
 
 
+def a_whole_press(data_dir: Path) -> dict:
+    """The settings form as the page writes it, with every switch flipped and every panel changed.
+
+    Built out of the rules this program ships rather than written out, so a rule added next month
+    is in the press without anybody remembering to put it there.
+    """
+    from epicrisis import rules, settings
+
+    shown, knob_name, knob_value, turning_on = [], [], [], []
+    for rule in rules.load(data_dir):
+        shown.append(rule.id)
+        if not settings.rule_on(data_dir, rule):
+            turning_on.append(rule.id)
+        chosen = settings.rule_settings(data_dir, rule)
+        for name, default in rule.settings.items():
+            knob_name.append(f"{rule.id}:{name}")
+            value = chosen[name]
+            if isinstance(default, int | float) and not isinstance(default, bool):
+                value = value + 1
+            knob_value.append(str(value))
+    return {"mode": "with_meaning", "tab": "rules", "rule_on": turning_on,
+            "shown": shown + ["ask_page", "models", "read_materials", "mcp_lock"],
+            "confirm_rule": shown, "knob_name": knob_name, "knob_value": knob_value,
+            "ask_page": "on", "read_materials": "on", "mcp_lock_minutes": 120,
+            "mcp_lock_scope": "server", "model_first": "zzz-one", "model_strong": "zzz-two",
+            "model_second_reader": "zzz-three"}  # fmt: skip
+
+
+def test_one_press_of_save_writes_the_settings_once_and_keeps_the_version_before_it(client, data_dir):
+    """One press, forty-four presses' worth of writing, and .previous holding half of the press.
+
+    Every writer in settings.py wrote the whole file and copied the whole file to
+    settings.json.previous, and one press of Save calls a dozen of them: measured over the 26
+    rules and 25 thresholds this program ships, with every switch flipped and every threshold
+    nudged, one press wrote settings.json 44 times and made 44 copies.
+
+    The cost is not the writing. The refusal this program prints over an unreadable settings file
+    offers that copy in so many words — "copy back settings.json.previous beside it, the version
+    before the last change" — and promises the engine, the three models, the answer mode, the
+    switches and the lock back with it. After 44 writes the copy is the file as the 44th of them
+    found it: the middle of the press a person had just made, a state nobody ever chose. Following
+    the written advice handed them half of their own last press. Measured on a smaller press,
+    changing one threshold of each of two rules: the two stood at 99 and 7 before and at 11 and 3
+    after, and .previous afterwards held 11 — already the new one — beside the old 7.
+    """
+    import json
+
+    from epicrisis import settings
+
+    settings.set_answer_mode(data_dir, "as_printed")
+    before = json.loads(settings.settings_path(data_dir).read_text(encoding="utf-8"))
+
+    writes, copies = [], []
+    whole, copied = settings.write_whole, settings.copy_whole
+    settings.write_whole = lambda path, text: (writes.append(text), whole(path, text))[1]
+    settings.copy_whole = lambda source, target: (copies.append(str(target)), copied(source, target))[1]
+    try:
+        saved = client.post("/settings", data=a_whole_press(data_dir), follow_redirects=False)
+    finally:
+        settings.write_whole, settings.copy_whole = whole, copied
+
+    assert saved.status_code == 303
+    assert len(writes) == 1, f"one press, {len(writes)} writes of settings.json"
+    assert len(copies) == 1, f"one press, {len(copies)} copies into settings.json.previous"
+
+    # And the one copy is the file as it stood before the press, not a moment inside it. Every
+    # choice the press changed reads in .previous the way it read before Save was pressed.
+    kept = json.loads((settings.settings_path(data_dir).with_name("settings.json.previous")).read_text(encoding="utf-8"))
+    assert kept == before, "settings.json.previous is not the version before the press"
+    now = json.loads(settings.settings_path(data_dir).read_text(encoding="utf-8"))
+    assert now != before, "the press stored nothing, so there is nothing to have kept"
+    assert settings.answer_mode(data_dir) == "with_meaning"  # the press did land
+
+
+def test_two_threads_changing_the_settings_do_not_lose_one_another_s_work(tmp_path, monkeypatch):
+    """The third file of a person's own choices, and the only one without a lock.
+
+    indicators.json and people.json each hold what somebody decided and each have had their own
+    lock since the day two writers lost one another's work. settings.json holds the engine, three
+    models, the answer mode, the threshold of every rule and the lock over the network, is written
+    the same read-modify-write way, and had none — and the dashboard is a FastAPI application
+    whose plain handlers run in a pool of threads, so two writers at once is not a theory.
+
+    What is asserted is not that both writers won — the lock refuses rather than queues — but that
+    nothing was lost in silence: each writer either wrote and its choice is in the file, or was
+    told Busy and knows it did not. Without the lock both are told they wrote and one choice is
+    gone, which is the assertion that fails.
+
+    The waits are what make this a test rather than a coin toss: the second writer reads after the
+    first has read and writes after the first has written, which without a lock loses the first
+    choice every time.
+    """
+    import threading
+    import time
+
+    from epicrisis import settings
+    from epicrisis.runs import Busy
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    settings.set_answer_mode(data_dir, "as_printed")
+
+    # Every writer works this out after it has read the file and before it writes, so a wait here
+    # is exactly the window between one writer's read and its write — the window a lock has to
+    # cover. The first reads early and writes early, the second reads early and writes late, so
+    # without a lock the second's write is built on what it read before the first wrote.
+    noted = settings._noted
+    windows = {"first": 0.1, "second": 0.3}
+
+    def slowly(before, after):
+        time.sleep(windows.get(threading.current_thread().name, 0))
+        return noted(before, after)
+
+    monkeypatch.setattr(settings, "_noted", slowly)
+    wrote, told = [], []
+
+    def choosing(which, choose):
+        try:
+            choose()
+            wrote.append(which)
+        except Busy:
+            told.append(which)
+
+    threads = [threading.Thread(target=choosing, name="first",
+                                args=("first", lambda: settings.set_ask_enabled(data_dir, True))),
+               threading.Thread(target=choosing, name="second",
+                                args=("second", lambda: settings.set_mcp_lock_minutes(data_dir, 120)))]  # fmt: skip
+    threads[0].start()
+    time.sleep(0.05)  # long enough for the first to hold the lock and to have read the file
+    threads[1].start()
+    for thread in threads:
+        thread.join()
+
+    assert len(wrote) + len(told) == 2  # neither thread failed in some other way
+    monkeypatch.setattr(settings, "_noted", noted)
+    kept = {"first": settings.ask_enabled(data_dir), "second": settings.mcp_lock_minutes(data_dir) == 120}
+    for which in wrote:
+        assert kept[which], f"{which} was told it wrote, and its choice is not in the file"
+    for which in told:
+        assert not kept[which], f"{which} was told it wrote nothing, and its choice is there"
+    assert not (data_dir / "settings.lock").exists()  # taken off after
+
+
+def test_a_threshold_that_cannot_be_read_is_said_out_loud_and_keeps_the_others(client, data_dir):
+    """"Saved. Nothing on the page was different from what was already stored", over a refusal.
+
+    The page was different, the write was refused, and the reason for the refusal was written in
+    settings.py for a person to read — "times_away should be a whole number". It went into a
+    suppress(ValueError) and reached nobody. Measured on one threshold: 90 stored and said so,
+    "not a number" answered "Nothing on the page was different" with 90 still stored, 120 stored
+    and said so again. The middle answer is false about the page and about the storing both.
+
+    And worse for a rule with more than one threshold. The write replaces every threshold of a
+    rule at once, and settings.py refuses the whole rule on the first value it cannot read, so
+    one mistyped number lost the others as well: of weight 5 -> 1, least_history 7 -> 9 and
+    times_away 20 -> "not a number", all three were dropped and nothing was said.
+    """
+    from epicrisis import rules, settings
+
+    def press(rule, typed: dict) -> tuple[str, dict]:
+        chosen = settings.rule_settings(data_dir, rule)
+        answer = client.post("/settings", data={
+            "mode": "as_printed", "tab": "rules", "shown": [rule.id],
+            "rule_on": [one.id for one in rules.load(data_dir) if settings.rule_on(data_dir, one)],
+            "knob_name": [f"{rule.id}:{name}" for name in rule.settings],
+            "knob_value": [str(typed.get(name, chosen[name])) for name in rule.settings],
+        }, follow_redirects=False)  # fmt: skip
+        assert answer.status_code == 303
+        page = client.get(answer.headers["location"]).text
+        return page, settings.rule_settings(data_dir, rules.load(data_dir).get(rule.id))
+
+    one = rules.load(data_dir).get("dates_far_apart")
+    page, kept = press(one, {"apart_by_days": 90})
+    assert "Saved: thresholds of 1 rule" in page and kept["apart_by_days"] == 90
+
+    page, kept = press(one, {"apart_by_days": "not a number"})
+    assert kept["apart_by_days"] == 90, "a word was stored as a threshold"
+    # The reason reaches the page, names the threshold and the rule, and says what it wanted.
+    assert "apart by days" in page and one.name in page and "wants a whole number" in page
+    # And the page does not say the opposite in the same breath.
+    assert "Nothing on the page was different" not in page
+
+    page, kept = press(one, {"apart_by_days": 120})
+    assert "Saved: thresholds of 1 rule" in page and kept["apart_by_days"] == 120
+
+    # A rule of three thresholds with one of the three mistyped: the two good ones are stored,
+    # the one that could not be read stands where it stood, and only that one is spoken of.
+    many = rules.load(data_dir).get("number_far_from_the_others")
+    _page, was = press(many, {"weight": 5, "least_history": 7, "times_away": 20})
+    assert (was["weight"], was["least_history"], was["times_away"]) == (5, 7, 20)
+
+    page, kept = press(many, {"weight": 1, "least_history": 9, "times_away": "not a number"})
+    assert (kept["weight"], kept["least_history"]) == (1, 9), "a good threshold went with a bad one"
+    assert kept["times_away"] == 20, "the one that could not be read did not stay as it was"
+    assert "times away" in page and "wants a whole number" in page
+    assert "Saved: thresholds of 1 rule" in page  # both halves of the press said, not one
+
+
 def test_a_form_that_did_not_draw_a_switch_does_not_decide_it(client, archive):
     """The whole of the shown protocol, and it had two holes.
 
@@ -1376,8 +1924,8 @@ def test_the_count_against_printed_ranges_names_what_it_could_not_look_at(archiv
     from epicrisis.settings import rules_on
 
     data_dir, _source, _labs = archive_index
-    with open_index(data_dir) as connection:
-        _rows, counts = query.flagged_values(
+    with open_index(data_dir, None) as connection:
+        _rows, counts, _how_many = query.flagged_values(
             connection, compare_with_printed_range=True,
             placing=rules_on(data_dir, rules.load(data_dir), "charts"))  # fmt: skip
 
@@ -1405,7 +1953,7 @@ def test_a_question_finds_a_word_typed_in_the_other_alphabet(archive_index):  # 
     assert also_written_as("гемоглобин") == [] and also_written_as("haemoglobin") == []
 
     data_dir, _source, _labs = archive_index
-    with open_index(data_dir) as connection:
+    with open_index(data_dir, None) as connection:
         # And a question pasted from a Mac arrives decomposed: a combining accent used to cut a
         # Greek or Spanish word in half and match nothing, while the same text in the index had
         # been folded and matched fine.
@@ -1548,6 +2096,38 @@ def test_the_words_a_person_searches_for_do_not_become_an_address(archive_index)
     assert paging, "no posted control on a page of results"
     assert all('method="post"' in one for one in paging), paging
     assert 'href="/search?q=' not in asked.text
+
+
+@pytest.mark.parametrize("asked", [
+    "витамин в12",        # a word of look-alike letters beside an ordinary one
+    "vitamin b12",        # the same question typed the other way round
+    "гемоглобін а1с",
+    "psa свободный",
+    "са 125",
+    "a-b",                # how it was first seen: a hyphen, which is not even a word
+    'x"y',                # and a quotation mark, which FTS5 would read as syntax
+])
+def test_a_question_of_two_words_is_answered_and_not_an_internal_server_error(archive_index, asked):  # noqa: F811
+    """Seven of twelve ordinary questions answered 500, and nothing anywhere recorded that.
+
+    A space between two bare terms is an AND in FTS5 and reads better, which is why the question
+    was built that way. A space in front of a bracket is a syntax error — and the moment a word got
+    a second spelling, because every letter of it is drawn alike in two alphabets, it came in
+    brackets. So any question of two words where either of them was that shape died in sqlite with
+    "fts5: syntax error near (" and reached the person as the words Internal Server Error.
+
+    This is the first defect the journal found, on the day it was written, from one line of it. It
+    is parametrised with the questions a person actually types rather than with the hyphen it was
+    noticed through, because the hyphen was never the point.
+    """
+    data_dir, source, _labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    answer = client.post("/search", data={"q": asked}, follow_redirects=True)
+
+    assert answer.status_code == 200, f"{asked!r} answered {answer.status_code}"
+    # And an empty result is still an answer, with the sentence that says what empty means here.
+    assert "Internal Server Error" not in answer.text
 
 
 def test_searching_past_the_first_page_reaches_the_documents_it_counted(archive_index):  # noqa: F811
@@ -1723,18 +2303,101 @@ def test_the_type_carried_into_the_by_type_view_narrows_the_points_and_not_only_
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
 
     lanes = client.get("/?view=lanes").text
-    types = set(re.findall(r'class="name">([^<]+)<', lanes))
-    assert len(types) > 1, "one lane only: this archive cannot show the defect"
+    # The name a lane is captioned with is the one a person reads; the one an address carries is
+    # the one the index stores. Asked for by the second and read back by the first.
+    with open_index(data_dir, None) as connection:
+        types = [kind for kind, count in query_index.overview(connection)["types"].items() if count]
+    assert len(set(re.findall(r'class="name">([^<]+)<', lanes))) > 1, "one lane only: this archive cannot show the defect"
 
     for kind in sorted(types):
         page = client.get(f"/?view=lanes&doc_type={kind}").text
+        if "Nothing in this archive answers that address" in page:
+            continue  # A type whose only document carries no date draws no lane here.
         # One lane, because that is what was asked for, and every point inside the axis.
-        assert set(re.findall(r'class="name">([^<]+)<', page)) == {kind}
+        assert set(re.findall(r'class="name">([^<]+)<', page)) == {doc_types.in_words(kind)}
         places = [float(one) for one in re.findall(r'class="dot" style="left: ([-\d.]+)%', page)]
         assert places, f"{kind}: no points drawn"
         assert all(-0.01 <= one <= 100.01 for one in places), f"{kind}: points at {places}"
-        # And the filter says it is on, with something to press to take it off.
-        assert f"{kind} only" in page and 'every type</a>' in page
+        # And the filter says it is on, with something to press to take it off. That used to be a
+        # line of prose under the tabs, "<type> only · every type"; it is the chooser now, which
+        # stands on the chosen type and offers all of them on its first line.
+        assert f'<option value="{kind}" selected>' in page and "All of them" in page
+        assert f"{kind} only" not in page, "the box says it; a line repeating it is a second control"
+
+
+def test_the_by_type_cut_chooses_one_type_or_all_of_them_like_the_cuts_beside_it(archive_index):  # noqa: F811
+    """"By type тоже нужен combo-box": one cut of three had no way to say which one, or all of them.
+
+    By doctor and By institution each stand over a single box whose first line is "All of them",
+    and choosing is the whole act. By type had nothing: it broke the documents into types and drew
+    them all, the way to a single type ran through a type tab in the By year view beside it, and
+    the way back was a line of prose under the tabs. Every state is an address here as it is there,
+    the button beside the box works with nothing running in the browser, and there is one box to a
+    page — the markup is shared by the three cuts, and two sections would write id="whose" twice.
+    """
+    data_dir, _source, _labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    with open_index(data_dir, None) as connection:
+        held = list(query_index.overview(connection)["types"])
+    assert len(held) > 1, "one type only: this archive cannot show the defect"
+
+    whole = client.get("/?view=lanes").text
+    box = whole.split('cut-chooser">')[1].split("</section>")[0]
+    # The view is carried by the form, or choosing a type would answer in another cut altogether.
+    assert 'name="doc_type"' in box and '<input type="hidden" name="view" value="lanes">' in box
+    # Every type the archive holds, and all of them is where the cut opens — an address a person
+    # can keep, not a state they can only leave.
+    assert re.findall(r'<option value="([^"]*)"', box) == ["", *held]
+    assert '<option value="" selected>All of them' in box
+    # A form that is posted, not a script: the button stands in the page for anyone without the two
+    # lines that submit the moment a type is chosen.
+    assert 'method="get" action="/"' in box and 'id="whose-go" type="submit"' in box
+    assert 'id="whose"' in box and 'for="whose"' in box, "an unlabelled select says nothing aloud"
+
+    for kind in held:
+        chosen = client.get(f"/?view=lanes&doc_type={kind}").text.split('cut-chooser">')[1]
+        assert f'<option value="{kind}" selected>' in chosen, kind
+        assert '<option value="">All of them' in chosen, f"{kind}: no way back to all of them"
+        # The year a person chose before is carried by hand: a GET form sends its own fields and
+        # nothing else, and a filter dropped on the way is one that vanished in silence.
+        with_year = client.get(f"/?view=lanes&year=2003&doc_type={kind}").text
+        assert '<input type="hidden" name="year" value="2003">' in with_year, kind
+
+    # One box to a page. Asked for a cut by a name and the By type view in the same address, the
+    # name's box is the one drawn: a name narrows a list of documents, and this view lists none.
+    both = client.get("/?view=lanes&cut=institution").text
+    assert both.count('id="whose"') == 1 and 'name="provider"' in both
+
+
+def test_the_type_chooser_promises_no_count_and_the_lanes_keep_theirs(archive_index):  # noqa: F811
+    """A number in the box would be of one set and the page it leads to of another.
+
+    The row of type tabs in the By year view was counted over the whole archive while every one of
+    its links carried the year in force, so a tab read "consultation 3" in a year that holds none
+    and pressing it gave "Showing 0 of 0". The By type view draws only documents that carry a date:
+    in this archive the insurance letter carries none, so a line of the box reading "insurance 1"
+    would promise a document and then draw an empty axis. The counts that stay are the ones at the
+    end of each lane, which count the very points drawn beside them.
+    """
+    data_dir, _source, _labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    page = client.get("/?view=lanes").text
+    box = page.split('cut-chooser">')[1].split("</section>")[0]
+    offered = re.findall(r"<option [^>]*>([^<]*)<", box)
+    assert offered and not any(re.search(r"\d", one) for one in offered), offered
+    assert "muted" not in box, "the grey a count is printed in: a count here is of another set"
+
+    # The type whose one document carries no date is offered all the same — a list made of the
+    # lanes would have hidden a type the archive holds — and the address it leads to is answered as
+    # an address, not as the archive being empty of that type.
+    empty = client.get("/?view=lanes&doc_type=insurance").text
+    assert "Nothing in this archive answers that address" in empty
+    assert '<option value="insurance" selected>' in empty, "and the box is still there to come back"
+
+    # What a lane says it holds is what it drew.
+    for lane in page.split('<div class="lane">')[1:]:
+        assert lane.count('class="dot"') == int(re.search(r'class="mono count">(\d+)<', lane).group(1)), lane
 
 
 def test_the_views_say_only_the_filters_they_apply(archive_index):  # noqa: F811
@@ -1749,11 +2412,14 @@ def test_the_views_say_only_the_filters_they_apply(archive_index):  # noqa: F811
     data_dir, _source, _labs = archive_index
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
 
-    lanes = client.get("/?view=lanes&doc_type=lab").text
-    assert "lab only" in lanes, "the view that does filter says so"
+    # Said where the choice is made: the By type view has a chooser now, and it stands on the type
+    # it is drawing. The line of prose that used to say it is gone with the second link to undo it.
+    lanes = client.get("/?view=lanes&doc_type=lab_panel").text
+    assert '<option value="lab_panel" selected>' in lanes, "the view that does filter says so"
 
-    tests = client.get("/?view=indicators&doc_type=lab").text
-    assert "lab only" not in tests
+    tests = client.get("/?view=indicators&doc_type=lab_panel").text
+    assert 'name="doc_type"' not in tests, "no chooser for a type this view does not apply"
+    assert "lab_panel only" not in tests
     assert "not applied here" in tests and "Drop it" in tests
 
 
@@ -1772,6 +2438,47 @@ def test_the_year_strip_counts_by_the_view_the_page_will_draw(archive_index):  #
     assert chosen == unknown, "the same page, counted twice differently"
 
 
+def test_the_labels_under_the_year_strip_do_not_run_into_one_another(archive_index):  # noqa: F811
+    """Reported from a phone: on an archive reaching back before 2000 the early labels collided.
+
+    The slot a year stands in is eighteen pixels and a four-digit label at that size is nearly
+    twenty-two, so "1989" and "1992" overlapped while "01" and "02" sat fine. Four digits were
+    printed before 2000 so that "89" beside "01" could not be read as 2089 — a fear, not a
+    condition: it takes an archive spanning a hundred years before two years can share a two-digit
+    label, and under that the order of the strip, the title on each bar and the year printed in
+    full underneath all say which is which.
+
+    So the rule is the condition now. This asserts both sides, because a guard that only ever takes
+    one branch is the kind that rots.
+    """
+    data_dir, _source, _labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    page = client.get("/").text
+    labels = re.findall(r'class="label caps">([^<]+)<', page)
+    assert labels, "no year labels on the strip at all"
+    assert all(len(one) == 2 for one in labels), f"four digits inside one century: {labels}"
+    assert "by-the-century" not in page  # and the wider slot is not asked for
+
+    # And a century apart, where two digits really would say two things, it says four.
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    with sqlite3.connect(index_path(data_dir, _source.id)) as connection:
+        first = connection.execute("SELECT id FROM documents WHERE date IS NOT NULL LIMIT 1").fetchone()[0]
+        # A hundred years before the day the illustrations carry, so that the strip really does
+        # span two centuries: the condition under test is the span and not the year.
+        a_century_back = A_DAY_FOR_AN_ILLUSTRATION.replace(year=A_DAY_FOR_AN_ILLUSTRATION.year - 100)
+        connection.execute("UPDATE documents SET date = ? WHERE id = ?", (a_century_back.isoformat(), first))
+        connection.commit()
+
+    far = client.get("/").text
+    labels = re.findall(r'class="label caps">([^<]+)<', far)
+    assert all(len(one) == 4 for one in labels), f"two digits across a century: {labels}"
+    assert "by-the-century" in far  # which is what gives them the room
+
+
 def test_a_mark_on_the_axis_names_a_year_the_page_holds(archive_index):  # noqa: F811
     """The axis ran one year past the newest document, and a mark was allowed to stand on its edge.
 
@@ -1782,9 +2489,9 @@ def test_a_mark_on_the_axis_names_a_year_the_page_holds(archive_index):  # noqa:
     data_dir, _source, _labs = archive_index
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
 
-    page = client.get("/?view=lanes&year=2019").text
+    page = client.get(f"/?view=lanes&year={A_DAY_FOR_AN_ILLUSTRATION.year}").text
     marks = re.findall(r'class="tick caps" style="left: [^"]*">(\d{4})<', page)
-    assert marks == ["2019"], f"marks on the axis: {marks}"
+    assert marks == [str(A_DAY_FOR_AN_ILLUSTRATION.year)], f"marks on the axis: {marks}"
 
 
 def test_the_axis_labels_are_not_cut_in_half_to_guard_a_fault_that_cannot_happen():
@@ -2027,10 +2734,12 @@ def test_a_folder_with_nothing_to_read_does_not_ask_for_the_model(client, tmp_pa
     """
     empty = tmp_path / "Nothing to read"
     (empty / "notes").mkdir(parents=True)
-    (empty / "notes" / "todo.txt").write_text("not a document this program reads", encoding="utf-8")
+    # A photograph in a format this build cannot open. It was a .txt here until plain text
+    # became a document like any other, and then this folder had something to read after all.
+    (empty / "notes" / "photo.heic").write_bytes(b"\0\0\0\x18ftypheic" + b"\0" * 64)
     assert add(client, empty).status_code == 303
 
-    for page in ("/", "/documents", "/search", "/review", "/indicators", "/ask"):
+    for page in ("/", "/documents", "/search", "/review", "/indicators", "/ask", "/card"):
         text = client.get(page).text
         assert "have not been read yet" not in text, page
         assert "nothing in it is a document this program can read" in text, page
@@ -2062,3 +2771,1130 @@ def test_running_the_checks_builds_them_in_instead_of_warning_on_every_page(arch
     # Built in, not hushed: the index is newer than the findings it is built from.
     findings = data_dir / "sources" / source.id / "validation.json"
     assert index_path(data_dir, source.id).stat().st_mtime >= findings.stat().st_mtime
+
+
+def test_who_made_the_documents_is_a_cut_of_the_archive(archive_index):
+    """Institutions and doctors, as each document prints them, and a way into each one's work.
+
+    A cut nobody could take until the doctor had a field of their own: before that a person's name
+    sat where the institution goes and the two could not be told apart.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        connection.execute("UPDATE documents SET provider = 'Synthetic Laboratory', doctor = 'Нетудихата І.В'")
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    doctors = client.get("/who")
+    institutions = client.get("/who", params={"kind": "institution"})
+
+    assert doctors.status_code == 200 and institutions.status_code == 200
+    assert "Нетудихата І.В" in doctors.text and "Synthetic Laboratory" not in doctors.text
+    assert "Synthetic Laboratory" in institutions.text
+    assert "nothing is joined for you" in doctors.text  # one person is written several ways
+    assert "/?doctor=" in doctors.text and "/?provider=" in institutions.text
+
+    # And the link leads to that one's work, and to nobody else's.
+    theirs = client.get("/", params={"doctor": "Нетудихата І.В"})
+    nobody = client.get("/", params={"doctor": "Somebody Else"})
+    assert theirs.status_code == 200 and nobody.status_code == 200
+    assert theirs.text.count("/documents/") > nobody.text.count("/documents/")
+
+
+def test_the_consent_page_says_what_a_page_is_for_each_kind_of_file(client):
+    """How many pages will be sent is the number on that page, and a person could not find out why.
+
+    One text file became 261 pages here, and nothing in the program said how a file becomes pages:
+    a PDF by what was printed, a photograph by its frames, a workbook by its sheets, a text file by
+    the lines its own export draws between documents.
+    """
+    page = client.get("/consent").text
+
+    assert "What a page is, for each kind of file" in page
+    for kind in ("A PDF", "A photograph or a scan", "A Word document", "A spreadsheet", "A plain text file"):
+        assert kind in page, kind
+    assert "never sent anywhere" in page  # a format this program does not read
+
+
+def test_the_card_puts_the_newest_line_first_and_not_the_commonest(archive_index):
+    """The owner of an archive read the top of his medications and asked why they stopped in 2014.
+
+    They had not. The roll was ordered by how many documents carried a line, with the date only
+    breaking a tie, so a drug prescribed to him this year stood on one document underneath one
+    prescribed in 1992 that had been copied into four. On a page whose question is what this
+    person is on, the count is a remark and the date is the answer.
+    """
+    import sqlite3
+
+    from epicrisis import query as query_index
+    from epicrisis.index.build import index_path
+
+    data_dir, source, _labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        documents = [row[0] for row in connection.execute(
+            "SELECT id FROM documents WHERE primary_copy = 1 ORDER BY date LIMIT 2")]
+        assert len(documents) == 2
+        connection.execute("DELETE FROM medications")
+        # One prescribed long ago and copied about, one prescribed since and standing alone.
+        connection.execute("UPDATE documents SET date = '1992-08-14' WHERE id = ?", (documents[0],))
+        connection.execute("UPDATE documents SET date = '2026-07-21' WHERE id = ?", (documents[1],))
+        for _ in range(4):
+            connection.execute("INSERT INTO medications (document_id, text) VALUES (?, ?)",
+                               (documents[0], "Invented tablets 1 mg"))  # fmt: skip
+        connection.execute("INSERT INTO medications (document_id, text) VALUES (?, ?)",
+                           (documents[1], "Invented drops 2 mg"))  # fmt: skip
+        connection.commit()
+
+    with sqlite3.connect(f"file:{index_path(data_dir, source.id)}?mode=ro", uri=True) as connection:
+        connection.row_factory = sqlite3.Row
+        card = query_index.patient_card(connection)
+
+    lines = card["medications"]
+    assert [row["text"] for row in lines] == ["Invented drops 2 mg", "Invented tablets 1 mg"]
+    # And the count is still printed beside it, because it was never the wrong thing to know.
+    assert lines[0]["documents"] == 1 and lines[1]["documents"] == 4
+
+
+def test_the_patient_card_says_what_is_printed_and_not_what_is_taken(archive_index):
+    """A list of medications under a person's name reads as "what they take", and that is a
+    judgement no page can make: a drug printed in 2019 may have been stopped the month after."""
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        document = connection.execute("SELECT id FROM documents LIMIT 1").fetchone()[0]
+        connection.execute("INSERT INTO diagnoses VALUES (?, ?)", (document, "Synthetic diagnosis"))
+        connection.execute("INSERT INTO medications VALUES (?, ?)", (document, "Synthetic tablets 5 mg"))
+        connection.execute(
+            "INSERT INTO observations (document_id, page, name, value, unit) VALUES (?, 1, ?, ?, NULL)",
+            (document, "Група крові", "0 (І)"),
+        )
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    page = client.get("/card")
+    diagnoses = client.get("/card", params={"tab": "diagnoses"})
+    medications = client.get("/card", params={"tab": "medications"})
+
+    assert page.status_code == 200
+    assert "Synthetic diagnosis" in diagnoses.text and "Synthetic tablets 5 mg" in medications.text
+    assert "Група крові" in page.text and "0 (І)" in page.text  # the one measurement about the person
+    # The whole honesty of the page is one paragraph, and it has to be there — on each of the four
+    # tabs, because a person who arrived at one of them by its own address has read no other.
+    for tab in (page, diagnoses, medications):
+        assert "what the documents print" in tab.text
+        assert "not what is taken\n      or true today" in tab.text
+    assert "/documents/" in page.text  # and every line leads back to the page it was printed on
+
+
+def test_the_card_says_one_thing_may_stand_on_it_twice_under_two_spellings(archive_index):
+    """Four lines for two medications, and a doctor reading the page in a minute and a half.
+
+    The card is the page README offers to hold up at an appointment, and the one place in this
+    program where a list of names is read as a list of things rather than a list of spellings. Two
+    forms writing one drug in two languages put it on the card twice, each with its own count of
+    documents — which is right, because joining them is a claim this program must not make, and
+    which reads as two drugs unless the page says so. /who had carried that sentence since the day
+    it was needed there; this tab had not.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        document = connection.execute("SELECT id FROM documents LIMIT 1").fetchone()[0]
+        for one in ("Квазитрофин-форте 11 мг", "Quasitrophine forte 11 mg"):
+            connection.execute("INSERT INTO medications VALUES (?, ?)", (document, one))
+        for one in ("Квазитрофиновая недостаточность", "Quasitrophine deficiency"):
+            connection.execute("INSERT INTO diagnoses VALUES (?, ?)", (document, one))
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    medications = client.get("/card", params={"tab": "medications"}).text
+    diagnoses = client.get("/card", params={"tab": "diagnoses"}).text
+
+    # Both spellings stand, because choosing between them is the thing that must not happen here.
+    assert "Квазитрофин-форте 11 мг" in medications and "Quasitrophine forte 11 mg" in medications
+    assert "Квазитрофиновая недостаточность" in diagnoses and "Quasitrophine deficiency" in diagnoses
+    # And each tab says why there are two, in the words the page about doctors already uses.
+    assert "stand here more\n      than once where the forms write its name differently" in medications
+    assert "stand here more\n      than once where the forms word it differently" in diagnoses
+    # The count beside a line is of documents, and the page says that too rather than leaving a
+    # reader to read it as a number of prescriptions.
+    assert "of documents carrying" in medications
+
+
+def test_the_card_names_the_questions_the_documents_answer_two_ways(archive_index):
+    """Not every difference is a conflict: leucocytes differ between two days and that is a person
+    living. A blood group does not change, and neither does the answer to "sex"."""
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        documents = [row[0] for row in connection.execute("SELECT id FROM documents ORDER BY id")]
+        for document, value in zip(documents, ("позитивна", "негативна"), strict=False):
+            connection.execute(
+                "INSERT INTO observations (document_id, page, name, value) VALUES (?, 1, 'Rh', ?)",
+                (document, value),
+            )
+        # The same group written with a nought and with a letter is not a disagreement.
+        for document, value in zip(documents, ("0 (І)", "O (I)"), strict=False):
+            connection.execute(
+                "INSERT INTO observations (document_id, page, name, value) VALUES (?, 1, 'Група крові', ?)",
+                (document, value),
+            )
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    page = client.get("/card", params={"tab": "conflicts"}).text
+
+    assert "Where the documents disagree" in page
+    assert "negative / positive" in page  # the Rh, answered two ways
+    assert "blood group" not in page  # a nought and a letter O are one group, not a disagreement
+    assert "One of them is wrong about this person" in page
+
+
+def test_two_letters_inside_a_printed_name_are_not_the_rh_of_the_person(archive_index):
+    """"Rh" is two letters, and read as a substring it stood inside names that are no Rh at all.
+
+    A laboratory prints names this program has no list of, and any of them holding those two
+    letters — a rheumatoid factor, an arrhythmia, a cirrhosis, a diarrhoea — was read as the Rh of
+    the person. The card printed such a line on its first tab as "Rh negative", and the tab that
+    names disagreements then put it against the real Rh and said the documents fell out about this
+    person's resus factor. Both the line and the disagreement were invented out of a printed name.
+
+    The names below are nonsense on purpose: the point is the two letters and where they stand, and
+    one holds them inside a word while the other begins with them, which is the case a match on the
+    start of the name alone does not catch.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        documents = [row[0] for row in connection.execute("SELECT id FROM documents ORDER BY id")]
+        assert len(documents) > 1
+        connection.execute(
+            "INSERT INTO observations (document_id, page, name, value) VALUES (?, 1, 'Rh', 'позитивна')",
+            (documents[0],),
+        )
+        for name in ("Vurrhadol index", "Rhembalic factor"):
+            connection.execute(
+                "INSERT INTO observations (document_id, page, name, value) VALUES (?, 1, ?, 'негативна')",
+                (documents[1], name),
+            )
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    person = client.get("/card", params={"tab": "person"}).text
+    conflicts = client.get("/card", params={"tab": "conflicts"}).text
+
+    # The Rh of the person is the line a form printed as an Rh, and it is the only one.
+    assert "позитивна" in person
+    assert "негативна" not in person
+    for invented in ("Vurrhadol", "Rhembalic"):
+        assert invented not in person, invented
+    # And nothing disagrees, because nothing here ever answered the same question twice.
+    assert "Nothing here is answered two ways." in conflicts
+    assert "negative / positive" not in conflicts
+
+
+def test_one_answer_printed_on_many_forms_does_not_push_the_fact_beside_it_off_the_card(archive_index):
+    """The card showed at most eight of these lines, and counted them before folding them together.
+
+    One per document is what it counted, and an archive carries one blood group on every form that
+    ever asked for one: nine forms printing the same group used the whole of the limit, and the Rh
+    printed beside it on older forms never reached the first tab, nor the tab that names
+    disagreements — where those forms disagreed. Nothing on either tab said a line had been left
+    out, which is what makes it a defect and not a short page.
+
+    The shape is invented, because no archive in front of us has it: nine forms of one group and
+    two older ones that print an Rh, and print it two ways.
+    """
+    import sqlite3
+
+    from epicrisis import query as query_index
+    from epicrisis.index.build import index_path
+
+    data_dir, source, _labs = archive_index
+    path = index_path(data_dir, source.id)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM observations")
+        printed = [(2020 + year, "Група крові", "0 (І)") for year in range(9)]
+        printed += [(2011, "Rh", "позитивна"), (2010, "Rh", "негативна")]
+        for year, name, value in printed:
+            document = connection.execute(
+                """INSERT INTO documents (source_id, file_sha256, first_page, date, primary_copy)
+                   VALUES (?, ?, 1, ?, 1)""", (source.id, f"{year:064d}", f"{year}-05-06")).lastrowid  # fmt: skip
+            connection.execute(
+                "INSERT INTO observations (document_id, page, name, value) VALUES (?, 1, ?, ?)",
+                (document, name, value),
+            )
+        connection.commit()
+
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        connection.row_factory = sqlite3.Row
+        card = query_index.patient_card(connection)
+
+    # The group stands once however many forms carry it, and the Rh beside it is still on the tab.
+    assert [one["value"] for one in card["personal"] if one["about"] == "Blood group"] == ["0 (І)"]
+    assert sorted(one["value"] for one in card["personal"] if one["about"] == "Rh") == ["негативна", "позитивна"]
+    # And so is the disagreement, which went off the page together with the lines it was read from.
+    assert [one["about"] for one in card["conflicts"]] == ["Rh"]
+    assert card["conflicts"][0]["answers"] == ["negative", "positive"]
+    # One page for each side of it, and a page for each side before any side is shown twice.
+    assert len(card["conflicts"][0]["lines"]) == 2
+
+
+def test_the_patient_card_is_four_tabs_and_each_of_them_has_its_own_address(archive_index):
+    """In one column a person opening the card for a blood group scrolled past every medication
+    the archive prints to reach the disagreements, which are the thing the page exists for."""
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        document = connection.execute("SELECT id FROM documents LIMIT 1").fetchone()[0]
+        connection.execute("INSERT INTO diagnoses VALUES (?, ?)", (document, "Synthetic diagnosis"))
+        connection.execute("INSERT INTO medications VALUES (?, ?)", (document, "Synthetic tablets 5 mg"))
+        connection.execute(
+            "INSERT INTO observations (document_id, page, name, value, unit) VALUES (?, 1, ?, ?, NULL)",
+            (document, "Група крові", "0 (І)"),
+        )
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    pages = {tab: client.get("/card", params={"tab": tab} if tab else None)
+             for tab in ("", "person", "medications", "diagnoses", "conflicts", "what a tab is not")}  # fmt: skip
+
+    assert all(page.status_code == 200 for page in pages.values())
+    # Every tab is listed on every tab, and the one being read is the one marked.
+    for tab, page in pages.items():
+        for link in ("person", "medications", "diagnoses", "conflicts"):
+            assert f'href="/card?tab={link}"' in page.text, (tab, link)
+    assert '/card?tab=medications" aria-current="page"' in pages["medications"].text
+    assert '/card?tab=conflicts" aria-current="page"' in pages["conflicts"].text
+
+    # Each tab carries its own content and nobody else's.
+    assert "Група крові" in pages["person"].text and "Synthetic tablets 5 mg" not in pages["person"].text
+    assert "Synthetic tablets 5 mg" in pages["medications"].text
+    assert "Synthetic diagnosis" not in pages["medications"].text
+    assert "Synthetic diagnosis" in pages["diagnoses"].text
+    assert "One of them is wrong about this person" not in pages["diagnoses"].text
+
+    # An address naming no tab, and one naming a tab that is not here, both arrive at the first.
+    for asked in ("", "what a tab is not"):
+        assert '/card?tab=person" aria-current="page"' in pages[asked].text, asked
+        assert "Personal data, as printed" in pages[asked].text, asked
+
+
+def test_a_card_tab_with_nothing_on_it_is_still_listed_and_says_so(archive_index):
+    """A control that disappears when its tab is empty reads as the interface breaking, and an
+    archive of laboratory reports alone genuinely prints no diagnosis and no medication."""
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        connection.execute("DELETE FROM diagnoses")
+        connection.execute("DELETE FROM medications")
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    empty = {tab: client.get("/card", params={"tab": tab}).text
+             for tab in ("person", "medications", "diagnoses", "conflicts")}  # fmt: skip
+
+    for tab, page in empty.items():
+        assert f'/card?tab={tab}" aria-current="page"' in page, tab
+    assert "No document here prints the sex, the date of birth" in empty["person"]
+    assert "No document here prints a medication." in empty["medications"]
+    assert "No document here prints a diagnosis." in empty["diagnoses"]
+    assert "Nothing here is answered two ways." in empty["conflicts"]
+    # And it says so of what it compares and not of the archive: four fields have one answer for a
+    # person and are weighed against each other, and a medication printed two ways is not one of
+    # them. "Every question these documents answer about the person" covered all of it.
+    assert "the four this tab compares" in empty["conflicts"]
+    assert "they answer the same" not in empty["conflicts"]
+    # Read, and nowhere printed, is the state these four sentences are for. The other side of that
+    # line is the test below: not read at all says so instead, and says none of these.
+    for tab, page in empty.items():
+        assert "have not been read yet" not in page, tab
+
+
+def test_the_card_does_not_answer_about_documents_it_has_not_read(client, archive):
+    """An instance that had read nothing was told that nothing about the person disagreed.
+
+    "Every question these documents answer about the person, they answer the same" over an archive
+    no model had looked at reads as a check that ran and found nothing. It was an empty field of
+    this program's own, and the page is the only place that can tell the two apart: the seven other
+    pages of this interface say "have not been read yet", and the card alone said this instead.
+    """
+    assert add(client, archive).status_code == 303
+
+    tabs = {tab: client.get("/card", params={"tab": tab}).text
+            for tab in ("person", "medications", "diagnoses", "conflicts")}  # fmt: skip
+
+    for tab, page in tabs.items():
+        assert "The documents of" in page and "have not been read yet" in page, tab
+        # Not one of the four sentences that claim to have looked, and above all not the one that
+        # claimed the answers agreed.
+        for said in ("No document here prints the sex", "No document here prints a medication.",
+                     "No document here prints a diagnosis.", "Nothing here is answered two ways.",
+                     "they answer the same"):  # fmt: skip
+            assert said not in page, (tab, said)
+
+
+def test_the_personal_tab_shows_what_a_form_states_about_the_person(archive_index):
+    """The sex and the date of birth were read only to be compared, so the two things a form says
+    most plainly about a person could be seen on the card only where the documents fell out."""
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        document = connection.execute("SELECT id FROM documents LIMIT 1").fetchone()[0]
+        connection.execute(
+            "INSERT INTO page_texts VALUES (?, 1, ?)", (document, "Стать: ж\nДата народження: 01.01.1970")
+        )
+        for name, value, unit in (("Група крові", "0 (І)", None), ("Rh", "позитивна", None),
+                                  ("Зріст", "100", "см")):  # fmt: skip
+            connection.execute(
+                "INSERT INTO observations (document_id, page, name, value, unit) VALUES (?, 1, ?, ?, ?)",
+                (document, name, value, unit),
+            )
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    page = client.get("/card", params={"tab": "person"}).text
+
+    assert "Sex" in page and "female" in page
+    assert "Date of birth" in page and "1970-01-01" in page
+    assert "Blood group" in page and "0 (І)" in page
+    assert "Rh" in page and "позитивна" in page
+    # A height is about the person and not about the day, and it is the one of these the index had
+    # to be asked for by itself.
+    assert "Height" in page and "<b>100</b>" in page and "см" in page
+    # The form's own word for the fact, because "Blood group" is not what is printed on the page a
+    # person is about to open to check it.
+    assert "printed &ldquo;Зріст&rdquo;" in page
+    assert page.count("/documents/") >= 5  # every line leads back to the page it was printed on
+
+    # One answer is not a disagreement: these facts stand on the first tab and nothing is flagged.
+    assert "Nothing here is answered two ways." in client.get("/card", params={"tab": "conflicts"}).text
+
+
+def test_two_spellings_of_one_doctor_are_joined_by_a_person_and_never_by_the_program(archive_index):
+    """A speciality in front of a name is not another doctor — and two doctors of one surname and
+    one initial work in two clinics of every city, so the program proposes and a person decides."""
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        documents = [row[0] for row in connection.execute("SELECT id FROM documents ORDER BY id")]
+        for document, name in zip(documents, ("Нетудихата І.В", "Уролог Нетудихата І.В"), strict=False):
+            connection.execute("UPDATE documents SET doctor = ? WHERE id = ?", (name, document))
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    before = client.get("/who")
+
+    assert "Look like one and the same" in before.text  # proposed, and standing apart until joined
+    assert before.text.count("Нетудихата І.В") >= 3
+
+    joined = client.post(f"/who/{source.id}/join", data={"kind": "doctor", "one": "Нетудихата І.В",
+                                            "other": "Уролог Нетудихата І.В", "label": "Нетудихата І.В"},
+                         follow_redirects=True)  # fmt: skip
+    assert "Joined by you" in joined.text
+    assert "Look like one and the same" not in joined.text  # no longer a question
+
+    # And the one name now answers for both spellings, wherever the archive is asked about them.
+    from epicrisis.people import load, names_under
+    from epicrisis.query import count_documents, open_index
+
+    both = names_under(load(data_dir, source.id), "doctor", "Нетудихата І.В")
+    assert both == ["Нетудихата І.В", "Уролог Нетудихата І.В"]
+    with open_index(data_dir, source.id) as connection:
+        assert count_documents(connection, doctor=both) == 2
+        assert count_documents(connection, doctor=["Нетудихата І.В"]) == 1
+
+    separated = client.post(f"/who/{source.id}/split", data={"kind": "doctor", "label": "Нетудихата І.В"},
+                            follow_redirects=True)  # fmt: skip
+    assert "Joined by you" not in separated.text and "Look like one and the same" in separated.text
+
+
+def test_the_timeline_is_cut_by_doctor_and_by_institution_and_offers_all_or_one(archive_index):  # noqa: F811
+    """Two cuts after By year, By type and By test, and inside each of them all of them or one.
+
+    The archive has answered "/?doctor=…" since the doctor got a field of their own, and nothing on
+    the timeline asked the question: the only way in was a link on the Doctors and clinics page, so
+    a cut the program could take was one a person could not find. Every state of the cut is an
+    address of its own, and the names offered are one line per group a person joined rather than one
+    per printed spelling, because the forms write one doctor five ways.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, _labs = archive_index
+    with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+        # The two that are records, one spelling each. Not by the order of the rows: which document
+        # is first here is the order the folder was walked in, and the third of them is paperwork,
+        # which a list of records leaves out — so the same test counted two documents on one machine
+        # and one on another.
+        for doc_type, name in (("lab_panel", "Нетудихата І.В"), ("discharge", "Уролог Нетудихата І.В")):
+            connection.execute("UPDATE documents SET doctor = ? WHERE doc_type = ?", (name, doc_type))
+        connection.commit()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    row = client.get("/").text.split('class="views caps"')[1].split("</nav>")[0]
+    places = [row.find(label) for label in ("By year", "By type", "By test", "By doctor", "By institution")]
+    assert all(place > 0 for place in places), row
+    assert places == sorted(places), "the two new cuts come after the three that were there"
+
+    # The cut opens on all of them, which is the archive as it was, and that is an address a person
+    # can come back to rather than a state they can only leave.
+    whole = client.get("/").text
+    everybody = client.get("/", params={"cut": "doctor"}).text
+    assert 'name="doctor"' in everybody and "All of them" in everybody
+    assert everybody.count('class="feed-row"') == whole.count('class="feed-row"')
+
+    # And one of them narrows the documents, the footer says whose they are, and the control itself
+    # stands on what the address says — the page works with nothing running in the browser.
+    one = client.get("/", params={"cut": "doctor", "doctor": "Нетудихата І.В"})
+    assert one.status_code == 200
+    assert one.text.count('class="feed-row"') == 1
+    assert 'value="Нетудихата І.В" selected' in one.text
+    assert "under Нетудихата І.В" in one.text
+    nobody = client.get("/", params={"cut": "doctor", "doctor": "Кривопишин В.Г"})
+    assert "no documents under the name" in nobody.text  # an address nothing answers, said as that
+
+    # Two spellings joined by a person are one line of the list, under the label they chose, and
+    # that one line answers for both of them.
+    joined = client.post(f"/who/{source.id}/join", data={"kind": "doctor", "one": "Нетудихата І.В",
+                                            "other": "Уролог Нетудихата І.В", "label": "Нетудихата І.В"},
+                         follow_redirects=True)  # fmt: skip
+    assert "Joined by you" in joined.text
+    offered = re.findall(r'<option value="([^"]*)"', client.get("/", params={"cut": "doctor"}).text)
+    assert offered == ["", "Нетудихата І.В"], offered
+    both = client.get("/", params={"cut": "doctor", "doctor": "Нетудихата І.В"}).text
+    assert both.count('class="feed-row"') == 2
+
+    # The cut beside it, by the institution the forms name. And the row of type tabs counts what the
+    # cut will show rather than what the whole archive holds: every one of those links carries the
+    # chosen name on, the way it carries the year.
+    institutions = client.get("/", params={"cut": "institution"}).text
+    assert 'name="provider"' in institutions and "Synthetic Lab" in institutions
+    tabs = re.findall(r'<a href="([^"]+)"[^>]*>([^<]*?)\s*<span class="muted">\+?(\d+)</span>',
+                      both.split('class="types caps"')[1].split("</div>")[0])  # fmt: skip
+    for href, label, promised in tabs:
+        if "paperwork" in label:  # the one tab that means "add this many", and says so with a plus
+            continue
+        shown = re.search(r"Showing \d+ of (\d+)", client.get(href.replace("&amp;", "&")).text)
+        assert shown and int(shown.group(1)) == int(promised), f"the {label} tab promises {promised}"
+
+
+def test_a_cut_the_archive_has_no_names_for_is_offered_and_inactive(archive_index):  # noqa: F811
+    """"There is no institution at all here, so this should be inactive. But the option has to be
+    there." A control that vanishes reads as the interface breaking; a quiet one tells the truth.
+
+    These documents name the laboratory and not one of them names the person who signed, which is
+    the ordinary shape of a folder of lab printouts — and in a real archive it is the other way
+    round, every form carrying the doctor and none of them a clinic.
+    """
+    data_dir, _source, _labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    page = client.get("/").text
+    row = page.split('class="views caps"')[1].split("</nav>")[0]
+
+    assert "By doctor" in row, "the cut is offered even where no document answers it"
+    assert '<span aria-disabled="true"' in row and "By doctor</span>" in row
+    assert "cut=doctor" not in row, "an inactive cut is not a link"
+    assert "No document of this archive names a doctor" in page  # and one line says why it is empty
+    assert "cut=institution" in row, "the cut that has names is a link"
+
+    # Asked for by hand, it is still not a control: there is nothing in this archive to choose from.
+    typed = client.get("/", params={"cut": "doctor"})
+    assert typed.status_code == 200 and 'name="doctor"' not in typed.text
+
+
+def test_the_timeline_heading_counts_the_documents_under_it_and_not_the_archive(archive_index):  # noqa: F811
+    """The archive's own count and span stood at the top whatever narrowed the page.
+
+    A cut to one laboratory read "41 documents · 2013-03-06 – 2025-09-21" above ten documents of
+    2019 to 2021, and not one date in the heading belonged to anything on the page. The footer
+    said "Showing 10 of 10 records under …", in small print at the other end — which is the
+    seventh entry of the constitution the wrong way round: of the two counts that disagreed, the
+    large one at the top of the page was the untrue one.
+    """
+    import html
+    import re
+
+    data_dir, source, _labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    def heading(**params):
+        page = client.get("/", params=params).text
+        head = re.search(r'<div class="timeline-head">(.*?)</p>', page, re.S).group(1)
+        foot = re.search(r'class="caps muted">Showing (.*?)</span>', page, re.S)
+        return (re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", head))).strip(),
+                re.sub(r"\s+", " ", html.unescape(foot.group(1))).strip() if foot else "")  # fmt: skip
+
+    # One year of the three documents: the count and both dates are of that year.
+    head, foot = heading(year=A_DAY_FOR_AN_ILLUSTRATION.year)
+    assert "1 document · 2011-07-09 – 2011-07-09" in head and foot.startswith("1 of 1")
+    # And the archive's own numbers are not dropped — a heading that quietly follows a filter is a
+    # second way to be wrong about the same thing. They are said in the line under it.
+    assert "this archive holds 3 in all, 2003-03-12 – 2011-07-09" in head
+
+    # The one kind of document the feed leaves out of "records" was the same defect standing
+    # still: with nothing chosen at all the page shows two and the heading said three.
+    head, foot = heading()
+    assert "2 documents · 2003-03-12 – 2011-07-09" in head and foot.startswith("2 of 2 records")
+    assert "this archive holds 3 in all" in head
+    # Added back, the two agree and there is nothing left to name.
+    head, foot = heading(paperwork="1")
+    assert "3 documents" in head and foot.startswith("3 of 3 records and paperwork")
+    assert "this archive holds" not in head
+
+    # The documents with no date are the one page where the span is not a span.
+    head, _ = heading(undated="1")
+    assert "0 documents" in head and "none of these carries a date at all" in head
+
+    # By type draws only the documents that carry a date, and counts those.
+    head, _ = heading(view="lanes")
+    assert "2 documents · 2003-03-12 – 2011-07-09" in head and "this archive holds 3 in all" in head
+
+    # By test narrows no documents at all — the notice above it says so in words — so the heading
+    # keeps the archive's own, and names no difference, because there is none.
+    head, _ = heading(view="indicators")
+    assert "3 documents · 2003-03-12 – 2011-07-09" in head and "this archive holds" not in head
+
+
+def test_the_empty_tab_of_who_says_where_the_names_are(archive_index):
+    """The menu item reads "Doctors and clinics" and opens on the doctors, which can be nought.
+
+    A folder of laboratory printouts names the laboratory on every page and the person who signed
+    on none — all three demo archives are that shape, and so was the archive this was found on. A
+    person pressing the menu landed on "No field of any document here names a doctor yet" over an empty list,
+    with every name in the archive one tab away and nothing on the page saying so.
+
+    Said rather than mended by opening whichever tab has something: /who?kind=doctor has to go on
+    meaning the doctors, and that explicit address is the one a bookmark, the timeline's
+    "Spellings" link and this page's own redirect after a join all use.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+
+    def name_them(provider, doctor):
+        with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+            connection.execute("UPDATE documents SET provider = ?, doctor = ?", (provider, doctor))
+
+    name_them("Synthetic Laboratory", None)
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    empty = client.get("/who")
+
+    assert empty.status_code == 200
+    assert "No field of any document here names a doctor yet." in empty.text
+    assert "Every name on these documents is an institution" in empty.text
+    assert '<a href="/who?kind=institution">Institutions</a>' in empty.text
+    # The address asked for is the tab drawn: the way out is a sentence, not a different page.
+    assert '<a href="/who?kind=doctor" aria-current="page">' in empty.text
+
+    # And the sentence stands nowhere it would not be true: not on the tab that holds the names,
+    # and not on a page where neither tab holds any.
+    full = client.get("/who", params={"kind": "institution"})
+    assert "Synthetic Laboratory" in full.text
+    assert "Every name on these documents is" not in full.text
+
+    name_them(None, None)
+    neither = client.get("/who")
+    assert "No field of any document here names a doctor yet." in neither.text
+    assert "Every name on these documents is" not in neither.text
+
+
+def test_a_cut_with_one_name_in_it_says_what_the_two_sides_of_it_are(archive_index):
+    """It read "1 name on these documents: all of them, or one of them", which is one thing twice.
+
+    Over a box holding one real option, and an archive with one polyclinic in it is an ordinary
+    archive. The cut does something there: every document of the archive, against only the ones
+    that carry the name — not the same set unless every document names it — so the tab stays live
+    and the line says which two sides those are. With two names the old line was right and stands.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+
+    def institutions(*named):
+        with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+            for row, name in enumerate(named):
+                connection.execute("UPDATE documents SET provider = ? WHERE rowid = ?", (name, row + 1))
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    institutions("Synthetic Laboratory", None, None)
+    alone = client.get("/", params={"cut": "institution"}).text
+    assert "1 name on these documents: every document, or only the ones that name it" in alone
+    assert "all of them, or one of them" not in alone, "the line that says the same thing twice"
+    # Live, not disabled: there is a cut to make, and the box is the place it is made.
+    assert 'aria-disabled="true" title="Nothing to choose from in this archive">By institution' not in alone
+    assert '<select id="whose" name="provider">' in alone
+
+    institutions("Synthetic Laboratory", "Second Synthetic Laboratory", None)
+    two = client.get("/", params={"cut": "institution"}).text
+    assert "2 names on these documents: all of them, or one of them" in two
+
+
+def test_the_crumbs_of_the_picker_do_not_offer_a_press_that_can_only_be_refused(client, tmp_path, monkeypatch):
+    """Every crumb was a button up to "/", and every one above the roots answered with a refusal.
+
+    The refusal is a good one — it names the boundary and prints the command that adds a disk of
+    scans — but a row in which all but the last two or three presses fail is a trail of broken
+    links, and "Up one level" on the topmost allowed folder was the same press again. Out of
+    bounds is now not a button at all, and the parent that cannot be opened is not offered.
+
+    What this must not do is take the refusal away: it is what somebody who types a path into the
+    box reads, and the dialog reaches it that way, so the last part of this holds that it is still
+    there, in full, with the command in it.
+    """
+    from epicrisis.sources import SourceRegistry
+    from epicrisis.web.browse import BrowseError, list_folder
+
+    monkeypatch.delenv("EPICRISIS_ARCHIVE_ROOT", raising=False)
+    home = tmp_path / "home"
+    (home / "scans" / "2004").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    registry = SourceRegistry(home / "instance" / "data")
+    roots = registry.roots()
+    assert home.resolve() in roots
+
+    deep = list_folder(str(home / "scans" / "2004"), added_paths=set(), roots=roots,
+                       data_dir=registry.data_dir)  # fmt: skip
+    offered = {crumb["name"]: crumb["inside"] for crumb in deep["crumbs"]}
+    assert offered["/"] is False and offered[home.name] is True
+    assert offered["scans"] is True and offered["2004"] is True
+    # Every crumb that is offered leads somewhere this picker will actually open.
+    for crumb in deep["crumbs"]:
+        if crumb["inside"]:
+            assert list_folder(crumb["path"], added_paths=set(), roots=roots)["path"] == crumb["path"]
+
+    # And "Up one level" stops at the top of what is allowed rather than pointing out of it.
+    assert deep["parent"] == str(home / "scans")
+    top = list_folder(str(home), added_paths=set(), roots=roots, data_dir=registry.data_dir)
+    assert top["parent"] is None, "the folder above the root is not a place to go"
+
+    # The refusal itself, reached the way a person reaches it: by typing a path out.
+    with pytest.raises(BrowseError) as refused:
+        list_folder(str(tmp_path), added_paths=set(), roots=roots, data_dir=registry.data_dir)
+    assert "Folders are chosen from" in str(refused.value) and "sources add" in str(refused.value)
+
+    # And the dialog draws such a crumb as text rather than as a button. The drawing is in the
+    # page's own script, so it is held here as the two lines that do it, and the rule that keeps
+    # the row from moving when one of its buttons stops being one.
+    page = client.get("/status").text
+    assert "if (!crumb.inside) {" in page
+    assert 'crumbs.append(el("span", "outside", crumb.name));' in page
+    style = (Path(__file__).resolve().parent.parent / "epicrisis" / "web" / "static" / "app.css").read_text(encoding="utf-8")
+    assert ".crumbs .outside {" in style
+
+
+def test_every_kind_of_document_has_words_of_its_own():
+    """A kind offered to the model and nowhere worded would reach a page as it left the model.
+
+    The list and the words lived in two files and only one page asked for the words, so this is
+    the guard that keeps them one thing: a kind added to the list without a line beside it fails
+    here rather than appearing on somebody's timeline as `id_document`.
+    """
+    assert sorted(doc_types.IN_WORDS) == sorted(doc_types.DOC_TYPES)
+    assert all(doc_types.in_words(kind) != kind for kind in doc_types.DOC_TYPES)
+    # An index built by an older version can hold a kind this one never heard of. The page prints
+    # what is stored, because a readable surprise beats an empty cell.
+    assert doc_types.in_words("a_kind_from_another_year") == "a_kind_from_another_year"
+    assert doc_types.in_words(None) is None and doc_types.in_words("") == ""
+    # And one place holds them. They were a second dictionary in the web module, `DOC_TYPE_LABELS`,
+    # which the templates knew nothing about: a page that did not import it printed the name the
+    # model returned, and six of seven did not.
+    from epicrisis.web import documents as documents_page
+
+    assert not hasattr(documents_page, "DOC_TYPE_LABELS"), "two dictionaries of words again"
+
+
+def test_no_page_captions_a_document_with_the_name_a_model_returned(archive_index):  # noqa: F811
+    """One path through the dashboard spoke two languages, and the words existed all along.
+
+    `DOC_TYPE_LABELS` sat in web/documents.py and was asked for in exactly one place, so the feed
+    said `lab_panel`, the card it led to said "Lab results", the link back from a scan said "back
+    to Lab results", and the search results said `lab_panel` twenty-two times on one page. A
+    person looking for a blood test could not tell that any of those named the same thing.
+
+    Every place a kind of document is captioned is read here. Addresses, form fields and the
+    tools over the network are left out on purpose: there the name the model returned is the
+    right answer, and a search-and-replace that changed those would have broken every link.
+    """
+    import sqlite3
+
+    from epicrisis.index.build import index_path
+
+    data_dir, source, labs = archive_index
+    # Two documents made copies of one another by hand: the block of copies on To check is one of
+    # the places that printed the raw name, and the checks of this archive find no copy of itself.
+    writable = sqlite3.connect(index_path(data_dir, source.id))
+    writable.row_factory = sqlite3.Row
+    with writable:
+        two = writable.execute("SELECT id FROM documents ORDER BY id LIMIT 2").fetchall()
+        writable.execute("UPDATE documents SET copy_group = 1, primary_copy = (id = ?) WHERE id IN (?, ?)",
+                         (two[0]["id"], two[0]["id"], two[1]["id"]))  # fmt: skip
+    writable.close()
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    with open_index(data_dir, source.id) as connection:
+        held = list(query_index.overview(connection)["types"])
+    assert held, "no documents: this archive cannot show the defect"
+    one = held[0]
+
+    # Address, and the pattern that captures every caption of a kind of document on it.
+    captions = [
+        ("/", r'class="what"><b>([^<]*)</b><span class="caps muted">([^<&]*)'),  # a row of the feed
+        ("/", r'class="types caps">(.*?)</div>'),  # the row of type tabs, read whole below
+        ("/?paperwork=1", r'class="what"><b>([^<]*)</b><span class="caps muted">([^<&]*)'),
+        (f"/?doc_type={one}", r'class="caps muted">Showing \d+ of \d+ ([^<]*?)(?:</span>| in )'),
+        ("/?doc_type=blank", r'no documents of the kind <span class="mono">([^<]*)<'),
+        ("/?view=lanes", r'class="name">([^<]*)<'),  # a lane
+        ("/?view=lanes", r'<option value="[^"]+"[^>]*>([^<]*)<'),  # the chooser
+        ("/?view=lanes&doc_type=blank", r'no documents of the kind <span class="mono">([^<]*)<'),
+        ("/documents", r'class="doc-link" href="[^"]*">([^<]*)<'),
+        (f"/search?q={quote(SYNTHETIC_TEXT.split()[0])}", r'<b>([^<]*)</b>\s*<span class="caps muted">([^<&]*)'),
+        ("/review", r'class="copy-why caps muted">([^<&]*)'),  # the block of copies
+        ("/review", r'class="doc-link" href="[^"]*">([^<]*)<'),
+        (f"/documents/{source.id}/{labs}/1", r'<dt class="caps">Type</dt><dd>([^<]*)<'),  # the card
+        (f"/sources/{source.id}/files/{labs}/pages/1", r"back to ([^<,]*)"),  # the way back from a scan
+    ]
+    worded = set(doc_types.IN_WORDS.values())
+    seen = set()
+    for address, pattern in captions:
+        answered = client.get(address)
+        assert answered.status_code == 200, address
+        found = re.findall(pattern, answered.text, flags=re.S)
+        assert found, f"{address}: nothing captioned, the pattern no longer reads this page"
+        for caught in found:
+            for caption in (caught,) if isinstance(caught, str) else caught:
+                for word in re.split(r"\s{2,}|\n|&middot;|<[^>]*>", caption):
+                    word = word.strip()
+                    assert word not in doc_types.DOC_TYPES, f"{address}: {word!r}"
+                    seen |= {word} & worded
+    # And the words are the ones from the one place that holds them, not an empty cell where a
+    # caption used to be: the kinds this archive holds are all accounted for.
+    assert seen >= {doc_types.in_words(kind) for kind in held}, seen
+
+    # The name the model returned is still what a page links and posts with. A kind reworded must
+    # not move a document, so the address of a narrowed page carries the stored name unchanged.
+    narrowed = client.get(f"/?view=lanes&doc_type={one}").text
+    assert f'<option value="{one}" selected>' in narrowed and f"doc_type={one}" in client.get("/").text
+
+
+def test_the_indicators_page_and_its_list_read_in_the_order_a_person_looks(tmp_path):
+    """Every label of the archive, in the list under the Find box and in the groups beside it.
+
+    Ordered by a casefold, every label beginning with і, ї, є, ґ or ё stood below every label
+    beginning with я — the bottom of a list five hundred groups long. Both orders are on this one
+    page, so both are read here. The four labels are invented, in meaningless syllables, and were
+    looked for in each archive's index first.
+    """
+    from epicrisis import indicators as store
+    from epicrisis.index.build import build_index
+    from epicrisis.sources import SourceRegistry
+
+    data_dir = tmp_path / "data"
+    folder = tmp_path / "archive"
+    folder.mkdir()
+    registry = SourceRegistry(data_dir)
+    source = registry.add(str(folder), "Vera Lindqvist")
+    for label in ("Яшмірелін", "Іврамелін", "Ґормелін", "Авмурелін"):
+        store.upsert(data_dir, None, label, [label.casefold()], "approved")
+    build_index(data_dir, [source])
+    page = TestClient(create_app(data_dir, background_jobs=False),
+                      base_url="http://localhost:8050").get("/indicators").text  # fmt: skip
+
+    in_order = ["Авмурелін", "Ґормелін", "Іврамелін", "Яшмірелін"]
+    listed = re.search(r'<datalist id="every-indicator">(.*?)</datalist>', page, re.S).group(1)
+    assert re.findall(r">([^<>]+)</option>", listed) == in_order
+    # And the groups themselves, where none of them has more values than another: each label
+    # stands several times in its own row, so it is the first standing of each that is the order.
+    rows = page[:page.index('<datalist id="every-indicator">')]
+    assert list(dict.fromkeys(re.findall(r"|".join(in_order), rows))) == in_order
+
+
+def test_a_page_in_english_says_what_tongue_its_content_is_printed_in(archive_index):  # noqa: F811
+    """<html lang="en"> was the whole of what this interface said about language.
+
+    It is true of the page and false of what stands in it: most of this archive is Russian,
+    Ukrainian and Greek. A browser reads lang to choose a fallback face for a character the
+    page's own font has not got, and to decide how to read a line aloud, so every printed name,
+    institution and paragraph of text was being offered to both as English.
+
+    The shell stays lang="en" — the headings and the sentences this program writes are English.
+    The language goes on the elements carrying one document's printed text, where classify read
+    one off the page, and nowhere else: a wrong lang is worse than none, because a browser acts
+    on it.
+    """
+    from epicrisis import indicators
+
+    data_dir, source, labs = archive_index
+    indicators.upsert(data_dir, None, "Cystatin C", ["Цистатин С"], status="approved")
+    build_index(data_dir, [source])
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    card = client.get(f"/documents/{source.id}/{labs}/1").text
+    assert '<html lang="en">' in card  # the page is in English and goes on saying so
+    assert card.count('lang="uk"') >= 5  # the title, the printed meta fields, the rows, the text
+    assert '<pre class="full-text" lang="uk">' in card
+    assert 'Institution as printed</dt><dd lang="uk">' in card
+
+    # The listing's institution column is the one classify read off the page, so give it one.
+    classified = data_dir / "sources" / source.id / "classify.jsonl"
+    classified.write_text("".join(
+        json.dumps({**json.loads(line), "provider_on_page": "Synthetic Lab"}) + "\n"
+        for line in classified.read_text(encoding="utf-8").splitlines()
+    ), encoding="utf-8")  # fmt: skip
+    listing = client.get("/documents").text
+    assert '<span lang="uk">Synthetic Lab</span>' in listing
+
+    chart = client.get(f"/tests/{card.split('href=\"/tests/')[1].split('\"')[0]}").text
+    assert '<span lang="uk">Цистатин С</span>' in chart
+
+    # And nothing is invented where the page never said. Classify writes a two-letter code; a
+    # document whose language is missing or is not one gets no attribute at all.
+    from epicrisis.web.documents import said_in
+
+    assert said_in("uk") == ' lang="uk"' and said_in("el") == ' lang="el"'
+    for nothing in (None, "", "ukrainian", "UK", "u", "uk-UA", 7, '"><script>'):
+        assert said_in(nothing) == "", nothing
+
+
+def test_what_the_model_had_read_stands_on_the_row_a_person_corrected(archive_index):  # noqa: F811
+    """It stood inside the form, behind a summary reading "Correct this line".
+
+    So a row said "corrected" and nothing on the page said what it had been, nor that the reading
+    it replaced was kept at all, nor where the way back to it was. The eighth entry of the
+    constitution keeps the version a write replaces; keeping it where the page never mentions it
+    is keeping it for nobody — and on a phone the row's own title=, which carries the model's
+    snippet, is not shown either.
+    """
+    data_dir, source, labs = archive_index
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    where = f"/documents/{source.id}/{labs}/1"
+    before = client.get(where).text
+    key = before.split('name="key" value="')[1].split('"')[0]
+    typed = {"key": key, "name": "Цистатин С", "value": "8,5", "unit": "мг/л", "reference": "0,5-1,0", "flag": ""}
+
+    assert client.post(f"{where}/value", data=typed, follow_redirects=False).status_code == 303
+
+    page = client.get(where).text
+
+    # The value a person typed, the badge, and what the model had read: all three on the page, and
+    # the field named, because "0,85" on its own does not say which of five columns it stood in.
+    assert "8,5" in page and '<span class="caps signal">corrected</span>' in page
+    assert 'class="caps was-read-as">As the model read it: value <b>0,85</b>' in page
+    assert "Correct this line" in page and "puts it back" in page
+    assert page.count("was-read-as") == 1  # one corrected row, one line, not a column on every row
+    # And only the fields that differ. The form posts all five whichever one was retyped, so
+    # naming every one of them would say "as the model read it" over four nobody touched.
+    assert "name <b>" not in page and "range <b>" not in page
+
+    # Only the printed fields a correction touched. The same form carries the material a person
+    # set by hand, which is nothing a model ever read, and it used to render as "— ".
+    with_material = client.post(f"{where}/value", data={**typed, "material": "blood"}, follow_redirects=False)
+    assert with_material.status_code == 303
+    again = client.get(where).text
+    assert "As the model read it: value <b>0,85</b>" in again and "<b>nothing</b>" not in again
+
+
+def test_a_choice_of_the_lock_this_program_cannot_use_is_refused_by_name(client, data_dir):
+    """The two choices of the lock, refused in silence under a page saying it had saved.
+
+    Both refusals are sentences written for a person — "a lock opens a conversation or the server",
+    "a window runs from a minute to a week" — and both sat inside a suppress(ValueError), after
+    which this page went on to say "Saved. Nothing on the page was different from what was already
+    stored". That is false about the page and false about the storing, with the cause in hand and
+    thrown away: the seventh entry of the constitution says an error with no cause is a defect, and
+    that a refusal names what is safe and what puts it right.
+
+    Neither is reachable from the page as it is drawn: what a code opens is a select of two values,
+    and how long it lasts is an input carrying min and max. That is exactly why it is tested here
+    rather than left alone — what a browser will not send is not what this server will not be sent,
+    and the same press carries the thresholds, which are reachable and were refused the same way.
+    """
+    from epicrisis import settings
+
+    def press(**typed) -> str:
+        answer = client.post("/settings", data={
+            "mode": "as_printed", "tab": "lock", "shown": ["mcp_lock"],
+            "mcp_lock_scope": typed.get("scope", settings.mcp_lock_scope(data_dir)),
+            "mcp_lock_minutes": typed.get("minutes", settings.mcp_lock_minutes(data_dir)),
+        }, follow_redirects=False)  # fmt: skip
+        assert answer.status_code == 303
+        return client.get(answer.headers["location"]).text
+
+    stood_at = settings.mcp_lock_minutes(data_dir)
+    page = press(minutes=0)
+    assert "Nothing on the page was different" not in page, "the page was different and was refused"
+    assert "a window runs from a minute to a week" in page, "the reason the write was refused"
+    assert f"still stands at {stood_at} minutes" in page, "and what it stands at instead"
+    assert settings.mcp_lock_minutes(data_dir) == stood_at, "nothing was stored, as the page says"
+
+    opens = settings.mcp_lock_scope(data_dir)
+    page = press(scope="everything that is open anywhere")
+    assert "Nothing on the page was different" not in page
+    assert "a lock opens a conversation or the server" in page
+    assert settings.mcp_lock_scope(data_dir) == opens
+
+    # And a choice this program can use is still stored, and still said, in the same press.
+    page = press(minutes=stood_at + 30)
+    assert "how long a code lasts" in page and settings.mcp_lock_minutes(data_dir) == stood_at + 30
+
+
+def test_an_engine_this_instance_cannot_use_is_refused_by_name(client, data_dir):
+    """The last of the three swallowed refusals on this page, and the same false sentence over it.
+
+    `engines.set_engine` refuses an engine nobody built and one this instance cannot answer with,
+    and both refusals are written for a person: "no such engine: X" and "<engine> cannot answer
+    yet: <what is missing>". Under a suppress(ValueError) the page replied "Saved. Nothing on the
+    page was different from what was already stored" to a press it had just refused.
+
+    The comment over that suppress gave the reason to answer rather than to drop: "a form can
+    always be made to say something the page did not". The page does print "Not ready" beside the
+    radio it draws disabled, but that is the state of a thing and not an answer to a press.
+    """
+    from epicrisis import engines
+
+    stood_at = engines.engine_name(data_dir)
+    answer = client.post("/settings", data={"mode": "as_printed", "tab": "answers",
+                                            "engine": "nothing-of-that-name"},
+                         follow_redirects=False)  # fmt: skip
+    assert answer.status_code == 303
+    page = client.get(answer.headers["location"]).text
+
+    assert "Nothing on the page was different" not in page, "the page was different and was refused"
+    assert "no such engine" in page, "the reason the write was refused"
+    assert engines.engine_name(data_dir) == stood_at, "nothing was stored, as the page says"
+
+
+def test_one_page_read_twice_is_the_same_page(client, data_dir):
+    """Two readings of one address differ in nothing, so a ruler that compares them can be trusted.
+
+    The ids of the controls that point at their own explanation came from a counter made once per
+    server, so the same page read twice differed in exactly those numbers and nothing else. No
+    person was ever harmed by it: an id has to be unique inside its page, and these were. The cost
+    was to the sixth entry of the constitution, which asks a change to prove it moved nothing — and
+    the proof is a comparison of pages, byte for byte, which this made noisy by construction. In
+    two days it bought three investigations of shifts that were not shifts, the last of them a
+    report of two entries swapping places on a page where nothing had swapped.
+
+    Numbered from one on every page now, which is all an id ever had to be.
+    """
+    import re
+
+    # The settings page, because that is where the explanations are: the macro that asks for an
+    # id is imported there and in the bar of every page.
+    first = client.get("/settings")
+    second = client.get("/settings")
+
+    assert first.status_code == second.status_code == 200
+    assert first.text == second.text, "the same page read twice is not the same bytes"
+    # And the numbering really is there to be gone wrong about: a page with no ids at all would
+    # pass the line above while proving nothing.
+    ids = re.findall(r'id="(explains-\d+)"', first.text)
+    assert ids, "no numbered ids on this page, so this test is about nothing"
+    assert len(ids) == len(set(ids)), "two controls of one page share an id"
+    assert "explains-1" in ids, f"numbering does not start at one: {sorted(ids)[:3]}"
+
+
+def test_the_count_of_things_to_check_is_of_the_blocks_under_it():
+    """"N of M documents to check" is of what the page draws, and it was of the file of findings.
+
+    The decision asked on its own, because it is one answer with two callers: `review_view` makes
+    the blocks and `_from_the_index` in app.py then changes them, and the number has to come from
+    whichever of the two spoke last. Three things it has to get right, and each was wrong in its
+    own way — two findings on one document are one document, a document the page cannot draw is
+    not on it, and a copy group drawn in its own block is work on this page even where nothing
+    else was found about its members.
+    """
+    from epicrisis.web.documents import how_many_documents_to_check
+
+    two_checks_one_document = {"checks": [
+        {"code": "number_differs", "entries": [{"sha256": "a" * 64, "pages": "1"}]},
+        {"code": "comparator_missing", "entries": [{"sha256": "a" * 64, "pages": "1"}]},
+    ]}  # fmt: skip
+    assert how_many_documents_to_check(two_checks_one_document) == 1
+    # The back of a two-sheet form is another document of the same file, and counted apart.
+    two_documents_one_file = {"checks": [{"code": "number_differs", "entries": [
+        {"sha256": "a" * 64, "pages": "1"}, {"sha256": "a" * 64, "pages": "2,3"},
+    ]}]}  # fmt: skip
+    assert how_many_documents_to_check(two_documents_one_file) == 2
+    # And the copies block, whose members the check blocks no longer hold: possible_copy is taken
+    # out of them once the index has grouped the copies, and nine documents of one real archive
+    # carry no other finding at all. Counted off the block that does draw them.
+    with_a_group = {"checks": [{"code": "number_differs", "entries": [{"sha256": "a" * 64, "pages": "1"}]}],
+                    "copy_groups": [{"members": [{"file_sha256": "b" * 64, "pages": [4]},
+                                                 {"file_sha256": "c" * 64, "pages": [7, 8]}]}]}  # fmt: skip
+    assert how_many_documents_to_check(with_a_group) == 3
+    # One document in both is one document: a copy with a finding of its own is not two.
+    assert how_many_documents_to_check({**with_a_group, "copy_groups": [
+        {"members": [{"file_sha256": "a" * 64, "pages": [1]}]}]}) == 1  # fmt: skip
+
+
+def test_a_finding_the_page_cannot_draw_is_not_counted_in_its_heading(archive_index):  # noqa: F811
+    """A finding whose document has no row is dropped on `and row`, and was counted anyway.
+
+    The shape has to be invented: nothing is dropped on the three archives read on 4 October
+    2026, because their findings were written against the grouping they still have. It arises
+    whenever they were not — the checks are a file on disk and the classification moves under it,
+    which the page itself reports as "Data changed since" — and then the heading promises
+    documents that are nowhere on the page.
+    """
+    import html as html_module
+
+    from epicrisis import layout
+    from epicrisis.validate import load_validation
+    from epicrisis.web.documents import review_view
+
+    data_dir, source, _labs = archive_index
+    output = data_dir / "sources" / source.id
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+
+    before = review_view(source, output)["documents_with_findings"]
+    checked = review_view(source, output)["documents_checked"]
+    assert before and checked, "this archive has no findings, so this test is about nothing"
+
+    # A finding against pages nothing here groups that way: the checks were run before the
+    # classification was read again, which is the one state the page already has a word for.
+    stored = load_validation(output)
+    stored["documents"].append({"file_sha256": "d" * 64, "pages": [41, 42],
+                                "findings": {"number_differs": 2}, "copies": []})  # fmt: skip
+    (output / layout.VALIDATION).write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+
+    assert len(load_validation(output)["documents"]) == before + 1, "the shape did not land"
+    assert review_view(source, output)["documents_with_findings"] == before
+    page = re.sub(r"\s+", " ", html_module.unescape(re.sub(r"<[^>]+>", " ", client.get("/review").text)))
+    assert f"{before} of {checked} documents to check" in page
+    assert f"{before + 1} of {checked} documents to check" not in page

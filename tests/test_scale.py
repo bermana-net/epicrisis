@@ -75,7 +75,10 @@ def build_big_index(tmp_path: Path):
             date = f"{year}-{1 + number % 12:02d}-{1 + number % 28:02d}"
             doc_type = TYPES[number % len(TYPES)]
             connection.execute(
-                """INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, 'uk', ?, ?, NULL, ?, 'day', ?, 0, '[]',
+                # department, doctor and the name a form printed where the institution goes: none
+                # of the three on a document of this size, which is written out as three NULLs
+                # because this index is filled from the schema itself and not through the builder.
+                """INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, 'uk', ?, ?, NULL, NULL, NULL, ?, 'day', ?, 0, '[]',
                                                  NULL, NULL, 1, 'claude-opus-5', '4', '2026-01-01T00:00:00+00:00',
                                                  0, 0, NULL, 1)""",
                 (source.id, sha, 1 + number % 4, json.dumps([1 + number % 4]), doc_type,

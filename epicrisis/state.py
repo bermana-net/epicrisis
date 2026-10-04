@@ -18,6 +18,10 @@ order a person needs them: which file, what has *not* been lost, and the one act
 right. The terminal and the page say the same words because they are built from the same object.
 """
 
+from pathlib import Path
+
+from epicrisis import layout
+
 
 class Unreadable(RuntimeError):
     """One of this program's own files of state is there and will not parse."""
@@ -27,6 +31,27 @@ class Unreadable(RuntimeError):
         self.safe = safe  # what is still whole, because that is the first thing they need to know
         self.mend = mend  # the one command or act that puts it right
         super().__init__(" ".join(part for part in (f"{file} is there and cannot be read.", safe, mend) if part))
+
+
+def where(file) -> str:
+    """Where a file is, named so that a person can walk to it: relative to the data directory.
+
+    `Unreadable` carries a name, and a bare name was right while every file of state sat directly
+    in the data directory. Then the files of a person's own work moved inside the archive they are
+    about, and the refusal began naming a place that does not exist: it said people.json, inside
+    the data folder of this instance, while the file was at sources/<id>/people.json — and <id> is
+    four random bytes whose meaning lives only in sources.json. Somebody following that advice
+    opens the data folder, finds no such file, and has nothing left to try. The same was true of a
+    torn transcription, named extracted/<sha>.json for a file two folders deeper.
+
+    The path is cut at the archives folder rather than measured against a data directory, because
+    the callers deepest in the pipeline do not have one to measure against, and threading it to
+    them to make a sentence read correctly would be a worse trade than reading the path.
+    """
+    parts = Path(file).parts
+    if layout.ARCHIVES in parts:
+        return "/".join(parts[parts.index(layout.ARCHIVES):])
+    return Path(file).name
 
 
 class NoSpace(RuntimeError):

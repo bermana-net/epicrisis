@@ -34,6 +34,16 @@
     {% if settings_unreadable %}
     <div class="notice caps"><span class="alert"><code>settings.json</code> is there and cannot be read, so this instance is running on its defaults: the switches on the Settings page are showing defaults rather than what is in the file, and the lock on the network is closed rather than open, because that is the safe way to fail. Repair it, or copy back <code>settings.json.previous</code> beside it &mdash; the version before the last change. Moving the file aside instead starts every switch from its default, and each has to be answered again.</span></div>
     {% endif %}
+    {# Doctors and clinics a person joined by hand, still sitting in a people.json beside the
+       instance instead of inside the archive it is about. That file was where this work lived for
+       one day; it is carried into the archives at every start, and a group naming nobody this
+       server knows — or one whose archive already had a file of its own — is carried nowhere and
+       left in place on purpose, because losing a person's own work to a migration is the one
+       thing that module is written against. Nothing said so anywhere until this line: no page, no
+       command and no README. #}
+    {% if people_waiting %}
+    <div class="notice caps"><span class="alert">A <code>people.json</code> still stands beside this instance, at <code>{{ people_file }}</code>, holding {{ people_waiting }} group{{ "" if people_waiting == 1 else "s" }} of doctors and clinics somebody joined by hand. Nothing is read from there &mdash; a file beside the instance is a file every archive would see, which is why it moved inside them &mdash; and it is carried in at every start of this dashboard, into the archives whose documents print those names. It is still here because at least one of those groups has not been carried anywhere: it names nobody this server has an index for, or it belongs to an archive that already has a <code>people.json</code> of its own. Everything in it that an archive here does name is already inside that archive. Read those documents, or add the archive that prints those names, and the rest moves by itself. Deleting this file loses that work: nothing makes it again.</span></div>
+    {% endif %}
     {% if disk.little %}
     <div class="notice caps"><span class="alert">There is little room left on the disk this instance writes to: {{ (disk.free / 1048576)|round|int }} MB free of {{ (disk.total / 1073741824)|round(1) }} GB. Nothing written here is damaged by a full disk &mdash; every file is written whole and renamed into place &mdash; but nothing new can be written either, and reading documents needs room.</span></div>
     {% endif %}
@@ -49,7 +59,7 @@
 
   {# The one thing to do next, said before the numbers, because a person who has just added a
      folder has no idea that reading it is a separate step they have to ask for. #}
-  {% set here = stage() %}
+  {% set here = stage %}
   {% if here.state != "ready" or update_running %}
   <section class="rule next-step">
     {% if here.state == "no_archive" %}
@@ -69,7 +79,7 @@
        the lock its sentence — and read in the other order a person with a forgotten lock over an
        empty folder was told to check the folder, which is not what was in their way. #}
     <h2>Next: check the folder of this archive</h2>
-    <p>It was looked through to the end and holds nothing this program can read: no PDF, no photograph or scan, no document or spreadsheet, in it or in any folder under it. There is nothing to read, so nothing is offered to be sent to a model. The likeliest cause is the folder itself &mdash; one level too high, one too low, or a folder of something else. Where it points is on its row below.</p>
+    <p>It was looked through to the end and holds nothing this program can read: no PDF, no photograph or scan, no document, spreadsheet or text file, in it or in any folder under it. There is nothing to read, so nothing is offered to be sent to a model. The likeliest cause is the folder itself &mdash; one level too high, one too low, or a folder of something else. Where it points is on its row below.</p>
     {% elif update_running %}
     <h2>The documents are being read</h2>
     <p>This takes a while &mdash; minutes for a few files, hours for decades of them &mdash; and it carries on if you close this page. The bars below move as it goes.</p>
@@ -136,16 +146,22 @@
           <details class="fix-row">
             <summary class="caps">This archive</summary>
             <div class="owner-row">
+              {# What it does to the folder, beside the button and not in a title= a phone never
+                 shows. "Take off the list" next to "Start again" reads as the harsher of the two,
+                 and the only words saying it deletes nothing were in the tooltip — so the one
+                 button here that is safe looked like the one that is not. The row below says the
+                 same thing in the same place, which is where this was copied from. #}
               <form method="post" action="/owners/{{ row.id }}/remove">
-                <button class="btn small" type="submit" title="Takes this archive off the list. The folder and everything read from it stay on disk.">Take off the list</button>
+                <button class="btn small" type="submit">Take off the list</button>
               </form>
+              <p class="caps muted">Nothing is deleted: the folder of scans, the transcriptions and your corrections all stay where they are.</p>
             </div>
             <div class="owner-row start-again">
               <form method="post" action="/sources/{{ row.id }}/forget">
                 <label class="check caps"><input type="checkbox" name="understood" value="yes" required> Read every document again from nothing</label>
                 <button class="btn small" type="submit" title="The folder is not touched. The inventory, the transcriptions, the checks and the index are moved aside into a dated folder, and the reading steps start over. Your corrections stay and apply again.">Start again</button>
               </form>
-              <p class="caps muted">The folder and your corrections stay. What the models read is moved aside, not deleted, and the reading starts over &mdash; the slowest and costliest step there is.</p>
+              <p class="caps muted">The folder, your corrections and the earlier readings kept beside them stay. What the models read is moved aside, not deleted, and the reading starts over &mdash; the slowest and costliest step there is.</p>
             </div>
           </details>
         </div>
@@ -189,15 +205,45 @@
   </section>
   {% endif %}
 
+  {% if journal %}
+  <section class="rule card-section">
+    <h2>What went wrong, written down</h2>
+    <p class="caps muted">The file to read when something behaved oddly an hour ago.</p>
+    <dl class="card-meta">
+      <div><dt class="caps">File</dt><dd class="mono">{{ journal.file }}</dd></div>
+      <div><dt class="caps">Lines</dt><dd>{{ journal.counts.lines }}{% if journal.counts.troubles %} · {{ journal.counts.troubles }} of them a failure{% endif %}</dd></div>
+      <div><dt class="caps">Last</dt><dd class="mono">{% if journal.last %}{{ journal.last.at.replace("T", " ")[:16] }} · {{ journal.last.event }}{% if journal.last.at_line %} · {{ journal.last.at_line }}{% endif %}{% else %}nothing has been written down yet{% endif %}</dd></div>
+    </dl>
+    {# What is *not* in it, said before what is: this is a log beside a medical archive, and the
+       first thing a person is entitled to know about one is what it does not hold. #}
+    <p class="muted">It holds no message of any exception, no title, no value, no doctor, no
+      laboratory, no spelling of any test, no search, and nothing asked of a model or answered by
+      one. What it says about an archive is that archive's random id. A log of a medical archive
+      that holds the questions is a second copy of the archive.</p>
+    <p class="muted">What it does hold: the time, what happened in a few words, the type of the
+      failure, the module and line it came from, a file named inside <span class="mono">data/</span>,
+      and counts. <strong>You can paste the whole of it into a bug report.</strong></p>
+  </section>
+  {% endif %}
+
+  {# Three steps in the order a person does them: find the folder, say whose it is, add it.
+     Browse only fills the path in — choosing a folder is not adding it. It used to post the form
+     from script the moment a folder was picked, which both took the decision out of the person's
+     hands and skipped the browser's own check that the name was there: a form submitted by
+     script runs no validation, so an archive could be added belonging to nobody. #}
   <form class="add" id="add-form" method="post" action="/sources">
     <label class="caps" for="path">Add an archive</label>
     <input id="path" name="path" value="{{ form_path }}" placeholder="/path/on/this/server" autocomplete="off" spellcheck="false" required>
-    {# Whose it is, before where it is: every page carries the name, the tools say it in every
-       answer, and an archive added without one is a folder nobody owns. #}
+    <button type="button" class="browse" id="open-picker">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+      <span>Browse</span>
+    </button>
+    {# Whose it is: every page carries the name, the tools say it in every answer, and an archive
+       added without one is a folder nobody owns. #}
     <input id="owner" name="owner" value="{{ form_owner }}" placeholder="Whose archive is it" autocomplete="off" aria-label="Whose archive is it" required>
-    <button type="button" id="open-picker">
+    <button type="submit" id="add-source">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-      <span>Add folder</span>
+      <span>Add</span>
     </button>
   </form>
   {% if error %}<div class="error caps" role="alert">{{ error }}</div>{% endif %}
@@ -225,7 +271,7 @@
       </div>
       <div class="actions">
         <button type="button" class="btn" id="picker-cancel">Cancel</button>
-        <button type="button" class="btn primary" id="picker-choose" disabled>Add this folder</button>
+        <button type="button" class="btn primary" id="picker-choose" disabled>Choose this folder</button>
       </div>
     </div>
   </div>
@@ -294,6 +340,15 @@
       crumbs.replaceChildren();
       data.crumbs.forEach((crumb, index) => {
         if (index > 1) crumbs.append(el("span", "sep", "/"));
+        // A crumb the picker is not allowed to open is text and not a button. Every one of them
+        // was a button up to "/", and each of those above the allowed folders answered with the
+        // refusal that names the boundary — a trail of presses of which all but the last two or
+        // three fail. The refusal is not lost: it is what a person who types a path into the box
+        // reads, and this dialog still reaches it that way.
+        if (!crumb.inside) {
+          crumbs.append(el("span", "outside", crumb.name));
+          return;
+        }
         const button = el("button", "", crumb.name);
         button.type = "button";
         if (index === data.crumbs.length - 1) button.setAttribute("aria-current", "location");
@@ -326,8 +381,10 @@
     choose.addEventListener("click", () => {
       if (!shown || !shown.can_add) return;
       input.value = shown.path;
-      choose.disabled = true;
-      form.submit();
+      picker.close();
+      // The name is what is missing now, so the cursor goes there rather than to the Add button.
+      const owner = document.getElementById("owner");
+      (owner.value.trim() ? form.querySelector("#add-source") : owner).focus();
     });
   })();
 </script>

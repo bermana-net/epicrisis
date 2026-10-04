@@ -7,7 +7,7 @@
   <section class="rule" style="padding-top: 18px;">
     <div class="timeline-head">
       <h1>Page {{ page }}</h1>
-      <p class="caps muted">{{ path }}{% if pages | length > 1 %} &middot; {{ pages | length }} pages in this file{% endif %}<br>the scan as it is, with nothing taken out of it</p>
+      <p class="caps muted">{{ path }}{% if pages | length > 1 %} &middot; {{ pages | length }} pages in this file{% endif %}<br>{% if as_text is not none %}the text as it stands in the file, with nothing taken out of it{% else %}the scan as it is, with nothing taken out of it{% endif %}</p>
     </div>
   </section>
 
@@ -17,9 +17,10 @@
       {% if next %}<a href="/sources/{{ source_id }}/files/{{ sha256 }}/pages/{{ next }}">page {{ next }} &rarr;</a>{% endif %}
       {# Back to the card this page was opened from, when the pages of this file were grouped into
          documents at all. #}
-      {% if document %}<a href="/documents/{{ source_id }}/{{ sha256 }}/{{ document.pages[0] }}">back to {{ document.doc_type }}{% if document.date.label %}, {{ document.date.label }}{% endif %}</a>
+      {% if document %}<a href="/documents/{{ source_id }}/{{ sha256 }}/{{ document.pages[0] }}">back to {{ document.doc_type | in_words }}{% if document.date.label %}, {{ document.date.label }}{% endif %}</a>
       {% else %}<a href="/documents">the documents</a>{% endif %}
-      <a href="/sources/{{ source_id }}/files/{{ sha256 }}/pages/{{ page }}/image" target="_blank" rel="noopener">the image on its own</a>
+      {# A page that is text has no image anywhere, so there is nothing to open on its own. #}
+      {% if as_text is none %}<a href="/sources/{{ source_id }}/files/{{ sha256 }}/pages/{{ page }}/image" target="_blank" rel="noopener">the image on its own</a>{% endif %}
     </p>
     {% if cannot_be_shown %}
     {# Why the scan cannot be shown, in words, rather than as a broken image. Whatever the reason,
@@ -27,6 +28,11 @@
        values on the card are as they were read. #}
     <p class="empty">This page cannot be shown: {{ cannot_be_shown }}. Everything already read from this archive is kept here and is unharmed, and the values on the card are as they were read.</p>
     <p class="caps"><a class="btn" href="/status">Archive status</a></p>
+    {% elif as_text is not none %}
+    {# There is no picture of a text file, a sheet of a workbook or the text of a Word document.
+       The page is the text itself, as it stands in the file and in the coding the inventory
+       settled on. Jinja escapes it; nothing of it is read as markup. #}
+    <pre class="page-text">{{ as_text }}</pre>
     {% else %}
     <img class="page-scan" src="/sources/{{ source_id }}/files/{{ sha256 }}/pages/{{ page }}/image" alt="Page {{ page }} of {{ path }}, as scanned">
     {% endif %}

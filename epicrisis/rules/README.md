@@ -53,9 +53,18 @@ not have to work them out again:
 - **It reaches the model through `engines.py`**, like every other model call in the program, so
   that it runs under whichever engine the instance chose and never bills a key the person
   thought was idle. Never `subprocess`, never `httpx`, never a key read from the environment.
-- **Its step is a costly one** (`extract` today). The settings page holds such a switch back and
-  asks before it takes effect, saying what it will cost; see `COSTLY` in `kinds.py`. A rule that
-  sends pages to a model must never be a switch somebody flips by leaning on the mouse.
+- **Its step is a costly one** (`extract` today). The step table in `kinds.py` says of `extract`
+  that its switch is asked about first, and the settings page holds such a switch back and says
+  what it will cost before it stores it. A rule that sends pages to a model must never be a switch
+  somebody flips by leaning on the mouse.
+
+  Nothing stands at `extract` yet, and a kind written there is refused today, because no step of
+  the program assembles a subject to hand a rule at that point. So the first model-using rule
+  begins by teaching the extract step to build one and writing that subject into its record in
+  the table — in that order — and the asking follows from the same record rather than from a
+  second list that could disagree with it. That it could disagree is not hypothetical: two lists
+  did, for three versions, and the confirmation they describe could not be reached by any rule
+  this program would accept.
 - **The prompt is a named field in the header, not the prose.** The body can be reworded any
   time without changing a single answer; a prompt cannot. Mixing them means rephrasing a
   paragraph for a reader and silently changing what the archive reads next time.

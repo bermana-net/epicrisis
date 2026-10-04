@@ -1,8 +1,20 @@
-"""Grouping printed names into indicators, proposed by a model and decided by a person.
+"""Grouping printed names into indicators, proposed by a model and read by a person afterwards.
 
 Only names go to the model: the printed name, its units and how often it appears. No values, no
-dates, no documents. The model suggests which spellings are the same test; nothing it says is
-applied until a person approves it on the Indicators page.
+dates, no documents.
+
+Where the model says it is sure, the group is applied and left marked as read by nobody; where it
+is unsure, the spelling waits for a person instead. That is the one place in this program where an
+answer from a model takes effect before anybody has looked at it, and the fourth entry of the
+constitution says why it is allowed here and nowhere near a person's name: the group is a label
+over printed names and the printed names never change, so `drop_name` restores exactly what the
+form printed; the page says "by a model" and "not looked at yet" beside the group and counts it in
+the header; and the spellings sit side by side under the label, so a spelling that does not belong
+is visible to whoever reads it. None of the three holds for two spellings of a doctor — no document
+anywhere says whether they are one person — which is why `people.py` applies nothing at all.
+
+This docstring used to read "nothing it says is applied until a person approves it", which was
+simply untrue of the code beneath it, and stayed untrue through a QA round that read both.
 """
 
 import hashlib
@@ -102,11 +114,31 @@ def propose_indicators(data_dir: Path, printed: list[dict], backend: ProposalBac
     counts = {"names": len(todo), "added_to_existing": 0, "new_indicators": 0, "waiting": 0, "unclear": 0, "batches": 0}
     for start in range(0, len(todo), BATCH):
         batch = todo[start : start + BATCH]
-        # A group is shown with what this archive's own forms printed, and, where a reference was
+        # A group is shown with the spellings the vocabulary of this whole instance holds for it —
+        # every archive's, not only the one these names come from — and, where a reference was
         # looked up, with the names laboratories are known to print for the same test. The second
         # kind is marked: it is a claim about how a test is written, not a thing any form here
         # printed, and it exists so that a spelling nobody has seen before lands in the right
         # group instead of starting a new one. Nothing from a reference becomes a spelling.
+        #
+        # The whole instance on purpose, and this comment used to say "this archive's own forms"
+        # and be wrong about its own code. Which printed spellings are one test names a form and
+        # not a person, so it is the one thing here that crosses between archives by design — the
+        # first entry of the constitution draws that line and says why, and it was settled by the
+        # owner looking at what this file holds (b9b7acf). Nothing in a group names anybody: an id,
+        # a label and printed names, with no value, date, document, doctor or clinic anywhere near
+        # it, and a shared dictionary is not a shared page — an archive's own page still lists only
+        # what that archive prints.
+        #
+        # Narrowing it to this archive's own spellings was measured rather than argued, on the
+        # live instance and on a demo of three invented people. Live: 541 groups and 1133 spellings
+        # go to the model today; narrowed, the largest archive keeps 473 groups and 974 spellings,
+        # and the two smaller ones keep 83 and 102 groups with 121 and 134 spellings — nine
+        # spellings in ten gone, and four hundred-odd groups invisible to the question. A spelling
+        # those archives have not printed before could then no longer be placed in a group that
+        # already exists, so it would start another one, which is one group per archive per test
+        # and the opposite of a vocabulary. On the demo the cut is 94 spellings to about 41. So the
+        # comment moved and the code did not.
         from_the_web = load_web_names(data_dir)
         existing = "\n".join(
             f"{item.id} | {item.label} | {', '.join(sorted(item.names)[:6])}"

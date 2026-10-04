@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -109,6 +111,7 @@ def test_an_archive_read_again_from_nothing_keeps_its_folder_and_its_corrections
     data = ["--data-dir", str(data_dir)]
     assert CliRunner().invoke(app, ["index", *data]).exit_code == 0
     set_document_date(output, "0" * 64, [1], None)
+    (output / "materials.jsonl").write_text('{"panel": "0|1|whole blood", "material": "blood"}\n')
 
     refused = CliRunner().invoke(app, ["forget", "no-such-archive", *data])
     assert refused.exit_code == 2 and "No archive with the id" in refused.output
@@ -119,6 +122,14 @@ def test_an_archive_read_again_from_nothing_keeps_its_folder_and_its_corrections
 
     output = source_output_dir(data_dir, source.id)
     assert not (output / "classify.jsonl").exists() and not (output / "inventory.jsonl").exists()
+    # Everything a reading wrote, and materials.jsonl is one: what a model answered about the
+    # heading of each table is keyed to a file and a page, so leaving it behind hands those
+    # answers to the next reading — and where a file is cut into pages differently the second
+    # time, as a text file is, an answer about one table would be given to another.
+    from epicrisis import layout
+
+    left = [name for name in layout.MADE_AGAIN_BY_A_MODEL + layout.MADE_AGAIN_BY_CODE if (output / name).exists()]
+    assert left == []
     assert (output / "corrections.jsonl").exists()  # a person's own words are not a reading
     assert Path(source.path).is_dir() and any(Path(source.path).rglob("*.pdf"))
     assert next(output.glob("forgotten-*/classify.jsonl"), None) is not None
@@ -298,3 +309,134 @@ def test_a_command_in_the_wrong_folder_says_so_instead_of_offering_a_second_arch
     assert "no data folder" in answer.output and str(missing) in answer.output
     assert "Traceback" not in answer.output
     assert not missing.exists(), "a folder that is not an instance is not made into one"
+
+
+def test_serve_on_a_port_already_taken_says_which_address_and_what_puts_it_right(tmp_path):
+    """It said nothing of its own: uvicorn bound the port and answered its own failure.
+
+    `uvicorn.Server.startup` catches the OSError, writes `logger.error(exc)` and calls `sys.exit`,
+    so the `except OSError` around `server.run()` never ran and what a person saw was
+
+        ERROR: [Errno 98] error while attempting to bind on address ('127.0.0.1', 8050):
+               [errno 98] address already in use
+
+    — the cause named and no way out, in a voice belonging to a library this program does not
+    otherwise show anybody. The README has a reader run `serve` twice on the default port, the
+    demo archives first and their own archive second, so this is the described path.
+    """
+    import socket
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        port = held.getsockname()[1]
+        refused = CliRunner().invoke(app, ["serve", "--port", str(port), "--data-dir", str(data_dir)])
+
+    assert refused.exit_code == 3, refused.output
+    said = refused.output
+    # Which address, which is the half uvicorn did say.
+    assert f"already listening on 127.0.0.1:{port}" in said, said
+    # What is safe: no reading was started and no file touched.
+    assert "Nothing was changed" in said, said
+    # And the two ways out: the page the other server is already serving, and a free port.
+    assert f"http://localhost:{port}" in said, said
+    assert f"serve --port {port + 1}" in said, said
+    assert "Traceback" not in said
+    assert "attempting to bind on address" not in said, "uvicorn's own line is still what a person reads"
+
+
+def test_sources_list_says_which_folder_is_not_there_any_more(tmp_path):
+    """It printed a path to nothing in a column of paths, with nothing beside it.
+
+    Renaming an archive's folder — or a disk that did not mount — and then asking for the list is
+    the ordinary order of events, and `sources list` is the one command that shows the folders.
+    The status page answers this state well and these are its words; `epicrisis update` answers it
+    honestly too. The terminal was the door that said nothing.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    here = tmp_path / "still-here"
+    here.mkdir()
+    moved = tmp_path / "was-here"
+    moved.mkdir()
+    data = ["--data-dir", str(data_dir)]
+    assert CliRunner().invoke(app, ["sources", "add", str(here), "--owner", "Vuska Trelim", *data]).exit_code == 0
+    assert CliRunner().invoke(app, ["sources", "add", str(moved), "--owner", "Pelnad Brozhi", *data]).exit_code == 0
+    moved.rename(tmp_path / "somewhere-else")
+
+    listed = CliRunner().invoke(app, ["sources", "list", *data])
+
+    assert listed.exit_code == 0, listed.output
+    said = listed.output
+    # Which archive, and the folder marked in the column where it is printed.
+    assert "The folder of the archive of Pelnad Brozhi is not where it was" in said, said
+    assert f"{moved}  <- not there now" in said, said
+    # What is safe.
+    assert "Nothing has been lost" in said, said
+    # What puts it right, ready to be typed, naming this instance and that archive.
+    assert f"sources set-path {json.loads((data_dir / 'sources.json').read_text())[1]['id']} /the/new/folder" in said
+    assert f"--data-dir {data_dir}" in said, said
+    # And nothing of the kind about the archive that is where it was.
+    assert "Vuska Trelim is not where it was" not in said
+    assert f"{here}  <- not there now" not in said
+
+
+def _an_archive_of_blank_pages_and_dated_ones(tmp_path):
+    """The shape that made the two counts disagree, and that no archive here happened to have.
+
+    Ten blank pages with no date — a blank page is a kind of document in its own right and there
+    is nothing on one to find — one two-page form whose date was read off the page, and one
+    document that has no date and could be given one.
+    """
+    import json
+
+    from conftest import AS_A_FORM_PRINTS_IT
+    from test_extract import build_archive, classify_line
+
+    data_dir, source, output, records = build_archive(tmp_path)
+    lines = [classify_line(records["long_scan.pdf"], page, "first", "blank") for page in range(1, 11)]
+    lines += [dict(classify_line(records["labs.pdf"], 1, "first", "lab_panel"), date_on_page=AS_A_FORM_PRINTS_IT),
+              dict(classify_line(records["labs.pdf"], 2, "continuation", "lab_panel"), date_on_page=AS_A_FORM_PRINTS_IT)]  # fmt: skip
+    lines += [classify_line(records["invoice.pdf"], 1, "first", "insurance")]
+    (output / "classify.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    return data_dir, source, output, records
+
+
+def test_find_dates_prints_one_count_of_the_documents_without_a_date(tmp_path, monkeypatch):
+    """It printed two, of two different things, under names that said they were the same thing.
+
+    The documents it searched left blank pages out and the documents it counted afterwards did
+    not, so on an archive holding blank pages the second number was the larger — even where a
+    date had been found on every document of the first. The seventh entry: a count that differs
+    from another count on the same page is a defect, not a detail.
+
+    Nothing is sent to a model here; the search itself is not what is being measured.
+    """
+    from epicrisis import datesearch, engines
+    from epicrisis.consent import record_consent
+    from epicrisis.web.documents import source_documents
+
+    data_dir, source, output, _records = _an_archive_of_blank_pages_and_dated_ones(tmp_path)
+
+    # The archive really is of the shape that showed it: eleven documents with no date between
+    # them, ten of them blank pages that no search could ever give one to.
+    view = source_documents(source, output)
+    undated = [row for group in view["years"] for row in group["documents"]
+               if row["date"]["value"] is None and not row.get("unreadable")]  # fmt: skip
+    assert len(undated) == 11 and sum(1 for row in undated if row["doc_type"] == "blank") == 10
+
+    waiting = datesearch.documents_without_a_date(source, output)
+    assert [record["name"] for record, _pages in waiting] == ["invoice.pdf"]
+
+    record_consent(data_dir, engines.date_search(data_dir).name)
+    monkeypatch.setattr(datesearch, "search_source",
+                        lambda *args, **named: datesearch.SearchStats(total=1, searched=1))  # fmt: skip
+    result = CliRunner().invoke(app, ["find-dates", "--data-dir", str(data_dir)])
+
+    assert result.exit_code == 0, result.output
+    # Read as numbers rather than as substrings: "...: 11" holds "...: 1", which is how the first
+    # go at this test passed on the broken code it was written for.
+    printed = re.findall(r"Documents (?:still )?without a date: (\d+)", result.output)
+    assert printed == ["1", "1"], result.output

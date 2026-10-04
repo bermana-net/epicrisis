@@ -23,6 +23,7 @@ from epicrisis.classify.report import latest_pages
 from epicrisis.extract.run import document_refs, extracted_path
 from epicrisis.records import append_line, now as records_now, read_records
 from epicrisis.web.app import create_app
+from conftest import AS_A_FORM_PRINTS_IT, A_DAY_FOR_AN_ILLUSTRATION
 from test_extract import FakeExtractBackend, setup  # noqa: F401
 from test_inventory import make_text_pdf
 
@@ -40,7 +41,7 @@ def archive_index(setup):  # noqa: F811
     ]
     document["page_texts"] = [{"page": 1, "text": "Цистатин С 0,85 мг/л 0,5-1,0\nШКФ (CKD-EPI) 101 мл/хв"}]
     write_document(output / "extracted", labs, document)
-    set_document_date(output, labs, [1, 2], date(2019, 7, 8))
+    set_document_date(output, labs, [1, 2], A_DAY_FOR_AN_ILLUSTRATION)
     validate_source(output)
     build_index(data_dir, [source])
     return data_dir, source, labs
@@ -48,20 +49,20 @@ def archive_index(setup):  # noqa: F811
 
 def test_queries_answer_with_values_as_printed_and_their_source(archive_index):
     data_dir, source, labs = archive_index
-    connection = query.open_index(data_dir)
+    connection = query.open_index(data_dir, None)
 
     assert query.overview(connection)["documents"] == 3
     found = query.search(connection, "ЦИСТАТИН")
     assert [item["file_id"] for item in found] == [labs[:8]] and "Цистатин С 0,85" in found[0]["snippet"]
     history = query.values(connection, "цистатин")
-    assert [(item["value"], item["unit"], item["reference"], item["date"]) for item in history] == [("0,85", "мг/л", "0,5-1,0", "2019-07-08")]
+    assert [(item["value"], item["unit"], item["reference"], item["date"]) for item in history] == [("0,85", "мг/л", "0,5-1,0", A_DAY_FOR_AN_ILLUSTRATION.isoformat())]
     assert query.values(connection, "шкф") == [] and len(query.values(connection, "шкф", include_derived=True)) == 1
     names = query.value_names(connection, "цистат")
-    assert (names[0]["name"], names[0]["times"], names[0]["first_date"]) == ("Цистатин С", 1, "2019-07-08")
+    assert (names[0]["name"], names[0]["times"], names[0]["first_date"]) == ("Цистатин С", 1, A_DAY_FOR_AN_ILLUSTRATION.isoformat())
     document = query.document(connection, file_id=labs[:8])
     assert document["card_url"] == f"/documents/{source.id}/{labs}/1" and len(document["values"]) == 2
     assert document["original_pages_url"][0].endswith(f"/files/{labs}/pages/1")
-    assert [item["file_id"] for item in query.timeline(connection, since="2019-01-01")] == [labs[:8]]
+    assert [item["file_id"] for item in query.timeline(connection, since=f"{A_DAY_FOR_AN_ILLUSTRATION.year}-01-01")] == [labs[:8]]
     assert query.to_check(connection)[0]["to_check"][0]["code"]
     connection.close()
 
@@ -114,7 +115,7 @@ def test_ask_records_the_question_steps_and_answer(archive_index, monkeypatch, t
         # another tab while it is being written.
         assert pinned_to == source.id
         yield {"kind": "tool", "step": {"tool": "value_history", "input": {"name": "цистатин"}}}
-        yield {"kind": "answer", "text": "0,85 мг/л on 08.07.2019, file 43cdf91f."}
+        yield {"kind": "answer", "text": f"0,85 мг/л on {AS_A_FORM_PRINTS_IT}, file 43cdf91f."}
 
     monkeypatch.setattr(ask_module, "_stream", fake_stream)
     chat = ask_module.new_chat(data_dir, source)
@@ -127,6 +128,99 @@ def test_ask_records_the_question_steps_and_answer(archive_index, monkeypatch, t
     assert (answer["state"], answer["steps"][0]["tool"]) == ("done", "value_history")
     assert "0,85 мг/л" in answer["text"] and stored["title"] == "How did cystatin change?"
     assert [item["id"] for item in ask_module.list_chats(data_dir)] == [chat["id"]]
+
+
+def test_an_answer_records_and_shows_where_its_wait_went(archive_index, monkeypatch):
+    """Ninety-two seconds, and the only number was ninety-two.
+
+    A conversation recorded `seconds` for the whole answer and a list of steps with no clock on
+    them, so "why was that so slow" could be answered only by asking the same question over again
+    with every event timestamped — a second run on the owner's own subscription, and more of his
+    waiting, to find out about the first. That run said it: of 65.30 s, the thirteen calls to the
+    archive were 0.22 s, and the model held 99.4 %.
+
+    The stream here is made of sleeps rather than a model, so the three numbers are known before
+    they are measured: a tenth of a second in the archive on each call, three tenths of thinking
+    between them, four tenths writing the answer. What must not come back is the archive's time
+    counted as the model's, which is the whole point of separating them.
+    """
+    data_dir, source, _ = archive_index
+
+    def fake_stream(data_dir, prompt, mode="as_printed", pinned_to=None):
+        yield {"kind": "ready"}
+        time.sleep(0.2)  # the model deciding what to ask first
+        yield {"kind": "tool", "step": {"tool": "archive_overview", "input": {}}}
+        time.sleep(0.1)  # the archive answering
+        yield {"kind": "answered"}
+        time.sleep(0.3)  # the model thinking between rounds
+        yield {"kind": "tool", "step": {"tool": "value_history", "input": {"name": "цистатин"}}}
+        time.sleep(0.1)
+        yield {"kind": "answered"}
+        time.sleep(0.4)  # the model writing the answer
+        yield {"kind": "answer", "text": f"0,85 мг/л on {AS_A_FORM_PRINTS_IT}, file 43cdf91f."}
+
+    monkeypatch.setattr(ask_module, "_stream", fake_stream)
+    settings_module.set_ask_enabled(data_dir, True)
+    record_consent(data_dir, "claude-code-subscription")  # by the one writer of it, so a version bump reaches here
+    chat = ask_module.new_chat(data_dir, source)
+    ask_module.ask(data_dir, chat["id"], "How did cystatin change?", run=lambda *args: None)
+    ask_module.answer(data_dir, chat["id"])
+
+    answer = ask_module.load_chat(data_dir, chat["id"])["messages"][-1]
+    first, second = answer["steps"]
+    # When the model asked, what the archive took, and what the model spent before the next thing
+    # it did. The windows are wide because a loaded machine sleeps longer than it is asked to;
+    # what they cannot stand is one of these numbers being another one of them.
+    assert 0.15 <= first["asked_after"] <= 1.0 and first["asked_after"] < second["asked_after"]
+    assert 0.08 <= first["archive_seconds"] <= 0.25 and 0.08 <= second["archive_seconds"] <= 0.25
+    assert 0.25 <= first["then_seconds"] <= 1.0
+    assert 0.3 <= answer["writing_seconds"] <= 1.2 and second["then_seconds"] == answer["writing_seconds"]
+    # The two tenths the archive spent are not among the nine the model did, and the three parts
+    # are a division of the one number printed beside them rather than three roundings of their
+    # own: a count that disagrees with another count on the same page is a defect.
+    assert 0.16 <= answer["archive_seconds"] <= 0.5
+    assert answer["model_seconds"] > 4 * answer["archive_seconds"]
+    whole = answer["archive_seconds"] + answer["model_seconds"] + answer["rest_seconds"]
+    assert abs(whole - answer["seconds"]) <= 0.5 and answer["rest_seconds"] >= 0
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    page = client.get(f"/ask/{chat['id']}").text
+    assert f"of it the archive {answer['archive_seconds']} s" in page
+    assert f"the model {answer['model_seconds']} s" in page
+    assert f"{answer['writing_seconds']} s of that writing this answer" in page
+    assert f"the archive {first['archive_seconds']} s" in page and f"{first['asked_after']} s in" in page
+
+
+def test_a_conversation_from_before_the_clock_still_draws(archive_index):
+    """The live instance holds one, and a page that needs a number it has not got draws nothing.
+
+    These are a person's own questions about their own health: a conversation written before the
+    steps were timed has to open exactly as it did, with the one number it recorded.
+    """
+    data_dir, source, _ = archive_index
+    settings_module.set_ask_enabled(data_dir, True)
+    record_consent(data_dir, "claude-code-subscription")
+    before = {
+        "id": "a1b2c3d4e5f6", "title": "As it was written then", "created_at": records_now(),
+        "updated_at": records_now(), "archive": source.whose, "archive_id": source.id,
+        "messages": [
+            {"role": "person", "text": "What changed?", "at": records_now()},
+            {"role": "claude", "text": "0,85 мг/л, file 43cdf91f.", "at": records_now(), "state": "done",
+             "mode": "as_printed", "seconds": 92,
+             "steps": [{"tool": "archive_overview", "input": {}},
+                       {"tool": "get_document", "input": {"file_id": "43cdf91f"}}]},
+        ],
+    }  # fmt: skip
+    (ask_module.chats_dir(data_dir) / "a1b2c3d4e5f6.json").write_text(json.dumps(before), encoding="utf-8")
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    page = client.get("/ask/a1b2c3d4e5f6")
+
+    assert page.status_code == 200
+    assert "Answered in 92 seconds" in page.text
+    assert "2 queries to the archive" in page.text and "get_document(file_id=43cdf91f)" in page.text
+    # Nothing is invented for it: no breakdown of a wait nobody measured, and no bare "0.0 s".
+    assert "of it the archive" not in page.text and "s in &middot;" not in page.text
 
 
 def test_ask_page_is_off_until_turned_on(archive_index, monkeypatch):
@@ -197,7 +291,7 @@ def test_answers_render_as_markdown_without_raw_html(archive_index, monkeypatch)
     data_dir, _, _ = archive_index
 
     def fake_stream(data_dir, prompt, mode="as_printed", pinned_to=None):
-        yield {"kind": "answer", "text": "| Date | Value |\n|---|---|\n| 08.07.2019 | 0,85 |\n\n<script>alert(1)</script>"}
+        yield {"kind": "answer", "text": f"| Date | Value |\n|---|---|\n| {AS_A_FORM_PRINTS_IT} | 0,85 |\n\n<script>alert(1)</script>"}
 
     monkeypatch.setattr(ask_module, "_stream", fake_stream)
     settings_module.set_ask_enabled(data_dir, True)
@@ -313,7 +407,9 @@ def test_the_timeline_shows_the_archive_four_ways_and_search_finds_a_document(ar
     assert "BY TEST" in by_test.upper()
     assert "every test" not in by_test or "show every test" in by_test.casefold()
 
-    found = client.get("/search", params={"q": "Analyte"})
+    # Searched for a word of the page itself: what is indexed for a page that went as text is the
+    # file's own text, not a copy of it written out by a model.
+    found = client.get("/search", params={"q": "hemoglobin"})
     assert found.status_code == 200 and labs[:8] in found.text
     assert "Type a word" in client.get("/search").text
     # An empty answer is not a dead end and is not "the archive does not hold it": it says what was
@@ -417,14 +513,17 @@ def test_a_question_that_cannot_reach_the_model_says_so(archive_index, monkeypat
     """When the model cannot be reached, the person sees why, not an answer that never arrives."""
     from epicrisis import ask as module
 
-    data_dir, _, _ = archive_index
+    data_dir, source, _ = archive_index
     settings_module.set_ask_enabled(data_dir, True)
 
     def refuse(*args, **kwargs):
         raise FileNotFoundError("claude")
 
     monkeypatch.setattr(module, "_stream", refuse)
-    chat = module.new_chat(data_dir, "Vera Lindqvist")
+    # The archive itself, not a name invented here: a conversation naming an archive this instance
+    # does not hold is refused before any model is reached, and then this test would be about that
+    # refusal instead of about the one it is named after.
+    chat = module.new_chat(data_dir, source)
     # The question is put in a thread in real use; here it is answered on the spot, to be read.
     module.ask(data_dir, chat["id"], "How did cystatin change?", run=lambda *args: None)
     module.answer(data_dir, chat["id"])
@@ -437,7 +536,7 @@ def test_a_question_that_cannot_reach_the_model_says_so(archive_index, monkeypat
 def test_a_model_that_stops_halfway_leaves_the_answer_marked_failed(archive_index, monkeypatch):
     from epicrisis import ask as module
 
-    data_dir, _, _ = archive_index
+    data_dir, source, _ = archive_index
     settings_module.set_ask_enabled(data_dir, True)
 
     def half(*args, **kwargs):
@@ -445,7 +544,7 @@ def test_a_model_that_stops_halfway_leaves_the_answer_marked_failed(archive_inde
         yield {"kind": "error", "text": "usage_limit"}
 
     monkeypatch.setattr(module, "_stream", half)
-    chat = module.new_chat(data_dir, "Vera Lindqvist")
+    chat = module.new_chat(data_dir, source)
     module.ask(data_dir, chat["id"], "How did cystatin change?", run=lambda *args: None)
     module.answer(data_dir, chat["id"])
 
@@ -725,6 +824,163 @@ def test_every_tool_that_reads_the_archive_says_what_it_does_not_do(archive_inde
                    ("never", "not ", "neither", "nothing", "only:")), f"{name} says nothing it does not do"  # fmt: skip
 
 
+def test_a_page_of_marked_values_says_how_many_there_are_in_all(archive_index, setup):  # noqa: F811
+    """The fourth tool that cut in silence, and this one cut nothing and said it had.
+
+    Six values came back to a caller that had asked for a hundred, under "next_offset": 6 — because
+    this answer carried no total and a page with any rows at all was given a next page. A model
+    reading that asks the same question again with a larger limit, which is one of the two repeated
+    calls in a measured run of ten: a round of its own time and the person's for nothing. The
+    number was in reach all along — the query reads every matching row and then cuts a page out of
+    them.
+    """
+    data_dir, source, labs = archive_index
+    _data_dir, _source, output, _records = setup
+    document = load_extracted(output / "extracted", labs)["documents"][0]
+    template = document["observations"][0]
+    # Two values the laboratory itself marked, which is the only kind this tool returns.
+    document["observations"] = [
+        dict(template, name_as_printed="Цистатин С", value_as_printed="0,85", unit_as_printed="мг/л",
+             reference_as_printed="0,5-1,0", flag_as_printed="H"),
+        dict(template, name_as_printed="Гемоглобін", value_as_printed="131", unit_as_printed="г/л",
+             reference_as_printed="130-160", flag_as_printed="*"),
+    ]  # fmt: skip
+    write_document(output / "extracted", labs, document)
+    validate_source(output)
+    build_index(data_dir, [source])
+    server = build_server(data_dir)
+
+    def call(**arguments):
+        return asyncio.run(server.call_tool("flagged_values", arguments)).structured_content
+
+    whole = call(limit=100)
+    assert whole["returned"] == whole["total"] == 2
+    assert "next_offset" not in whole, "a page holding all of them does not offer another"
+    one = call(limit=1)
+    assert one["returned"] == 1 and one["total"] == 2 and one["next_offset"] == 1
+    assert call(limit=1, offset=1)["result"] != one["result"], "and the next page is the other value"
+
+
+def test_a_document_cut_into_pages_says_how_to_ask_for_the_rest(archive_index):
+    """The same document, the same part, the same page of it, asked for twice.
+
+    "more" names a next_offset under each part that was cut, and offset applies to every part asked
+    for at once — so a caller that asks for the cut part by itself and leaves the offset behind is
+    handed the page it already has. Nothing in the answer or the description said how the two fit
+    together, and two of ten calls in a measured run were a document asked for again.
+    """
+    data_dir, _source, labs = archive_index
+    server = build_server(data_dir)
+
+    cut = asyncio.run(server.call_tool("get_document", {"file_id": labs[:8], "parts": ["values"], "limit": 1})).structured_content["result"]
+    assert cut["more"]["values"]["next_offset"] == 1
+    assert "offset and limit apply to every part asked for" in cut["how_to_ask_for_the_rest"]
+    assert "parts=['sections'], offset=<its next_offset>" in cut["how_to_ask_for_the_rest"]
+
+    whole = asyncio.run(server.call_tool("get_document", {"file_id": labs[:8], "parts": ["values"], "limit": 200})).structured_content["result"]
+    assert "more" not in whole and "how_to_ask_for_the_rest" not in whole, "nothing was cut, so there is nothing to say"
+
+
+def test_a_tool_does_not_offer_what_this_instance_will_refuse(archive_index):
+    """"Where the instance allows it" is true of the program and useless to the caller.
+
+    On an instance that does not allow it, a model read that sentence in the description, asked for
+    the comparison, was refused and asked again without it: one round of its thinking and one of
+    the person's waiting for a parameter that was never going to answer. The refusal inside the
+    tool stays where it is; the description no longer invites the call.
+    """
+    data_dir, _source, _labs = archive_index
+
+    def description(name: str) -> str:
+        return {tool.name: tool.description or "" for tool in asyncio.run(build_server(data_dir).list_tools())}[name]
+
+    assert "refused on this instance" in description("flagged_values")
+    settings_module.set_answer_mode(data_dir, "with_meaning")
+    assert "refused on this instance" in description("flagged_values")
+
+    # And where the owner has taken every limit off, it is offered and it answers.
+    settings_module.set_answer_mode(data_dir, "direct")
+    said = description("flagged_values")
+    assert "refused on this instance" not in said and "instead compares each value" in said
+    allowed = asyncio.run(build_server(data_dir).call_tool("flagged_values", {"compare_with_printed_range": True}))
+    assert allowed.structured_content["compared_with_printed_range"] is True
+
+
+def test_the_question_carries_what_this_archive_holds_and_nothing_of_another(archive_index, tmp_path, monkeypatch):
+    """archive_overview was the first call of almost every conversation, and it never changes.
+
+    345 characters of counts, a round of the model's time to ask for them and another to read them:
+    4.5 s of a measured 37.2 s answer before anything about the question had been asked. So the
+    counts go out with the question — of the archive the conversation is pinned to, by its id, and
+    of no other. One person's counts in a question about another person's records is the one
+    failure that cannot be undone by an apology.
+    """
+    from epicrisis.index.build import build_index
+    from epicrisis.sources import SourceRegistry
+
+    data_dir, mine, _labs = archive_index
+    registry = SourceRegistry(data_dir)
+    registry.set_owner(mine.id, "Vera Lindqvist")
+    theirs_folder = tmp_path / "archive-of-another"
+    (theirs_folder / "2019").mkdir(parents=True)
+    make_text_pdf(theirs_folder / "2019" / "labs.pdf", ["Haemoglobin 131 g/L"])
+    theirs = registry.add(str(theirs_folder), "Anders Lindqvist")
+    build_index(data_dir, [theirs])  # added and indexed, and nothing read out of it yet
+
+    hers = ask_module.what_the_archive_holds(data_dir, mine.id)
+    his = ask_module.what_the_archive_holds(data_dir, theirs.id)
+    assert "Vera Lindqvist" in hers and "Anders Lindqvist" not in hers
+    assert "Anders Lindqvist" in his and "Vera Lindqvist" not in his
+    assert "0 documents" in his and "0 documents" not in hers
+    # An archive indexed before anything in it was read has no dates at all, and "dated None to
+    # None" is how a model comes to say an archive begins in 1970.
+    assert "dated" not in his and "dated" in hers
+    assert "None" not in his
+
+    seen = {}
+
+    def fake_stream(data_dir, prompt, mode="as_printed", pinned_to=None):
+        seen["prompt"] = prompt
+        yield {"kind": "answer", "text": "Nothing in it yet."}
+
+    monkeypatch.setattr(ask_module, "_stream", fake_stream)
+    chat = ask_module.new_chat(data_dir, theirs)
+    ask_module.ask(data_dir, chat["id"], "What is in here?", run=lambda *args: None)
+    ask_module.answer(data_dir, chat["id"])
+
+    # The question carries his archive's counts, in front of the question, and hers nowhere at all.
+    assert his in seen["prompt"] and seen["prompt"].index(his) < seen["prompt"].index("Question:")
+    assert "Vera Lindqvist" not in seen["prompt"] and "41 documents" not in seen["prompt"]
+
+
+def test_an_answer_is_asked_to_be_short_and_to_offer_what_else_there_is():
+    """A third of the wait was the typing: 23.4 s of 37.2 s, for 3 836 characters.
+
+    Short, and under it a few named ways to go further — the owner's own answer to what short
+    should look like, not this program's guess at it. What may be said about a value is not touched
+    by it, which is the half of this that is worth a test: the length of an answer is not a reason
+    to go near the substance of one.
+    """
+    from epicrisis.ask import system_prompt
+
+    for mode in ("as_printed", "with_meaning", "direct"):
+        said = system_prompt(mode)
+        assert "Answer short" in said and "no closing summary" in said, mode
+        assert "offer up to three ways to go further" in said, mode
+        # True of this archive and grounded in what was read, and never a second place where
+        # something is said about a value.
+        assert "each one something you actually read while answering this question" in said, mode
+        assert "no finding, no reading of a value" in said, mode
+        assert "nothing the archive has not shown you" in said, mode
+
+    strict = system_prompt("as_printed")
+    assert "Never say whether a value is normal, high or low" in strict
+    assert "Quote values exactly as printed" in strict and "Name the document behind every number" in strict
+    assert "Do not select, rank or highlight values by how notable they look" in strict
+    reading = system_prompt("with_meaning")
+    assert "marked as your reading" in reading and 'never read "inside the printed range" as "fine"' in reading
+
+
 def test_the_search_tool_counts_what_it_was_asked_for(archive_index):
     """"22 documents", says the answer, over a page holding two of them.
 
@@ -738,7 +994,8 @@ def test_the_search_tool_counts_what_it_was_asked_for(archive_index):
 
     whole = asyncio.run(server.call_tool("search_documents", {"query_text": "Synthetic"}))
     narrowed = asyncio.run(server.call_tool("search_documents",
-                                            {"query_text": "Synthetic", "since": "2019-01-01", "until": "2019-12-31"}))  # fmt: skip
+                                            {"query_text": "Synthetic", "since": f"{A_DAY_FOR_AN_ILLUSTRATION.year}-01-01",
+                                             "until": f"{A_DAY_FOR_AN_ILLUSTRATION.year}-12-31"}))  # fmt: skip
 
     inside = narrowed.structured_content
     assert inside["result"], "the narrowed page holds something"
@@ -764,7 +1021,7 @@ def test_a_history_says_how_many_match_the_question_it_was_asked(archive_index):
     said = answer.structured_content
     assert said["found"] == 1
     # However many there are, the number is of the same question the rows came from.
-    with closing(query.open_index(data_dir)) as connection:
+    with closing(query.open_index(data_dir, None)) as connection:
         held = query.indicators_matching(connection, "цистатин")
         union = query.count_values(connection, name="цистатин", indicators=tuple(item["id"] for item in held))
     assert said.get("values_in_all", said["found"]) == union

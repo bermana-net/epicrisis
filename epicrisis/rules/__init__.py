@@ -33,16 +33,25 @@ be looked up somewhere else is an answer nobody looks up. Where the two disagree
 refused, so they cannot drift apart.
 """
 
-import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from epicrisis.rules.kinds import AT, DOES, KINDS, Kind
+from epicrisis import layout
+from epicrisis.printed_values import as_a_name
+# The steps and what each costs are the table in kinds.py, asked at the point of use and not
+# bound here: a name imported once is a second copy of the answer, and this file refuses a
+# rule by it.
+from epicrisis.rules import kinds
+from epicrisis.rules.kinds import DOES, KINDS, Kind
 
 FENCE = "+++"
 SHIPPED = Path(__file__).resolve().parent / "shipped"
-FOLDER_NAME = "rules"  # inside the data directory: this instance's own
+# Inside the data directory: this instance's own rules. The name comes from layout.py,
+# which owns the names of everything this program writes beside an archive — and which also
+# names this folder among what the checks are built from, so that a rule edited by hand
+# ages their answer. Two spellings of one name is how those two come apart.
+FOLDER_NAME = layout.RULES
 
 
 class RuleFileProblem(ValueError):
@@ -86,9 +95,7 @@ class Rule:
     @property
     def costly(self) -> bool:
         """Whether turning this one on or off asks for a confirmation rather than a click."""
-        from epicrisis.rules.kinds import COSTLY
-
-        return self.at in COSTLY
+        return self.at in kinds.COSTLY
 
     @property
     def cost(self) -> str:
@@ -155,8 +162,8 @@ def read(path: Path, shipped: bool) -> Rule:
         raise RuleFileProblem(f"does is {header['does']!r}, and it can only be one of {', '.join(DOES)}")
     if header["does"] != kind.does:
         raise RuleFileProblem(f"this rule says it {header['does']} and {kind.name} {kind.does}")
-    if header["at"] not in AT:
-        raise RuleFileProblem(f"at is {header['at']!r}, and it can only be one of {', '.join(AT)}")
+    if header["at"] not in kinds.AT:
+        raise RuleFileProblem(f"at is {header['at']!r}, and it can only be one of {', '.join(kinds.AT)}")
     if header["at"] != kind.at:
         raise RuleFileProblem(f"this rule says it runs at {header['at']} and {kind.name} runs at {kind.at}")
     if not about:
@@ -220,9 +227,27 @@ def load(data_dir: Path | None = None, shipped_dir: Path | None = None) -> Rules
 
 
 def slug(name: str) -> str:
-    """A name a person typed, as a file can be called: lowercase, words joined by hyphens."""
-    made = re.sub(r"[^a-z0-9]+", "-", name.strip().casefold()).strip("-")
-    return made or "a-rule"
+    """A name a person typed, as a rule file can be called. The answer is printed_values.
+
+    It was four lines of its own here, and they kept the Latin letters and threw the rest away.
+    Two of the five languages on these forms are written in Cyrillic and one in Greek, so a rule
+    named in any of them left nothing behind and came out as the fallback alone: 'Діапазон
+    прочитано двома способами' and 'Μία κλίμακα' were both 'a-rule'. This is written from the
+    settings page, where the one thing a rule needs is a name — so the second rule a person wrote
+    was refused with "There is already a rule called 'a-rule'", an id they had never typed, with
+    nothing on the form to suggest the name had to be in Latin letters and a file called a-rule.md
+    in the folder saying nothing either. On a Ukrainian, Russian or Greek instance a person could
+    write one rule.
+
+    indicators.slug had the answer already, transliteration and unique-name loop and the comment
+    saying what each was bought by. It lives in printed_values now, where the fold does, and both
+    ask it. Two things stay here, because they are about rules and not about letters: the fallback
+    for a name that leaves nothing behind, and that the loop is not asked for. An indicator
+    proposed by a model may arrive beside one of the same label and has to be given a name
+    anyway; a rule is one person typing one name on a form, and a second rule of the same name is
+    refused and told so, which is the decision test_a_name_already_taken_is_refused holds.
+    """
+    return as_a_name(name, fallback="a-rule")
 
 
 def _as_toml(text: str) -> str:
@@ -256,7 +281,11 @@ def write_one(data_dir: Path, header: dict, about: str, kinds: dict) -> tuple[st
     folder = Path(data_dir) / FOLDER_NAME
     folder.mkdir(parents=True, exist_ok=True)
     if load(data_dir).get(rule_id) or (folder / f"{rule_id}.md").exists():
-        return "", f"There is already a rule called {rule_id!r}."
+        # What puts it right, because the refusal used to say only that something was there. It
+        # could not say more while every name in Cyrillic or Greek came out as 'a-rule': the id
+        # named nothing the person had typed, and "give it another name" would have been no help
+        # at all, since another name came out as 'a-rule' too.
+        return "", f"There is already a rule called {rule_id!r}. Give this one a name of its own."
 
     lines = [FENCE, f"id = {_as_toml(rule_id)}", f"name = {_as_toml(header['name'].strip())}",
              f"summary = {_as_toml((header.get('summary') or header['name']).strip())}",

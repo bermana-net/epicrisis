@@ -1,0 +1,151 @@
+{% extends "_page.html" %}
+{% macro roll(lines) %}
+    <dl class="makers">
+      {% for one in lines %}
+      <div>
+        <dt>{{ one.text }}</dt>
+        <dd class="caps">{{ one.documents }} document{{ "" if one.documents == 1 else "s" }} &middot;
+          {% if one.first_page %}<a href="/documents/{{ one.source_id }}/{{ one.file_sha256 }}/{{ one.first_page }}">{{ one.last_date or "no date" }}</a>{% else %}{{ one.last_date or "no date" }}{% endif %}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+{% endmacro %}
+{% block title %}Patient card{% endblock %}
+{% block page %}
+
+  {% from "_nothing.html" import nothing %}
+  {% include "_header.html" %}
+
+  {# The empty state is the page, as it is on every other page of this interface, and this one was
+     the only page without it. An instance that had read nothing was told "No document here prints
+     the sex, the date of birth, the blood group or the height of the person" and, worse, "Every
+     question these documents answer about the person, they answer the same" — which reads as a
+     check that ran and found nothing, over documents no model had looked at. An empty field of
+     this program's own is not a silent page: if the page does not say it, the program does not
+     know it, and "not read yet" and "read, and nowhere printed" are two different answers. #}
+  {% if stage.state != "ready" %}
+  {{ nothing("Patient card", stage) }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <div class="timeline-head">
+      <h1>Patient card</h1>
+      <p class="caps muted">what these documents print about the person, as they print it</p>
+    </div>
+  </section>
+
+  {# Four tabs, and the warning above them rather than on one of them. In one column the page ran
+     past the window: a person opening it to read a blood group scrolled through every medication
+     the archive prints to reach the disagreements, which are the thing the page exists for. Each
+     tab is its own address, so a browser with no script running shows the same four. #}
+  <nav class="tabs caps">
+    <a href="/card?tab=person"{% if tab == "person" %} aria-current="page"{% endif %}>Personal data</a>
+    <a href="/card?tab=medications"{% if tab == "medications" %} aria-current="page"{% endif %}>Medications</a>
+    <a href="/card?tab=diagnoses"{% if tab == "diagnoses" %} aria-current="page"{% endif %}>Diagnoses</a>
+    <a href="/card?tab=conflicts"{% if tab == "conflicts" %} aria-current="page"{% endif %}>Where the documents disagree</a>
+  </nav>
+
+  <section class="card-section">
+    {# The whole of the honesty of this page is in this paragraph. A list of medications under a
+       person's name reads as "what they take", and that is a judgement no page can make: a drug
+       printed in 2019 may have been stopped the month after. What a document prints is a fact;
+       what is in force today is not on any of these pages. It stands on every tab, because a
+       person arriving straight at one of them by its own address has read none of the others. #}
+    <p class="note alert caps">Everything here is <b>what the documents print</b>, not what is taken
+      or true today. A medication printed in 2019 was printed in 2019; whether it is still taken,
+      and whether a diagnosis still stands, is not something this program can read off a page.
+      The date beside each line is the newest document that carries it. Check against the page
+      itself before you act on anything here, and against a doctor before you act at all.</p>
+
+    {% if tab == "person" %}
+    <h2>Personal data, as printed</h2>
+    {% if not personal %}
+    <p class="empty">No document here prints the sex, the date of birth, the blood group or the
+      height of the person.</p>
+    {% else %}
+    <p class="note caps">What a form states about the person rather than about the day they came
+      in. Where two documents state two answers, both stand here; which of them is this person's
+      is not something this program can know, and the last tab says so.</p>
+    <dl class="makers">
+      {% for one in personal %}
+      <div>
+        <dt>{{ one.about }} <b>{{ one.value }}</b>{% if one.unit %} <span class="caps muted">{{ one.unit }}</span>{% endif %}{% if one.printed %} <span class="caps muted">printed &ldquo;{{ one.printed }}&rdquo;</span>{% endif %}</dt>
+        <dd class="caps">{% if one.first_page %}<a href="/documents/{{ one.source_id }}/{{ one.file_sha256 }}/{{ one.first_page }}">{{ one.date or "no date" }}</a>{% else %}{{ one.date or "no date" }}{% endif %}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+    {% endif %}
+
+    {% if tab == "medications" %}
+    <h2>Medications, as printed</h2>
+    {# Said here because this is the page somebody holds up to a doctor, and the doctor reads
+       it in a minute and a half. Four lines for two medications — the Latin spelling and the
+       Cyrillic one, each with its own count of documents — read as four medications unless
+       the page says otherwise. Joining them is what this program must not do, so it says it
+       instead, in the words /who already uses for the same thing. #}
+    {% if medications %}
+    <p class="note caps">As printed on the documents themselves. One medication may stand here more
+      than once where the forms write its name differently, or write the same dose in another
+      language; nothing is joined for you, and the count beside each line is of documents carrying
+      that spelling rather than of times it was prescribed.</p>
+    {% endif %}
+    {% if not medications %}
+    <p class="empty">No document here prints a medication.</p>
+    {% else %}
+    {{ roll(medications) }}
+    {% endif %}
+    {% endif %}
+
+    {% if tab == "diagnoses" %}
+    <h2>Diagnoses, as printed</h2>
+    {% if diagnoses %}
+    <p class="note caps">As printed on the documents themselves. One diagnosis may stand here more
+      than once where the forms word it differently or write it in another language; nothing is
+      joined for you, and none of these is a diagnosis made today.</p>
+    {% endif %}
+    {% if not diagnoses %}
+    <p class="empty">No document here prints a diagnosis.</p>
+    {% else %}
+    {{ roll(diagnoses) }}
+    {% endif %}
+    {% endif %}
+
+    {# The point of the page a person opens it for. Not every difference between two documents is
+       a conflict: leucocytes differ between two days and that is a person living. A blood group
+       does not change, and neither does the answer to "sex" — where two documents of one archive
+       answer such a question differently, one of them is wrong about this person, and which is
+       not a thing this program can know. It names both and gives both pages. #}
+    {% if tab == "conflicts" %}
+    <h2>Where the documents disagree</h2>
+    {% if not conflicts %}
+    {# Narrowed to what this tab actually compares. It used to say "every question these documents
+       answer about the person", which is a claim about the whole archive made by a tab that weighs
+       four fields: a medication printed two ways, a diagnosis worded two ways and a value read two
+       ways all pass under it, and a reader was told they had been checked. #}
+    <p class="empty">Nothing here is answered two ways. The sex, the date of birth, the blood group
+      and the Rh are the four this tab compares &mdash; the questions a person has one answer to
+      &mdash; and these documents print one answer to each. Nothing else on them is weighed here.</p>
+    {% else %}
+    <p class="note alert caps">Questions that have one answer for a person, answered two ways by
+      these documents. One of them is wrong about this person &mdash; which one, nothing here can
+      say. Open both pages.</p>
+    {% for one in conflicts %}
+    <div class="unchecked">
+      <p class="caps"><b>{{ one.about }}</b>: {{ one.answers | join(" / ") }}</p>
+      <dl class="makers">
+        {% for line in one.lines %}
+        <div>
+          <dt>{{ line.name }} <b>{{ line.value }}</b></dt>
+          <dd class="caps">{% if line.first_page %}<a href="/documents/{{ line.source_id }}/{{ line.file_sha256 }}/{{ line.first_page }}">{{ line.date or "no date" }}</a>{% else %}{{ line.date or "no date" }}{% endif %}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endif %}
+  </section>
+  {% endif %}
+
+{% endblock %}

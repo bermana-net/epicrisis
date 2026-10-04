@@ -3,11 +3,18 @@
 Typewriters printed the digit 1 as a letter I and 0 as O; Spanish and Ukrainian forms group
 thousands with a dot or space; powers come as superscripts; comparators come as signs or words.
 These helpers never change stored data, they only tell a real mismatch from a way of printing.
+
+The fold at the bottom of this file — case, accents, the apostrophe, the Ukrainian and Russian
+letters that stand beside each other — is the form every match in this program is made on, and
+`as_a_name` beside it
+answers the one question that follows from the same alphabets: what a name somebody typed comes to
+when a file has to be called it. Both are decisions about letters and neither reads a meaning.
 """
 
 import math
 import re
 import unicodedata
+from collections.abc import Iterable
 from functools import cache
 
 SIGNS = ("<", ">", "≤", "≥")
@@ -41,8 +48,49 @@ def _comparator_words() -> re.Pattern[str]:
     fold. So those printed in capitals were no comparator at all — while reference.parse, which does
     fold, read the very same strings correctly. One list of words, two readers, and they disagreed.
     """
-    words = sorted({fold(word) for word in (*BELOW_WORDS, *ABOVE_WORDS)}, key=len, reverse=True)
-    return re.compile(r"^\s*(" + "|".join(words).replace(" ", r"\s+") + r")(?![^\W\d_])")
+    return re.compile(r"^\s*(" + _any_comparator_word() + r")(?![^\W\d_])")
+
+
+#: Two of the words above are read in front of their number and never behind it, because behind a
+#: number they are not a direction but a unit: "120 мин" is a time, "уд/мин" is a pulse, and "max"
+#: standing after a number is a shape no form of this archive prints at all. Both are headings of
+#: a column, and a heading stands in front of what it heads. reference.parse goes on reading them
+#: wherever they stand, and that is not the disagreement this one list was made to end: it reads
+#: the range printed beside a value, where "120 мин" is not something a laboratory prints, while
+#: this reads the value itself. Of every value on these archives that prints one of the two words
+#: after its number, both are a count of minutes and neither is a direction.
+NOT_BEHIND_A_NUMBER = ("min", "max")
+
+
+def _any_comparator_word(without: tuple[str, ...] = ()) -> str:
+    """The words above as one alternation, longest first so that "не менее" beats "менее"."""
+    words = {fold(word) for word in (*BELOW_WORDS, *ABOVE_WORDS)} - {fold(word) for word in without}
+    return "|".join(sorted(words, key=len, reverse=True)).replace(" ", r"\s+")
+
+
+@cache
+def _a_comparator_behind_the_number() -> re.Pattern[str]:
+    """The same words standing after their number instead of in front of it, as half of them do.
+
+    The list above holds both halves of every language and says so: a form prints "до 5" as
+    readily as "5 и более". The reader of it did not. Anchored to the start of the string, it
+    could never match a word standing behind its number, so not one of "20 or less", "18 и более",
+    "5 і більше", "40 and above", "5 o menos" or "5 ή λιγότερο" was a comparator here — in all
+    five languages at once — while reference.parse, which reads a word "wherever it stands", read
+    every one of them correctly. One list, two readers, and the comment over the list named the
+    very shape the reader was blind to: "an English '20 or less' was read as nothing at all, on
+    forms that print them by the thousand".
+
+    What it cost: validate.comparator_missing and the same check in extract/run.py handed
+    `comparator_not_printed` to a value whose comparator had been read exactly right, and the
+    document went to "to check" for it.
+
+    Nothing but space and the form's own punctuation between the number and the word, so that this
+    answers for a comparator and not for any comparator word anywhere in a line. Where the word
+    stands in front, the other reader also has to say where it ends; this one only has to say
+    whether there is one.
+    """
+    return re.compile(r"\d[\s.,;)\]]*(" + _any_comparator_word(NOT_BEHIND_A_NUMBER) + r")(?![^\W\d_])")
 
 
 def comparator_end(printed: str | None) -> int | None:
@@ -232,7 +280,11 @@ def number_matches(printed: str, value: float) -> bool:
 
 
 def comparator_printed(printed: str) -> bool:
-    return (printed or "").lstrip().startswith(SIGNS) or comparator_end(printed) is not None
+    """Whether the form itself printed a comparator: a sign, or a word on either side of the number."""
+    text = printed or ""
+    if text.lstrip().startswith(SIGNS) or comparator_end(text) is not None:
+        return True
+    return _a_comparator_behind_the_number().search(fold(text)) is not None
 
 
 def unexplained_letters(printed: str) -> bool:
@@ -309,7 +361,94 @@ def also_written_as(word: str) -> list[str]:
                 spellings.append(made)
         return spellings
     return []
+
+
+def one_letter_in_the_other_alphabet(word: str) -> list[str]:
+    """This word with exactly one of its letters typed in the other alphabet it is drawn in.
+
+    Between the fold above and `also_written_as` there is a shape neither of them covers, and it
+    is the one a model transcribing a page produces by the hundred: a Cyrillic word with a single
+    Latin letter inside it, because on paper "і" and "i" are one mark and the model picked the
+    other alphabet for that one character. The fold cannot answer it — fold the letters drawn
+    alike and "белок" becomes "бelok" and nothing matches anything — and `also_written_as` cannot
+    either, because it answers only for a word whose *every* letter has a twin, which is "В12" and
+    never "креатинін". So the program has met this three times and patched it three times one
+    spelling at a time: "вiд" in quotations, "креатинiн" in units.NAMES, "xв" in units.WORDS.
+
+    Exactly one letter, and that is the whole of what makes these spellings safe to put in a
+    table: a word of one alphabet carrying one letter of another is a word of no language at all,
+    so none of them can ever be an ordinary word that somebody meant. Two letters and the
+    guarantee is gone — "мар", the stem of March, with all three of its letters swapped is the
+    English word "map", and a date reader holding that would read "map" as a month.
+    """
+    letters = [(place, letter) for place, letter in enumerate(word) if letter.isalpha()]
+    if len(letters) < 2:
+        # A word of one letter has no "rest of the word" left in its own alphabet, so the swap
+        # does not make a spelling of no language: it makes an ordinary letter of another one.
+        return []
+    spellings: list[str] = []
+    for place, letter in letters:
+        twins = (_DRAWN_ALIKE[letter],) if letter in _DRAWN_ALIKE else _DRAWN_ALIKE_BACK.get(letter, ())
+        for twin in twins:
+            made = word[:place] + twin + word[place + 1:]
+            if made != word and made not in spellings:
+                spellings.append(made)
+    return spellings
+
+
+def with_the_one_letter_slips(by_meaning: dict) -> dict:
+    """Each meaning's printed spellings, and the one-letter slips of them that only it could be.
+
+    What a table of printed spellings is to be built with, so that one letter out of the other
+    alphabet does not cost the whole entry. Written here and not in each table because the tables
+    had been patched one spelling at a time and the spelling that was patched was the one somebody
+    happened to meet.
+
+    A slip two meanings could both have been is read as neither, and that rule is not a nicety:
+    "mg/l" is one letter from "μg/l" — a Latin m where a Greek mu belongs — and those two are a
+    thousandfold apart, so a table that read the slip would put milligrams and micrograms on one
+    axis and under one heading. Five such spellings are refused in the table of units alone.
+    Compared both as written and as folded, because the micro sign and the Greek mu are two
+    characters before a fold and one after it: "μg/dl" walked straight through the first version
+    of this guard, which compared the written form only.
+    """
+    def shapes(word: str) -> set[str]:
+        return {word, fold(word)}
+
+    claimed: dict[str, set] = {}
+    for meaning, spellings in by_meaning.items():
+        for spelling in spellings:
+            for made in (spelling, *one_letter_in_the_other_alphabet(spelling)):
+                for shape in shapes(made):
+                    claimed.setdefault(shape, set()).add(meaning)
+    whole = {}
+    for meaning, spellings in by_meaning.items():
+        extra: list[str] = []
+        for spelling in spellings:
+            for made in one_letter_in_the_other_alphabet(spelling):
+                if all(claimed[shape] == {meaning} for shape in shapes(made)):
+                    if made not in spellings and made not in extra:
+                        extra.append(made)
+        whole[meaning] = (*spellings, *extra)
+    return whole
 _FOLD = str.maketrans({"і": "и", "ї": "и", "є": "е", "ё": "е", "ы": "и", "э": "е", "ґ": "г", "й": "и", "ъ": "", "ь": ""})
+
+#: The apostrophe goes out with the soft sign, because it is the soft sign: Ukrainian prints one
+#: where Russian prints ь, and the table above already drops the ь so that the two alphabets'
+#: spellings of one word meet. Kept, it undid that in the one place it matters most — "Дем'яненко"
+#: and "Демьяненко" were two strings to every search in this program, and a person looking for
+#: their own doctor found half their documents.
+#:
+#: people.the_words_in had taken it out before folding since the day the apostrophe cost a pair of
+#: names, so the two halves of this program disagreed about what an apostrophe is; now the fold
+#: answers it once and the names module asks.
+#:
+#: Every shape a form, a keyboard or an export prints for it. Taken out **before** the NFKD
+#: normalising below and not after: ´ (U+00B4), which people type where the key for an apostrophe
+#: is missing, decomposes to a space and a combining accent, so by the time the accents come off
+#: there is nothing left to take out. ʼ (U+02BC) survives for the other reason — it is a letter to
+#: `\w`, so nothing that splits on non-word characters ever noticed it.
+NO_APOSTROPHE = str.maketrans("", "", "'’‘ʼʻʽˈ`´′")
 
 
 def squeezed(text: str | None) -> str:
@@ -318,9 +457,40 @@ def squeezed(text: str | None) -> str:
 
 
 def fold(text: str | None) -> str:
-    """Search form of a text: lower case, no accents, Ukrainian and Russian letters paired."""
-    decomposed = unicodedata.normalize("NFKD", (text or "").casefold())
+    """Search form of a text: lower case, no accents, no apostrophe, Ukrainian and Russian paired.
+
+    Everything stored in a folded form — the `search` table of an index, the spellings under an
+    indicator — was folded by the fold of its own day, so a change here makes those rows stale.
+    The index says which version built it and refuses to answer when that is not this one
+    (`query.open_index`, `index.build.SCHEMA_VERSION`); the spellings a person approved are folded
+    again as they are read (`indicators.load`), because that file is their own work and no change
+    of ours rewrites it.
+    """
+    without = (text or "").casefold().translate(NO_APOSTROPHE)
+    decomposed = unicodedata.normalize("NFKD", without)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).translate(_FOLD)
+
+
+def in_name_order(name: str | None) -> str:
+    """The sort key for a list of printed names and labels a person reads down.
+
+    Ordered by what the code points happen to be, or by a casefold, the Ukrainian і, ї, є and ґ
+    and the Russian ё sit below я, because Unicode put them in a block of their own after the
+    thirty-two letters both alphabets share. A person looking for a surname on «І» looked where it
+    belongs and found it at the very bottom of the list, under every Russian name there was.
+
+    The fold answers it, because it pairs those letters with the ones they stand beside — і with
+    и, є with е, ґ with г — and that is one decision this program has already made, for
+    matching, and may as well keep making in one place.
+
+    **It folds letters; it does not sort by anybody's alphabet, and this is the whole of what it
+    gives.** і, ї and й all land among the и, so a list of them is in no Ukrainian order inside
+    that run; ы and э land among и and е rather than where Russian puts them; the soft sign is
+    dropped, so «Ольга» and «Олга» fall together. Latin comes before Greek and Greek before
+    Cyrillic, which is the blocks' own order and not a claim about any language. What it fixes is
+    one thing: a letter of a person's own alphabet is no longer below every letter of another's.
+    """
+    return fold(name)
 
 
 def fold_with_offsets(text: str) -> tuple[str, list[int]]:
@@ -331,3 +501,47 @@ def fold_with_offsets(text: str) -> tuple[str, list[int]]:
         folded.append(piece)
         offsets.extend([position] * len(piece))
     return "".join(folded), offsets
+
+
+# Letters of the alphabets this archive is written in, as an address can carry them. A label in
+# Cyrillic or Greek used to leave nothing behind after the Latin letters were kept, so every such
+# indicator was called "indicator", "indicator-2", "indicator-3" — opaque in a URL, and unmatched
+# by every table in this program that is keyed by what a test is.
+TRANSLITERATED = {
+    "а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d", "е": "e", "є": "ie", "ж": "zh",
+    "з": "z", "и": "y", "і": "i", "ї": "i", "й": "i", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
+    "ч": "ch", "ш": "sh", "щ": "shch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "iu", "я": "ia",
+    "α": "a", "β": "b", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "i", "θ": "th", "ι": "i",
+    "κ": "k", "λ": "l", "μ": "m", "ν": "n", "ξ": "x", "ο": "o", "π": "p", "ρ": "r", "σ": "s",
+    "ς": "s", "τ": "t", "υ": "y", "φ": "f", "χ": "ch", "ψ": "ps", "ω": "o",
+}
+
+
+def as_a_name(text: str, taken: Iterable[str] = (), fallback: str = "a-name", longest: int = 40) -> str:
+    """A name somebody typed, as a file can be called and a URL can carry: one answer, here.
+
+    There were two, and the second had no transliteration in it. An indicator took this one;
+    a rule a person writes on the settings page took four lines of its own that kept the Latin
+    letters and threw the rest away. So every rule named in Ukrainian, Russian or Greek came out
+    as the fallback alone — "a-rule" — and the second such rule a person wrote was refused with
+    "There is already a rule called 'a-rule'", an id they had never typed, about a file called
+    a-rule.md that said nothing either. On a Ukrainian, Russian or Greek instance a person could
+    write their own rule once.
+
+    It lives beside the fold because it is the same question about the same alphabets: what a
+    printed name comes to when it has to be carried by something that holds Latin letters only.
+    Transliteration is not a reading of the name and changes nothing printed — the label and the
+    rule's name are kept as typed, and this answers only what the thing may be called.
+
+    `taken` is the names already spoken for, and a name that is spoken for steps aside to
+    base-2, base-3: a person naming two things alike is not an error to refuse them with.
+    `fallback` is what a name with no Latin letter and no digit left in it is called instead.
+    """
+    latin = "".join(TRANSLITERATED.get(letter, letter) for letter in fold(text))
+    base = re.sub(r"[^a-z0-9]+", "-", latin).strip("-")[:longest] or fallback
+    spoken_for = set(taken)
+    candidate, number = base, 2
+    while candidate in spoken_for:
+        candidate, number = f"{base}-{number}", number + 1
+    return candidate

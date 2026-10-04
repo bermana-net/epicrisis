@@ -205,11 +205,13 @@ def test_which_model_does_which_reading_is_chosen_and_used(tmp_path):
     assert model_for(data_dir, "first") == "claude-sonnet-5"
     assert chosen_models(data_dir)["first"] == "claude-sonnet-5"
 
-    # The steps that run a model build it from the choice, not from a constant.
+    # The steps that run a model build it from the choice, not from a constant. The quick model
+    # classifies the pages; the values of a document are read by the expert one, alone.
+    from epicrisis import engines
     from epicrisis.extract.backend import default_extract_backend
 
-    ladder = default_extract_backend(data_dir)
-    assert ladder.model.startswith("claude-sonnet-5>")
+    assert engines.classifier(data_dir).model.startswith("claude-sonnet-5>")
+    assert default_extract_backend(data_dir).model == "claude-opus-5"
 
 
 def test_a_table_printed_sideways_is_read_the_right_way_up():
@@ -240,7 +242,7 @@ def test_a_table_printed_sideways_is_read_the_right_way_up():
 
 def test_a_person_says_what_was_measured_and_their_word_wins(tmp_path):
     """The escape hatch for a form no rule can read: one line, set by hand, marked as theirs."""
-    from epicrisis.index.build import _material
+    from epicrisis.index.build import settled_material
 
     observation = {"name_as_printed": "кровь", "table_as_printed": "Мочевая кислота ммоль/л",
                    "provenance": {"page": 1}}  # fmt: skip
@@ -249,15 +251,15 @@ def test_a_person_says_what_was_measured_and_their_word_wins(tmp_path):
     # Uric acid is a blood test whose Russian name begins with the word for urine, so the rules
     # now read nothing from that heading at all. The row itself says blood, when the table is
     # known to be printed sideways.
-    assert _material(observation, document, None, None, "a" * 64, (1,))[0] is None
-    assert _material(observation, document, None, None, "a" * 64, (1,), sideways=True) == ("blood", "printed")
+    assert settled_material(observation, document, None, None, "a" * 64, (1,))[0] is None
+    assert settled_material(observation, document, None, None, "a" * 64, (1,), sideways=True) == ("blood", "printed")
 
     by_hand = {"changes": {"material": "blood"}}
-    assert _material(observation, document, None, None, "a" * 64, (1,), by_hand) == ("blood", "person")
+    assert settled_material(observation, document, None, None, "a" * 64, (1,), by_hand) == ("blood", "person")
 
     # "none" is an answer: measured on the person, not in a sample.
     no_sample = {"changes": {"material": "none"}}
-    assert _material(observation, document, None, None, "a" * 64, (1,), no_sample) == (None, "person")
+    assert settled_material(observation, document, None, None, "a" * 64, (1,), no_sample) == (None, "person")
 
 
 def test_a_word_for_urine_inside_another_word_is_not_a_specimen():

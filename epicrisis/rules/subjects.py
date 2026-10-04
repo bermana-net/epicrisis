@@ -87,6 +87,10 @@ class Document:
     tabular_pages: tuple[int, ...] = ()
     goes_to_extract: bool = False  # whether this document was one to transcribe at all
     date_flags: tuple[str, ...] = ()  # what document_dates.py could not settle about its date
+    # The date the reading gave each page of this document, as printed. Two pages of one document
+    # dated a year apart are two documents: in a file this program cut into pages itself there is
+    # no page break to tell it where one ends, so this is how a bad cut shows.
+    page_dates: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,12 @@ class Archive:
     habits: dict = None
     numbers: dict = None
     spellings: dict = None  # every approved spelling of every test, folded, and whose it is
+    # What a model read as the specimen of a panel the form left unlabelled, where this instance
+    # trusts those readings, keyed as material_reading.panel_key keys them. Handed in rather than
+    # read, because whether it is trusted at all is a setting and a rule does not read settings.
+    # A rule that groups values by what they were measured in cannot settle that from the printed
+    # word alone, and a rule that tried got a urine protein into a serum protein's group.
+    read_materials: dict = None
 
 
 @dataclass(frozen=True)

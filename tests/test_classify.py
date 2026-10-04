@@ -128,6 +128,43 @@ def test_word_pages_text_then_images(tmp_path):
     assert materialize(refs[1], root, workdir).image_path.name == f"{record['sha256'][:16]}.png"
 
 
+def test_a_text_file_goes_to_the_model_as_its_own_text(tmp_path):
+    """A document that arrives as plain text: pages of lines, read with the coding found for it."""
+    from test_inventory import SYNTHETIC_RU
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / "blood.txt").write_bytes(SYNTHETIC_RU.encode("cp1251"))
+    write_inventory(root, tmp_path / "inventory.jsonl")
+    record = next(read_records(tmp_path / "inventory.jsonl"))
+
+    refs = page_refs(record)
+
+    assert [(ref.page, ref.route, ref.part, ref.index) for ref in refs] == [(1, "text", "text", 0)]
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    payload = materialize(refs[0], root, workdir)
+    assert payload.text == SYNTHETIC_RU  # the letters, not the bytes, and nothing of the file name
+    assert payload.image_path is None
+
+
+def test_a_long_text_file_is_one_document_of_several_pages(tmp_path):
+    root = tmp_path / "archive"
+    root.mkdir()
+    lines = "строка 12,3 г/л результат в пределах нормы\n" * 1000
+    (root / "long.txt").write_text(lines, encoding="utf-8")
+    write_inventory(root, tmp_path / "inventory.jsonl")
+    record = next(read_records(tmp_path / "inventory.jsonl"))
+
+    refs = page_refs(record)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    assert len(refs) == record["text"]["pages"] > 1
+    assert [ref.page for ref in refs] == list(range(1, len(refs) + 1))
+    assert "".join(materialize(ref, root, workdir).text for ref in refs) == lines
+
+
 def test_payloads_carry_no_names_or_metadata(setup):
     data_dir, source, archive, _ = setup
     fake = FakeBackend()
@@ -299,6 +336,31 @@ def test_group_documents_splits_on_first_pages():
     assert [len(document) for document in group_documents(pages)] == [2, 1, 1]
 
 
+def test_in_a_text_file_a_change_of_date_begins_a_document(setup=None):
+    """A text file has no page breaks: this program cut it, so documents end inside a page.
+
+    Asked of such a page alone — the only way a page is ever asked — "is this a first page" is
+    answered "continuation", and on the first text archive read here fifteen pages carrying their
+    own dates and kinds, at a confidence of 0.95, went into one document spanning five years.
+    """
+    def page(number, date, role="continuation", part="text"):
+        return {"file_sha256": "a", "page": number, "page_role": role, "part": part, "date_on_page": date}
+
+    run_together = [
+        page(1, "12.06.2017", role="first"),
+        page(2, None),                 # no date of its own: still the same document
+        page(3, "31.08.2016"),         # another visit, and the reader said so
+        page(4, "31.08.2016"),         # the same one, over the cut
+        page(5, "22.04.2016"),
+    ]
+    assert [[one["page"] for one in document] for document in group_documents(run_together)] == [[1, 2], [3, 4], [5]]
+
+    # A scan or a PDF is not cut by this program: there a page break is a real one, and a date
+    # printed again on the second page of a form is the same form, not a new document.
+    scanned = [dict(one, part="pdf") for one in run_together]
+    assert [len(document) for document in group_documents(scanned)] == [5]
+
+
 def test_claude_code_command_is_isolated_and_text_goes_through_stdin(monkeypatch, tmp_path):
     captured = {}
     result = {"is_error": False, "structured_output": FIELDS, "modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 40}, "claude-opus-5": {"outputTokens": 90}}}
@@ -369,6 +431,70 @@ def test_classify_ladder_asks_the_strong_model_only_when_unsure(tmp_path):
     assert unused.calls == []
 
 
+def test_why_the_stronger_model_was_asked_is_written_beside_the_page(setup):
+    """The reasons reach classify.jsonl, and a line without them means the small model answered.
+
+    `ModelLadder` works out why it is escalating and puts the codes on the result, and `run.py`
+    writes them into `provenance`. Only the first half of that was held by a test — the field on
+    the dataclass — so the write could have been lost without anything going red, and the files
+    would then say how many pages needed the stronger model and not one word about why. On the
+    archive this was checked against, 67 pages of 1,100 carry the reason and every page that went
+    up the ladder is one of them.
+
+    The absence of the field is an answer of its own and this holds it to that: the small model
+    answered that page on its own. Nothing may read it as "the reasons were not recorded".
+    """
+    from epicrisis.classify.backend import ModelLadder
+
+    data_dir, source, _, output = setup
+
+    class Unsure(FakeBackend):
+        def classify(self, payload, workdir):
+            result = super().classify(payload, workdir)
+            result.fields["confidence"] = 0.4
+            result.fields["legible"] = False
+            return result
+
+    stats = classify_source(data_dir, source, ModelLadder(Unsure(model="fake-haiku"), FakeBackend(model="fake-opus")))
+    said = [line["provenance"] for line in read_records(output / "classify.jsonl")]
+
+    assert stats.classified == len(said) > 0
+    # In the order classification_problems returns them, which is the order the codes are written
+    # in that function: a list a person can read, and not a set whose order moves between runs.
+    assert all(one["escalation"] == ["low_confidence", "not_legible"] for one in said), said
+
+    # And a page the small model answered well carries no escalation at all. Read again from
+    # nothing, so the ladder meets every page afresh rather than the ones already done.
+    (output / "classify.jsonl").unlink()
+    (output / "ledger.jsonl").unlink()
+    classify_source(data_dir, source, ModelLadder(FakeBackend(model="fake-haiku"), FakeBackend(model="fake-opus")))
+    plain = [line["provenance"] for line in read_records(output / "classify.jsonl")]
+    assert plain and not any("escalation" in one for one in plain)
+
+
+def test_the_small_model_not_answering_at_all_is_written_down_as_a_fault_and_not_a_doubt(setup):
+    """`small_model_failed` is a call that did not come back, and it was in no test at all.
+
+    It is not one of the three doubts beside it — a low confidence, a page the model called
+    illegible, a type it would not name — and counting it with them would say the small model was
+    unsure about a page it never read. The code existed, nothing exercised it, and nothing checked
+    that it reached the file.
+    """
+    from epicrisis.classify.backend import ModelLadder
+
+    data_dir, source, _, output = setup
+
+    broken, strong = FakeBackend(fail_from=0, model="fake-haiku"), FakeBackend(model="fake-opus")
+    classify_source(data_dir, source, ModelLadder(broken, strong))
+    said = [line["provenance"] for line in read_records(output / "classify.jsonl")]
+
+    assert said and all(one["escalation"] == ["small_model_failed"] for one in said), said
+    # The ladder is what was asked for, and the strong model answered every page of it: a page the
+    # small model dropped is a page that went up, not a page that was lost.
+    assert all(one["requested_model"] == f"{broken.model}>{strong.model}" for one in said)
+    assert len(strong.calls) == len(said)
+
+
 def test_pages_are_classified_several_at_once_and_all_recorded(setup):
     import threading
     import time
@@ -424,3 +550,12 @@ def test_pdf_pages_render_safely_from_many_threads(setup):
     with ThreadPoolExecutor(max_workers=8) as pool:
         images = list(pool.map(lambda ref: original_png(ref, archive), refs * 25))
     assert len(images) == 100 and all(image.startswith(b"\x89PNG") for image in images)
+
+
+def test_a_text_file_inventoried_before_text_files_were_read(tmp_path):
+    """Such a record names the category and says nothing more; it waits for the next walk.
+
+    The whole dashboard answered 500 on an archive walked before this program read text files at
+    all: every page of it asks what pages a file has, and this one asked a record that had none.
+    """
+    assert page_refs({"sha256": "0" * 64, "category": "text"}) == []

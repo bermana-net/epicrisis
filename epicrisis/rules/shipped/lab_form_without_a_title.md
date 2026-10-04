@@ -6,10 +6,15 @@ so its absence usually means the top of the page was not read — and the top of
 where the date and the institution live."""
 kind = "lab-form-without-a-title"
 attaches = "document"
-settles = """Open the top of the page. If a title is printed there and was not read, the page may be worth reading again."""
+settles = """Open the document and read the top of the page; every one of these is listed on Looks misread, behind the line on To check. If a title is printed there and was not read, the page may be worth reading again."""
 does = "marks"
 at = "suspects"
-on_by_default = true
+# Off, because nothing it finds makes a number wrong. A form read with no title is harder to find
+# by name and nothing else: every value on it, its unit and its printed range are whatever the
+# page said. It found 28 documents on the archive it was measured against, and 28 rows that change
+# no reading are 28 rows between a person and the ones that do. Switch it on when the thing being
+# worked on is finding documents rather than trusting their numbers.
+on_by_default = false
 
 [settings]
 weight = 1

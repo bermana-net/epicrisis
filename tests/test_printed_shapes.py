@@ -12,9 +12,12 @@ not a list of known defects.
 """
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
+
+from conftest import A_DAY_FOR_AN_ILLUSTRATION, A_DAY_OF_BIRTH_FOR_AN_ILLUSTRATION
 
 SHAPES = json.loads((Path(__file__).parent / "printed-shapes.json").read_text(encoding="utf-8"))
 
@@ -79,6 +82,27 @@ def test_a_printed_date_is_read_as_the_form_meant_it(shape):
 
     read = read_printed_date(shape["text"])
     assert read.value is not None and read.value.isoformat() == shape["expect"]
+
+
+def test_every_date_shape_carries_the_one_day_these_tests_illustrate_with():
+    """A date in a test is looked for in the archives before it is written down — once, not nine times.
+
+    8 July 2019 stood in this file and in eight others, and it is the hour a sample was taken on a
+    Ukrainian laboratory form in the archive this program was built for. Nobody checks a date in
+    nine places, so the day is declared in tests/conftest.py and these shapes are held to it.
+
+    The month varies, because a month's name in five languages is what half of these shapes are
+    for. The day and the year do not, and that is what this keeps true.
+    """
+    for shape in SHAPES["dates"]:
+        read = date.fromisoformat(shape["expect"])
+        assert (read.day, read.year) == (A_DAY_FOR_AN_ILLUSTRATION.day, A_DAY_FOR_AN_ILLUSTRATION.year), shape["text"]
+    for shape in SHAPES["dates_of_birth"]:
+        read = date.fromisoformat(shape["expect"])
+        # A form printing a year of birth and no day is read as the first of January: that is the
+        # precision the reader could manage, and not a day anybody wrote down.
+        assert read.year == A_DAY_OF_BIRTH_FOR_AN_ILLUSTRATION.year, shape["text"]
+        assert read.day in (A_DAY_OF_BIRTH_FOR_AN_ILLUSTRATION.day, 1), shape["text"]
 
 
 def test_every_shape_says_what_it_is_for():

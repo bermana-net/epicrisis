@@ -19,11 +19,12 @@ from functools import partial
 from pathlib import Path
 
 from epicrisis.invocation import CLI
-from epicrisis import layout
+from epicrisis import journal, layout
 from epicrisis.classify.backend import BackendError, UsageLimitReached
 from epicrisis.classify.pages import PageRef, PageUnreadable, document_payloads, page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.extract.backend import PROMPT_VERSION
+from epicrisis.readers.text import TEXT_PAGE_CHARS
 from epicrisis.dates import birth_dates, read_printed_date, same_date
 from epicrisis.records import append_line, now, read_records
 from epicrisis.printed_values import comparator_printed, number_tokens, squeezed, numbers_in_text, typewriter_digits, unexplained_letters
@@ -31,11 +32,17 @@ from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
 from epicrisis.sources import Source, source_output_dir
 from epicrisis.suspects import provider_looks_like_a_person
 from epicrisis.runs import one_at_a_time, write_whole
-from epicrisis.state import NoSpace, Unreadable, no_space
+from epicrisis.state import NoSpace, Unreadable, no_space, where
 
 LOCK_NAME = "extract.lock"
 MAX_PAGES_PER_CALL = 8
 MAX_CLOSE_UP_PAGES_PER_CALL = 3  # five images per page
+# Eight pages to a call was settled when a page meant a photograph of a form, which carries a few
+# thousand characters. A page of a text file carries as many as it is cut to, so the same eight
+# can be five times that, and a call that is too long is not a slow call but a failed one. This is
+# how much text goes in one call; it is about what a document of two pages of this archive carried,
+# which reads in six or seven minutes against a ceiling of fifteen.
+TEXT_CHARS_PER_CALL = 20_000
 SAMPLE_SIZE = 5
 HEADER_FIELDS = (
     "title_as_printed",
@@ -43,6 +50,7 @@ HEADER_FIELDS = (
     "date_of_report_as_printed",
     "provider_as_printed",
     "department_as_printed",
+    "doctor_as_printed",
 )
 
 
@@ -116,6 +124,19 @@ def sample_documents(documents: list[DocumentRef], count: int = SAMPLE_SIZE) -> 
             if document not in picked and rule(document):
                 picked.append(document)
     return picked
+
+
+def pages_per_call(refs: list[PageRef]) -> int:
+    """How many pages of this document go in one call.
+
+    Eight, as for every document made of pages — unless the pages are a text file's, which are
+    cut to a size of this program's own choosing and can each be as long as several printed ones.
+    Then it is as many as fit the text a call carries, and never fewer than two: a call of one
+    page would repeat that page as its own context, for ever.
+    """
+    if not any(ref.part == "text" for ref in refs):
+        return MAX_PAGES_PER_CALL
+    return max(2, min(MAX_PAGES_PER_CALL, TEXT_CHARS_PER_CALL // TEXT_PAGE_CHARS))
 
 
 def call_chunks(refs: list[PageRef], size: int = MAX_PAGES_PER_CALL) -> list[list[PageRef]]:
@@ -226,7 +247,7 @@ def _stored(output: Path, document: DocumentRef) -> dict | None:
 
 def _call_backend(document: DocumentRef, source: Source, backend, close_ups: bool = False) -> tuple[list, dict[int, str]]:
     """Calls for one document, and the page texts that went as text, by page of the file."""
-    size = MAX_CLOSE_UP_PAGES_PER_CALL if close_ups else MAX_PAGES_PER_CALL
+    size = MAX_CLOSE_UP_PAGES_PER_CALL if close_ups else pages_per_call(_document_page_refs(document))
     parts, sent_texts = [], {}
     for chunk in call_chunks(_document_page_refs(document), size):
         with tempfile.TemporaryDirectory(prefix="epicrisis-document-", ignore_cleanup_errors=True) as folder:
@@ -239,8 +260,8 @@ def _call_backend(document: DocumentRef, source: Source, backend, close_ups: boo
 
 def read_again(document: DocumentRef, source: Source, backend, close_ups: bool = False) -> dict:
     """One more reading of a document, returned instead of stored: for checking a transcription."""
-    parts, _ = _call_backend(document, source, backend, close_ups=close_ups)
-    return merge_document(document, parts, backend)
+    parts, sent_texts = _call_backend(document, source, backend, close_ups=close_ups)
+    return merge_document(document, parts, backend, sent_texts)
 
 
 
@@ -335,7 +356,15 @@ def transcription_problems(document: dict, sent_texts: dict[int, str], tabular_p
             add("comparator_not_printed")
     # Headings matter where a row prints several values: they tell the result from the rest.
     # Many forms print one value per row and no headings at all; that is not a problem.
-    rows = Counter((item["provenance"]["page"], squeezed(item["name_as_printed"])) for item in document["observations"])
+    #
+    # A row, not a page. This counted a name twice anywhere on the page, which is not a row with
+    # several values in it — it is a measurement printed in two places, which any long report
+    # does. On the archive read on 2 October it fired on four documents where no name repeated
+    # inside any row at all, and each of those was read a second time by the costliest model to
+    # answer a complaint about a table that was not there. What tells one row from another is the
+    # piece of the original line kept beside every value.
+    rows = Counter((item["provenance"]["page"], squeezed(item["provenance"].get("snippet")),
+                    squeezed(item["name_as_printed"])) for item in document["observations"])  # fmt: skip
     if any(count > 1 for count in rows.values()) and not any(item.get("column_as_printed") for item in document["observations"]):
         add("no_column_headings_in_multi_value_rows")
     language = document.get("language")
@@ -362,7 +391,7 @@ def _extract_document(document: DocumentRef, output: Path, source: Source, backe
                     raise
                 escalations.append({"model": stage.model, "problems": {"call_failed": 1}})
                 continue
-            merged = merge_document(document, parts, stage)
+            merged = merge_document(document, parts, stage, sent_texts)
             problems = transcription_problems(merged, sent_texts, document.tabular_pages)
             if not problems or number == len(stages):
                 break
@@ -371,6 +400,9 @@ def _extract_document(document: DocumentRef, output: Path, source: Source, backe
         with STATE_LOCK:
             append_line(output / layout.LEDGER, _ledger_line(document, backend, "unreadable", str(exc)))
             stats.unreadable += 1
+        # Which line of this project decided the page could not be read. The ledger holds the
+        # document and the count; this holds the cause, said once per place it comes from.
+        journal.a_page_would_not_read(output, source.id, exc, "extract")
         return True
     except UsageLimitReached:
         with STATE_LOCK:
@@ -401,7 +433,7 @@ def _close_up_pass(document: DocumentRef, output: Path, source: Source, backend,
     current = _stored(output, document)
     before = len(current["unreadable"])
     try:
-        parts, _ = _call_backend(document, source, backend, close_ups=True)
+        parts, sent_texts = _call_backend(document, source, backend, close_ups=True)
     except UsageLimitReached:
         with STATE_LOCK:
             stats.stopped = "usage_limit"
@@ -411,7 +443,7 @@ def _close_up_pass(document: DocumentRef, output: Path, source: Source, backend,
         write_document(output / layout.EXTRACTED, document.file_sha256, current, first_reading=False)
         return True
 
-    second = merge_document(document, parts, backend)
+    second = merge_document(document, parts, backend, sent_texts)
     after = len(second["unreadable"])
     kept = second if after < before else current
     kept["provenance"]["close_up_pass"] = {
@@ -432,8 +464,13 @@ def _read_here(page: int | None, repeated: int | None) -> bool:
     return page is not None and page != repeated
 
 
-def merge_document(document: DocumentRef, parts: list, backend) -> dict:
-    """Join the calls of one document, mapping page numbers back to pages of the file."""
+def merge_document(document: DocumentRef, parts: list, backend, sent_texts: dict[int, str] | None = None) -> dict:
+    """Join the calls of one document, mapping page numbers back to pages of the file.
+
+    A page that went as text came from a file this program holds, so its text here is that file's
+    own, not a copy written out by a model. The model is told not to write those pages back at
+    all; where an older reading did, this is what decides between the two.
+    """
     merged = {name: None for name in HEADER_FIELDS}
     observations, sections, unreadable = [], [], []
     page_texts: dict[int, str] = {}
@@ -463,6 +500,9 @@ def merge_document(document: DocumentRef, parts: list, backend) -> dict:
             page = to_file_page.get(item["page"])
             if keep(page):
                 page_texts.setdefault(page, item["text"])
+        for position, ref in to_file_page.items():
+            if keep(ref) and (sent_texts or {}).get(ref) is not None:
+                page_texts[ref] = sent_texts[ref]
         for item in fields["unreadable"]:
             page = to_file_page.get(item["page"])
             if keep(page):
@@ -520,7 +560,7 @@ def load_extracted(extracted_dir: Path, file_sha256: str) -> dict | None:
         if no_space(broken):
             raise NoSpace() from broken
         raise Unreadable(
-            f"{layout.EXTRACTED}/{path.name}",
+            where(path),
             "Every other document is whole, and so is everything a person typed themselves: this is "
             "one document's transcription and nothing else reads it.",
             f"Delete that one file and run '{CLI} extract' — it reads that one document again "
@@ -616,6 +656,13 @@ def done_keys(ledger: Path, classify_pages: list[dict], statuses: tuple[str, ...
         if entry.get("at") and any(classified_at.get((entry["file_sha256"], page), "") > entry["at"] for page in entry["pages"]):
             continue
         keys.add((entry["file_sha256"], tuple(entry["pages"]), entry["model"], entry["prompt_version"]))
+        # The ledger names the reader that read it, and where that was a ladder of two models it
+        # names both, joined: "small>expert". A document read by such a ladder has been read by
+        # its last model — the one this program now reads with on its own — so the line counts
+        # under that name too. Without this, dropping the quick first pass would have made every
+        # document already in the archive look unread, and the next run would have read four
+        # hundred of them again, with the costliest model, for nothing.
+        keys.add((entry["file_sha256"], tuple(entry["pages"]), entry["model"].split(">")[-1], entry["prompt_version"]))
     return keys
 
 

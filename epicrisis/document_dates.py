@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from epicrisis import layout
-from epicrisis.dates import birth_dates, read_printed_date, same_date
+from epicrisis.dates import DAY_FIRST, MONTH_FIRST, birth_dates, day_or_month_first, read_printed_date, same_date
 from epicrisis.extract.run import load_extracted
 
 DATE_FLAGS = {
@@ -41,7 +41,10 @@ def document_date(
     if correction:
         value = date.fromisoformat(correction["value"])
         printed = next((item for item in ((extracted or {}).get("date_of_study_as_printed"), (extracted or {}).get("date_of_report_as_printed"), *(page.get("date_on_page") for page in pages)) if item), None)
-        return {"value": value, "year": value.year, "label": value.strftime("%d.%m.%Y"), "printed": printed, "flags": [], "by_hand": True}
+        # A person typing a date types a day, so the precision is the day and is said rather
+        # than left to be read back out of the label's punctuation.
+        return {"value": value, "year": value.year, "label": value.strftime("%d.%m.%Y"), "precision": "day",
+                "printed": printed, "flags": [], "by_hand": True}  # fmt: skip
     language = (extracted or {}).get("language") or pages[0].get("language")
     study = read_printed_date((extracted or {}).get("date_of_study_as_printed"), language, today)
     report = read_printed_date((extracted or {}).get("date_of_report_as_printed"), language, today)
@@ -94,6 +97,14 @@ def document_date(
         "value": chosen.value if chosen else None,
         "year": chosen.year if chosen else None,
         "label": _date_label(chosen),
+        # Whether the form printed a day, a month or a year, carried from the reading that knew
+        # it. The index used to read it back out of the label above by counting the full stops
+        # in it, so "which precision a date has" was settled twice — once by dates.py, which the
+        # page says it is printed in, and once by the shape of a strftime pattern three modules
+        # away. The two agree only while that pattern keeps two dots for a day and one for a
+        # month; printed "2019-05" or "May 2019", every month-precision date in the archive
+        # would have been indexed as a year, and no test anywhere would have said so.
+        "precision": chosen.precision if chosen else None,
         "printed": (chosen.printed if chosen else printed),
         "flags": [{"code": code, "label": DATE_FLAGS[code]} for code in flags],
         "by_hand": False,
@@ -109,8 +120,7 @@ def _date_label(printed_date) -> str | None:
 
 def _day_first_only(item) -> bool:
     """A numeric date whose first number is above 12, so it can only be day first."""
-    match = re.search(r"(?<!\d)(\d{1,2})\s*[./\-]\s*(\d{1,2})\s*[./\-]\s*\d{2,4}", item.printed or "")
-    return bool(match) and int(match.group(1)) > 12
+    return day_or_month_first(item.printed) == DAY_FIRST
 
 
 def _month_first_only(item) -> bool:
@@ -120,8 +130,7 @@ def _month_first_only(item) -> bool:
     how it writes dates, and the document's other date was still read the other way round,
     flagged as ambiguous, and then reported as a report dated before its own study.
     """
-    match = re.search(r"(?<!\d)(\d{1,2})\s*[./\-]\s*(\d{1,2})\s*[./\-]\s*\d{2,4}", item.printed or "")
-    return bool(match) and int(match.group(1)) <= 12 < int(match.group(2))
+    return day_or_month_first(item.printed) == MONTH_FIRST
 
 
 def provider_key(extracted: dict | None, pages: list[dict]) -> str | None:
@@ -131,10 +140,15 @@ def provider_key(extracted: dict | None, pages: list[dict]) -> str | None:
 
 
 def prints_day_first(extracted: dict | None, pages: list[dict]) -> bool:
-    """Whether a document prints a numeric date that can only be read day first."""
+    """Whether a document prints a numeric date that can only be read day first.
+
+    The printed text is asked directly. It used to be read into a date first and then have its
+    own text looked at again, which read every date of the archive twice and settled nothing:
+    what the reading gives back is the whole printed field, exactly as it came in.
+    """
     printed = [(extracted or {}).get("date_of_study_as_printed"), (extracted or {}).get("date_of_report_as_printed")]
     printed += [page.get("date_on_page") for page in pages]
-    return any(_day_first_only(read_printed_date(text)) for text in printed if text)
+    return any(day_or_month_first(text) == DAY_FIRST for text in printed if text)
 
 
 def day_first_evidence(documents) -> tuple[set[str], set[str]]:

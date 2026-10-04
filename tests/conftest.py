@@ -8,11 +8,39 @@ stays in that file.
 """
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from epicrisis.records import now
+
+# The day an illustration in these tests is dated, and the only place it is written down.
+#
+# It was 8 July 2019 until this was written, and that is the hour a sample was taken on a
+# Ukrainian laboratory form in the archive this program was built for. It had reached nine files
+# by then, which is the whole reason it is here: the fifth entry of the constitution says an
+# invented name is looked for in the archives before it is written down, and nobody looks in nine
+# places. 9 July 2011 was looked for in every live index — as a document's date, as a printed
+# date, in every page's text and in every value's snippet, in both number orders and in the month
+# names of all five languages — and is in none of them.
+#
+# How far that goes is worth knowing, because it is not far. The tests write down 154 distinct
+# days and the archives hold 736 documents over thirty-seven years, so 56 of those days already
+# coincide with a date printed somewhere, by chance and not by carelessness. A bare day with no
+# name, no institution and no value beside it names nobody, which is why those are left alone; a
+# check for dates in tools/nothing-of-yours.py would be 56 refusals nobody can clear. What is
+# worth keeping deliberate is this one — the day the example values of the archive are dated,
+# where a reader would take the coincidence for a copy of a real form.
+A_DAY_FOR_AN_ILLUSTRATION = date(2011, 7, 9)
+
+# The same day as the forms here print one: day first, with full stops.
+AS_A_FORM_PRINTS_IT = A_DAY_FOR_AN_ILLUSTRATION.strftime("%d.%m.%Y")
+
+# And the day a form prints as somebody's date of birth, which is never the date of a document.
+# Kept apart because an illustration of one is no use as an illustration of the other, and looked
+# for in the same way: 14 March 1961 is in no live index either.
+A_DAY_OF_BIRTH_FOR_AN_ILLUSTRATION = date(1961, 3, 14)
 
 
 @pytest.fixture

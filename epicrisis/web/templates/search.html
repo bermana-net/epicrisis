@@ -10,7 +10,7 @@
   {# When there is nothing to search, the empty state is the page: a search box over an archive
      that has not been read would only answer nothing, and the heading would be printed twice. #}
   {% if missing %}
-  {{ nothing("Search") }}
+  {{ nothing("Search", stage) }}
   {% else %}
 
   <section class="rule" style="padding-top: 16px;">
@@ -32,12 +32,20 @@
      indicators gather the spellings of one test across laboratories and languages, and this page
      was the one that never asked them — so a word typed in Russian found nothing on a form printed
      in English, though the archive knew perfectly well they were the same test. #}
+  {# And where no name of any language holds the words, the everyday word for a test: "sugar" is
+     printed on no form anywhere, and the person who typed it was told the archive held nothing
+     over forty-four values of Glucose. A row found that way says so, in those words, beside
+     itself — the page does not let a reader believe they typed the printed name. #}
   {% if tests %}
+  {% set by_a_word_people_use = tests | selectattr("said") | list %}
   <section class="card-section">
-    <h2>Test{{ "s" if tests | length != 1 }} of this archive by that name</h2>
+    <h2>Test{{ "s" if tests | length != 1 }} of this archive {{ "this word leads to" if by_a_word_people_use else "by that name" }}</h2>
+    {% if by_a_word_people_use %}
+    <p class="caps muted">Nothing here is printed <span class="mono">{{ query }}</span>. That is an everyday word for the test{{ "s" if by_a_word_people_use | length != 1 }} below, from a small list this program ships; the laboratories print the names beside each one. Nothing was read, computed or asked of a model to say so.</p>
+    {% endif %}
     <div class="name-hits">
       {% for item in tests %}
-      <a class="name-hit" href="/tests/{{ item.id }}"><b>{{ item.label }}</b><span class="caps muted">printed as {{ item.names | join(", ") }}</span></a>
+      <a class="name-hit" href="/tests/{{ item.id }}"><b>{{ item.label }}</b><span class="caps muted">{% if item.said %}&ldquo;{{ item.said }}&rdquo; &rarr; {% endif %}printed as {{ item.names | join(", ") }}</span></a>
       {% endfor %}
     </div>
   </section>
@@ -61,8 +69,8 @@
       <a class="feed-row wide" href="{{ item.card_url }}">
         <span class="mono when">{{ item.date or "–" }}</span>
         <span class="what">
-          <b>{{ item.title or item.doc_type }}</b>
-          <span class="caps muted">{{ item.doc_type }}{% if item.provider %} &middot; {{ item.provider }}{% endif %} &middot; {{ item.file_id }}</span>
+          <b>{{ item.title or (item.doc_type | in_words) }}</b>
+          <span class="caps muted">{{ item.doc_type | in_words }}{% if item.provider %} &middot; {{ item.provider }}{% endif %} &middot; {{ item.file_id }}</span>
           {% if item.snippet %}<span class="snippet">{{ item.snippet }}</span>{% endif %}
         </span>
       </a>
@@ -82,8 +90,12 @@
       <p class="caps">
         <a class="btn" href="/?view=indicators">The {{ tests_in_all }} tests this archive has</a>
         <a class="btn" href="/indicators">Every printed name, grouped</a>
-        {% if stage().state == "ready" %}<a class="btn" href="/ask">Ask for it in your own words</a>{% endif %}
+        {% if stage.state == "ready" %}<a class="btn" href="/ask">Ask for it in your own words</a>{% endif %}
       </p>
+      {% elif tests | selectattr("said") | list %}
+      {# Found by an everyday word, so "what is above does" would be untrue: nothing above holds
+         the word either. What is above is the test the word stands for, and the page says that. #}
+      <p class="empty">No document of this archive holds that among the words printed on it, and no test is named that in any of its languages &mdash; but the test above is the one that word stands for. Open it to see its values as they were printed.</p>
       {% else %}
       <p class="empty">No document of this archive holds that among the words printed on it &mdash; but what is above does: open a test to see its values, or a printed name to see where it stands.</p>
       {% endif %}

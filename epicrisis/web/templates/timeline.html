@@ -15,9 +15,9 @@
 {%- set base = {"view": "" if view == "feed" else view, "year": year or "", "doc_type": doc_type,
                 "material": material, "paperwork": "1" if paperwork else "",
                 "undated": "1" if undated else "", "all_tests": "1" if all_tests else "",
-                "test": test, "skip": ""} -%}
+                "test": test, "skip": "", "cut": cut, "doctor": doctor, "provider": provider} -%}
 {%- set parts = [] -%}
-{%- for key in ["view", "year", "doc_type", "material", "test", "paperwork", "undated", "all_tests", "skip"] -%}
+{%- for key in ["view", "cut", "year", "doc_type", "material", "test", "doctor", "provider", "paperwork", "undated", "all_tests", "skip"] -%}
 {%- set value = over[key] if key in over else base[key] -%}
 {%- if value %}{% set _ = parts.append(key ~ "=" ~ (value | string | urlencode)) %}{% endif -%}
 {%- endfor -%}
@@ -25,32 +25,171 @@
 {%- endmacro -%}
 
 {% if missing %}
-  {{ nothing("Timeline") }}
+  {{ nothing("Timeline", stage) }}
   {% else %}
 
   <section class="rule" style="padding-top: 16px;">
     <div class="timeline-head">
       <h1>Timeline</h1>
-      <p class="caps muted">{{ overview.documents }} document{{ "s" if overview.documents != 1 }} &middot; {{ overview.first_date }} – {{ overview.last_date }}<br>by the date printed in the document</p>
+      {# Of the documents this page draws, not of the archive. See `shown` in app.py: the archive's
+         own count and span stood here whatever was in force, and a cut to one laboratory read "41
+         documents · 2013-03-06 – 2025-09-21" over ten documents of three other years. Where the
+         two differ the archive's own numbers are said too, in the line under this one: a heading
+         that quietly follows a filter is a second way to be wrong about the same thing. #}
+      {% set other_count = shown.documents != overview.documents %}
+      {% set other_span = shown.first_date != overview.first_date or shown.last_date != overview.last_date %}
+      <p class="caps muted">{{ shown.documents }} document{{ "s" if shown.documents != 1 }}{% if shown.first_date %} &middot; {{ shown.first_date }} – {{ shown.last_date }}{% endif %}<br>{% if shown.first_date %}by the date printed in the document{% else %}none of these carries a date at all{% endif %}{% if other_count or other_span %} &middot; this archive holds {{ overview.documents }} in all{% if other_span %}, {{ overview.first_date }} – {{ overview.last_date }}{% endif %}{% endif %}</p>
     </div>
     {% include "_searchline.html" %}
     <nav class="views caps" aria-label="Views">
       {% for key, label, hint in [("feed", "By year", "the strip of years, and the documents under it"), ("lanes", "By type", "what kind of care, and when"), ("indicators", "By test", "when each test was taken, and its last value")] %}
-      <a href="{{ filters({"view": key}) }}"{% if view == key %} aria-current="page"{% endif %} title="{{ hint }}">{{ label }}</a>
+      <a href="{{ filters({"view": key, "cut": "", "doctor": "", "provider": ""}) }}"{% if view == key and not cut %} aria-current="page"{% endif %} title="{{ hint }}">{{ label }}</a>
+      {% endfor %}
+      {# Two more cuts of the same documents, and each of them lands on the feed: these narrow the
+         list of documents, and the two views beside it apply no name at all, so a cut taken while
+         standing in one of them would have announced a narrowing nothing performs. What is inside
+         a cut is one choice — all of them, or one of them — and it is made in the control below. #}
+      {% for kind, label, names, chosen in [("doctor", "By doctor", doctors, doctor), ("institution", "By institution", institutions, provider)] %}
+      {% if names %}
+      {# One name is a cut and reads as none. "1 name on these documents: all of them, or one of
+         them" said the same thing twice, over a box holding one real option, and an archive with
+         one polyclinic in it is an ordinary archive rather than a corner. The cut does something
+         there — every document of the archive, against only the documents that carry that name,
+         which are not the same set unless every document names it — so the tab stays live and the
+         line says what the two sides actually are. #}
+      <a href="{{ filters({"view": "", "cut": kind}) }}"{% if cut == kind %} aria-current="page"{% endif %} title="{% if names | length == 1 %}1 name on these documents: every document, or only the ones that name it{% else %}{{ names | length }} names on these documents: all of them, or one of them{% endif %}">{{ label }}</a>
+      {% else %}
+      {# Present and inactive, never absent. An archive where no form names the one or the other is
+         ordinary: in the archive this was asked for, not one document names an institution, and a
+         folder of laboratory printouts is the other way round — every page carrying the laboratory
+         and none of them the person who signed. A cut that disappears in that case reads as the
+         interface breaking rather than as the archive being quiet about it. #}
+      <span aria-disabled="true" title="Nothing to choose from in this archive">{{ label }}</span>
+      {% endif %}
       {% endfor %}
     </nav>
+    {% if not doctors or not institutions %}
+    <p class="caps muted nothing-to-cut">No document of this archive names
+      {%- if not doctors and not institutions %} a doctor or an institution{% elif not doctors %} a doctor{% else %} an institution{% endif %}, so
+      {{ "those cuts are" if not doctors and not institutions else "that cut is" }} waiting for one.</p>
+    {% endif %}
   </section>
+
+  {# All of them or one of them, posted as the address it stands for, so that every state of the cut
+     is a page a person can keep: "/?cut=doctor" is all of them and the one they come back to. A
+     select rather than a row of links because an archive of twenty years names dozens of doctors,
+     and the row would have been longer than the documents under it. #}
+  {# One section for every cut that has something to choose inside it, and never two of them on one
+     page: the box carries id="whose" and the script below finds it by that name, so a second
+     section would put the same id twice in the document and leave the script driving whichever of
+     them the browser handed back first. Which cut owns the box is settled here, before it is drawn.
+
+     By type had no box at all. It broke the documents into types, drew them all, and the only way
+     to a single one was to press a type tab in the By year view and come back; the only way out of
+     one was a line of prose under the tabs. Three cuts of the same documents, two of them with a
+     control and one without — which is what the owner asked to have made coherent. #}
+  {% set chooser = none %}
+  {% if cut == "doctor" and doctors %}
+  {% set chooser = {"field": "doctor", "caption": "Doctor", "chosen": doctor,
+                    "offer": doctors | map(attribute="name") | list,
+                    "out": "/who?kind=doctor", "out_text": "Spellings"} %}
+  {% elif cut == "institution" and institutions %}
+  {% set chooser = {"field": "provider", "caption": "Institution", "chosen": provider,
+                    "offer": institutions | map(attribute="name") | list,
+                    "out": "/who?kind=institution", "out_text": "Spellings"} %}
+  {% elif view == "lanes" and overview.types %}
+  {# Every type the archive holds, busiest first, which is the order the index counted them in. Not
+     only the types that have a lane here: this view draws documents that carry a date, and in the
+     test archive the insurance letter carries none, so a list made of the lanes would have hidden a
+     type the archive has. What a type with nothing to draw looks like is said under the axis, in
+     the words the feed uses for an address nothing answers. #}
+  {# `worded`: the lines of this box are kinds of document, so each one is shown in words while the
+     value posted back stays the name the index stores. The two cuts beside it carry a person's or
+     an institution's name and are not worded — a name is printed as the form printed it, and a
+     clinic that happens to be called "Other" is still called that here. #}
+  {% set chooser = {"field": "doc_type", "caption": "Type", "chosen": doc_type, "worded": true,
+                    "offer": overview.types | list,
+                    "out": filters({"view": "", "cut": ""}), "out_text": "The documents"} %}
+  {% endif %}
+  {% if chooser %}
+  <section class="card-section cut-chooser">
+    <form method="get" action="/" aria-label="{{ chooser.caption }}">
+      {# Where the box belongs to the view rather than to a cut by a name, the view has to be said,
+         or choosing a type would drop a person into the feed. The cuts by a name are the other way
+         round and carry no view at all: a name is applied to a list of documents and to nothing
+         else, so their box lands on the feed, which is where it does something. #}
+      {% if chooser.field == "doc_type" %}<input type="hidden" name="view" value="lanes">{% endif %}
+      {% if cut %}<input type="hidden" name="cut" value="{{ cut }}">{% endif %}
+      {# What a person already chose, carried by hand: a GET form sends its own fields and nothing
+         else, and a year or a type dropped on the way would be a filter that vanished silently.
+         All but the one this box is for, which it sends itself. #}
+      {% if year %}<input type="hidden" name="year" value="{{ year }}">{% endif %}
+      {% if doc_type and chooser.field != "doc_type" %}<input type="hidden" name="doc_type" value="{{ doc_type }}">{% endif %}
+      {% if paperwork %}<input type="hidden" name="paperwork" value="1">{% endif %}
+      {% if provider and chooser.field != "provider" %}<input type="hidden" name="provider" value="{{ provider }}">{% endif %}
+      {% if doctor and chooser.field != "doctor" %}<input type="hidden" name="doctor" value="{{ doctor }}">{% endif %}
+      {# No caption over the box. The tab above it already says "by doctor", and a word repeating it
+         put two lines where there is one choice — the owner read them as a label and a control that
+         had come apart. The box names itself: its first line is "All of them". #}
+      <label class="visually-hidden" for="whose">{{ chooser.caption }}</label>
+      {# One line per group a person joined, under the label they chose for it, and one per name
+         nobody joined. Spellings are not offered separately here: the forms write one doctor five
+         ways, and five lines of one person is a list nobody can read.
+
+         The busiest name stands first, and none of them carries a number. A number here would be
+         of the whole archive, while the list under it is of the year and the type a person already
+         chose and leaves the paperwork out: that is the defect the row of type tabs had, where
+         every tab promised what another year held. The Doctors and clinics page counts them, in
+         one set and saying so, and this links to it.
+
+         The same holds for the types, and it is measurable: the By type view draws only documents
+         that carry a date, so a line reading "insurance 1" would promise the letter in the test
+         archive and then draw an empty axis, while the lane counts at the end of each row are of
+         the very points beside them. #}
+      <select id="whose" name="{{ chooser.field }}">
+        <option value=""{% if not chooser.chosen %} selected{% endif %}>All of them</option>
+        {% for one in chooser.offer %}
+        <option value="{{ one }}"{% if one == chooser.chosen %} selected{% endif %}>{{ (one | in_words) if chooser.worded else one }}</option>
+        {% endfor %}
+      </select>
+      {# Kept for anyone without the script below, which submits the moment a name is chosen.
+         Choosing is the whole act; pressing a button after it is a second one. #}
+      <button class="btn small" id="whose-go" type="submit">Show</button>
+    </form>
+    {# Not a third thing to choose, so it stands at the other end of the row: one doctor is written
+       five ways by five forms, and this is where those are made one name. It was called "join
+       spellings", which reads as an instruction to the reader rather than as a place — the page it
+       opens is the one with the spellings on it. Under By type it leads to the same documents as a
+       list, carrying the chosen type: this view draws them as dots on a line and says how many, and
+       a person who wants to know which ones they are has nowhere else to go. #}
+    <a class="caps quiet-link" href="{{ chooser.out }}">{{ chooser.out_text }} &rarr;</a>
+  </section>
+  <script>
+    // The same two lines the archive picker in the bar has, and for the same reason: choosing a
+    // name is the whole act, and a button to press afterwards is a second one. The button stays
+    // in the page for anyone without this script and steps aside when it runs.
+    (() => {
+      const pick = document.getElementById("whose");
+      const go = document.getElementById("whose-go");
+      if (pick && go) {
+        go.hidden = true;
+        pick.addEventListener("change", () => pick.form.submit());
+      }
+    })();
+  </script>
+  {% endif %}
 
   {# What is narrowing this page, in the views that have no row of tabs to show it on. A type and a
      year are carried from view to view on purpose — a person moving between them keeps what they
      chose — and in these two views nothing said so and nothing could take it off again. #}
-  {% if view == "lanes" and (doc_type or year) %}
+  {% if view == "lanes" and year %}
+  {# The year only. The type was named here too, with a link to drop it, until the box above took
+     that choice: the box stands on the chosen type and its first line is the way back to all of
+     them, so the line was saying the same thing a second time and offering a second place to undo
+     it — the two-controls-for-one-choice the cuts by a name were built to avoid. The year keeps its
+     line because this view has no control for it: the strip of years belongs to By year. #}
   <section class="card-section" style="padding-top: 0;">
-    <p class="caps chosen-year">
-      {% if doc_type %}{{ doc_type }} only &middot; <a href="{{ filters({"doc_type": ""}) }}">every type</a>{% endif %}
-      {% if doc_type and year %} &middot; {% endif %}
-      {% if year %}{{ year }} &middot; <a href="{{ filters({"year": ""}) }}">every year</a>{% endif %}
-    </p>
+    <p class="caps chosen-year">{{ year }} &middot; <a href="{{ filters({"year": ""}) }}">every year</a></p>
   </section>
   {% elif view == "indicators" and (doc_type or year) %}
   {# Said, not claimed. A type and a year are carried from view to view on purpose, and this view
@@ -74,7 +213,7 @@
       <a href="{{ filters({"doc_type": "", "paperwork": ""}) }}"{% if not doc_type and not paperwork %} aria-current="page"{% endif %}>Records <span class="muted">{{ records_count }}</span></a>
       {# Counted with the year in force, not over the whole archive: see type_counts in app.py. #}
       {% for name, count in (type_counts or overview.types).items() %}
-      <a href="{{ filters({"doc_type": name, "paperwork": ""}) }}"{% if doc_type == name %} aria-current="page"{% endif %}>{{ name }} <span class="muted">{{ count }}</span></a>
+      <a href="{{ filters({"doc_type": name, "paperwork": ""}) }}"{% if doc_type == name %} aria-current="page"{% endif %}>{{ name | in_words }} <span class="muted">{{ count }}</span></a>
       {% endfor %}
       {% if paperwork_count %}
       <a href="{{ filters({"doc_type": "", "paperwork": "1"}) }}"{% if paperwork and not doc_type %} aria-current="page"{% endif %} title="Appointment slips, insurance letters and the like: kept, but they hold no results. This adds them to the records rather than showing them on their own.">with the paperwork <span class="muted">+{{ paperwork_count }}</span></a>
@@ -82,13 +221,24 @@
     </div>
   </section>
   {% set top = (years | map(attribute="documents") | max) if years else 1 %}
+  {# Two digits where two digits cannot be read two ways, and four where they can.
+     Four digits everywhere was the old rule, so that "89" beside "01" could not be taken for 2089.
+     The slot is 18 pixels wide and a four-digit label at this size is nearly twenty-two, so on an
+     archive that reaches back before 2000 the early labels ran into one another — reported from a
+     phone, where that strip is how a person moves about the years at all. The ambiguity the old
+     rule guarded against needs the archive to span a hundred years before it can happen: within
+     one century each year has a two-digit label of its own, and the order of the strip, the title
+     on each bar and the year printed in full underneath all say which is which. So the rule is now
+     the condition rather than the fear, and an archive that really does span a hundred years gets
+     four digits and a wider slot, which it then needs. #}
+  {% set reach = (years | map(attribute="year") | max) - (years | map(attribute="year") | min) if years else 0 %}
   <section class="card-section">
-    <div class="yearstrip" role="list">
+    <div class="yearstrip{% if reach >= 100 %} by-the-century{% endif %}" role="list">
       {% for item in years %}
       <a class="year{% if year == item.year %} chosen{% endif %}" role="listitem" href="{{ filters({"year": "" if year == item.year else item.year}) }}" title="{{ item.documents }} documents in {{ item.year }}">
         <span class="count caps">{{ item.documents }}</span>
         <span class="bar" style="height: {{ (6 + 128 * item.documents / top) | round | int }}px"></span>
-        <span class="label caps">{{ "%02d" | format(item.year % 100) if item.year >= 2000 else item.year }}</span>
+        <span class="label caps">{{ item.year if reach >= 100 else "%02d" | format(item.year % 100) }}</span>
       </a>
       {% endfor %}
     </div>
@@ -108,16 +258,16 @@
       {% endif %}
       <a class="feed-row" href="{{ item.card_url }}">
         <span class="mono when">{{ item.date[5:] if item.date else "–" }}</span>
-        <span class="what"><b>{{ item.title or item.doc_type }}</b><span class="caps muted">{{ item.doc_type }}{% if item.provider %} &middot; {{ item.provider }}{% endif %}{% if not item.transcribed %} &middot; <span class="signal">not transcribed</span>{% endif %}</span></span>
+        <span class="what"><b>{{ item.title or (item.doc_type | in_words) }}</b><span class="caps muted">{{ item.doc_type | in_words }}{% if item.provider %} &middot; {{ item.provider }}{% endif %}{% if not item.transcribed %} &middot; <span class="signal">not transcribed</span>{% endif %}</span></span>
         <span class="caps muted how-many">{% if item.value_count %}{{ item.value_count }} value{{ "s" if item.value_count != 1 }} &middot; {% endif %}p. {{ item.pages | join(", ") }}</span>
         <span class="mono file-id-plain">{{ item.file_id }}</span>
       </a>
       {% else %}
       {# An empty page reached through the address is not an empty archive, and a person who typed
          a year or a kind deserves to be told which of the two this is. #}
-      {% if year or doc_type or undated or skip %}
-      <p class="empty">Nothing in this archive answers that address{% if doc_type %}: no documents of the kind <span class="mono">{{ doc_type }}</span>{% if year %} dated {{ year }}{% endif %}{% elif year %}: no documents dated {{ year }}{% elif skip %}: the page asked for is past the end of the list{% endif %}. Nothing was looked for beyond that, so this says nothing about what the archive holds.</p>
-      <p><a class="btn" href="{{ filters({"year": "", "doc_type": "", "undated": "", "skip": ""}) }}">The whole timeline</a></p>
+      {% if year or doc_type or undated or skip or doctor or provider %}
+      <p class="empty">Nothing in this archive answers that address{% if doctor or provider %}: no documents under the name <span class="mono">{{ doctor or provider }}</span>{% if year %} dated {{ year }}{% endif %}{% elif doc_type %}: no documents of the kind <span class="mono">{{ doc_type | in_words }}</span>{% if year %} dated {{ year }}{% endif %}{% elif year %}: no documents dated {{ year }}{% elif skip %}: the page asked for is past the end of the list{% endif %}. Nothing was looked for beyond that, so this says nothing about what the archive holds.</p>
+      <p><a class="btn" href="{{ filters({"year": "", "doc_type": "", "undated": "", "skip": "", "doctor": "", "provider": ""}) }}">The whole timeline</a></p>
       {% else %}
       <p class="empty">Nothing here.</p>
       {% endif %}
@@ -126,7 +276,7 @@
     <div class="feed-foot">
       {# What the number counts, because three counts stood on this page and each was of a
          different set: the archive, the records, and the records with the paperwork added. #}
-      <span class="caps muted">Showing {{ documents | length }} of {{ total }} {% if undated %}documents with no date{% elif doc_type %}{{ doc_type }}{% elif paperwork %}records and paperwork{% else %}records{% endif %}{% if year and not undated %} in {{ year }}{% endif %}</span>
+      <span class="caps muted">Showing {{ documents | length }} of {{ total }} {% if undated %}documents with no date{% elif doc_type %}{{ doc_type | in_words }}{% elif paperwork %}records and paperwork{% else %}records{% endif %}{% if year and not undated %} in {{ year }}{% endif %}{% if doctor or provider %} under {{ doctor or provider }}{% endif %}</span>
       <span class="feed-more">
         {% if skip %}<a class="caps" href="{{ filters({"skip": [skip - 120, 0] | max}) }}">&larr; earlier page</a>{% endif %}
         {% if skip + (documents | length) < total %}<a class="caps" href="{{ filters({"skip": skip + 120}) }}">next 120 &rarr;</a>{% endif %}
@@ -153,10 +303,10 @@
       </div>
       {% for lane in lanes %}
       <div class="lane">
-        <span class="name">{{ lane.doc_type }}</span>
+        <span class="name">{{ lane.doc_type | in_words }}</span>
         <span class="track">
           {% for item in lane.documents %}
-          <a class="dot" style="left: {{ ((item.date[:4] | int) - first + ((item.date[5:7] | int) - 1) / 12) / (last - first) * 100 }}%" href="/documents/{{ item.source_id }}/{{ item.file_sha256 }}/{{ item.first_page }}" title="{{ item.date }} · {{ item.title or item.doc_type }}"></a>
+          <a class="dot" style="left: {{ ((item.date[:4] | int) - first + ((item.date[5:7] | int) - 1) / 12) / (last - first) * 100 }}%" href="/documents/{{ item.source_id }}/{{ item.file_sha256 }}/{{ item.first_page }}" title="{{ item.date }} · {{ item.title or (item.doc_type | in_words) }}"></a>
           {% endfor %}
         </span>
         <span class="mono count">{{ lane.count }}</span>
@@ -168,7 +318,7 @@
          holds nothing in that year — the tabs promised otherwise until the counts above were
          narrowed by the year too — and then this view. #}
       {% if year or doc_type %}
-      <p class="empty">Nothing in this archive answers that address{% if doc_type %}: no documents of the kind <span class="mono">{{ doc_type }}</span>{% if year %} dated {{ year }}{% endif %}{% elif year %}: no documents dated {{ year }}{% endif %}. Nothing was looked for beyond that, so this says nothing about what the archive holds.</p>
+      <p class="empty">Nothing in this archive answers that address{% if doc_type %}: no documents of the kind <span class="mono">{{ doc_type | in_words }}</span>{% if year %} dated {{ year }}{% endif %}{% elif year %}: no documents dated {{ year }}{% endif %}. Nothing was looked for beyond that, so this says nothing about what the archive holds.</p>
       <p><a class="btn" href="{{ filters({"view": "lanes", "year": "", "doc_type": ""}) }}">The whole timeline</a></p>
       {% else %}
       <p class="empty">Nothing here.</p>
@@ -199,6 +349,13 @@
         {% if test %}<a class="caps" href="{{ filters({"view": "indicators", "test": ""}) }}">every test</a>{% endif %}
       </form>
     </div>
+    {% if said_instead %}
+    {# Answered by the word people use rather than by a printed name. This box is where the search
+       page sends somebody who found nothing, so a dead end here was the end of the road: "sugar"
+       led nowhere over an archive holding forty-four values of Glucose. The page says which word
+       it answered by rather than let a reader believe they typed a printed one. #}
+    <p class="caps muted">No test here is named <span class="mono">{{ said_instead }}</span> in any of its spellings. That is an everyday word for the test{{ "s" if series_total != 1 }} below, from a small list this program ships with. Nothing was read and no model was asked to say so.</p>
+    {% endif %}
     <div class="lanes">
       <div class="lane head">
         <span class="caps muted">Test</span>

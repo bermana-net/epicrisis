@@ -20,8 +20,13 @@
   {% if settings_unreadable %}<div class="notice caps"><span class="alert">data/settings.json is there and cannot be read, so nothing below was read from it: every switch on this page is showing its default, and the lock on the network is showing as on because it closes rather than opens when this file cannot be read. Nothing has been changed, and nothing can be saved until the file is repaired or moved aside.</span></div>{% endif %}
   {# What was stored, not only that something was. One press of Save can store an engine, three
      models, an answer mode, nineteen switches, their thresholds and the lock at once, and a bare
-     "Saved." over a switch still waiting to be confirmed said two opposite things at once. #}
-  {% if saved %}<p class="caps signal">{% if stored %}Saved: {{ stored }}.{% else %}Saved. Nothing on the page was different from what was already stored.{% endif %}</p>{% endif %}
+     "Saved." over a switch still waiting to be confirmed said two opposite things at once.
+
+     And "nothing was different" is said only where nothing was refused either. A press carrying
+     a threshold this program cannot read stored nothing and had a reason, written above — and
+     this line said "Saved. Nothing on the page was different from what was already stored" over
+     that reason, which is a page saying two things that cannot both be true. #}
+  {% if saved %}<p class="caps signal">{% if stored %}Saved: {{ stored }}.{% elif trouble %}Nothing was stored: the reason is above, and the page is as it was.{% else %}Saved. Nothing on the page was different from what was already stored.{% endif %}</p>{% endif %}
   {% if trying %}<p class="caps muted">Nothing was saved: trying a threshold only measures it. What is on the page is what you sent, and pressing Save is what stores it.</p>{% endif %}
 
   {# A form of its own, outside the settings form: a rule is written, not saved with everything

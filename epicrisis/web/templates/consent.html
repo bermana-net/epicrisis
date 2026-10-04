@@ -47,6 +47,35 @@
       <dd>Nothing in money: the reading runs under your subscription. It stops at the usage limit and continues where it left off, so a large archive is read over several runs rather than in one.</dd>
       {% endif %}
 
+      {# Where "all of its text" and "the full image of a page" stop being enough: a person whose
+         one text file became two hundred and sixty-one pages cannot find out why anywhere in this
+         program, and "how many pages will be sent" is the number on this very page. One paragraph
+         per kind of file, written from what its reader actually does — epicrisis/readers/. #}
+      <dt class="caps">What a page is, for each kind of file</dt>
+      <dd>
+        <b>A PDF</b> has the pages whoever made it printed. Each of them goes one of two ways: a page
+        carrying enough text of its own goes as that text, and a page that is a photograph of paper
+        goes as an image. One file holds both kinds, and a text layer that comes out as nonsense
+        counts as none, so such a page goes as an image too.<br>
+        <b>A photograph or a scan</b> is one page per frame &mdash; one for an ordinary photograph,
+        several for a multi-page TIFF &mdash; and always goes as an image.<br>
+        <b>A Word document</b> goes as text, however long it is: a document has no pages until it is
+        printed. Every picture pasted inside it is a page of its own and goes as an image, because
+        in an archive like this a picture pasted into a letter is usually a photograph of a form. A
+        Word 97&ndash;2003 file is read from a .docx copy made on this server by LibreOffice.<br>
+        <b>A spreadsheet</b> is one page per sheet, sent as the rows of that sheet in plain text:
+        a model asked about a whole workbook at once answers about the wrong sheet. Pictures pasted
+        into it are pages of their own, as in a Word document.<br>
+        <b>A plain text file</b> has no pages at all, so this program makes them. It looks first for
+        the line a machine drew between documents &mdash; an export fences them with a row of signs
+        &mdash; and asks a model once which of the repeated lines of the file begins a document;
+        then every fence is a cut, counted and not guessed. What is left over longer than about five
+        thousand characters is cut again at line ends. So one such file became 257 documents and 261
+        pages here, and a page of it is a document rather than a slice of one.<br>
+        Anything else &mdash; a format this program does not read &mdash; is counted in the inventory,
+        named on the status page, and never sent anywhere.
+      </dd>
+
       <dt class="caps">Your control</dt>
       <dd>{% if engine != "anthropic-api" %}The model training setting for your account is at claude.ai/settings/data-privacy-controls. A change to it does not apply to data sent before the change. {% endif %}Nothing is sent before you confirm here. What you confirm is this one way of reaching a model, out of the archives named above &mdash; change the way, or add the archive of another person, and this page asks again. You can take it back here at any time, and then nothing is sent by this server at all: not by a page, not by a command, not by anything in a crontab.</dd>
     </dl>

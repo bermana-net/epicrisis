@@ -4,7 +4,9 @@ It shows counts and paths only, never document contents or values.
 """
 
 import json
+from collections.abc import Iterator
 from contextlib import closing, suppress
+from contextvars import ContextVar
 from functools import partial
 from itertools import count
 import os
@@ -12,10 +14,10 @@ import secrets
 import shutil
 import time
 from datetime import date, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode, urlsplit
 
-from fastapi import FastAPI, Form, Request
+from fastapi import Depends, FastAPI, Form, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -24,52 +26,64 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from epicrisis import invocation, layout
+from epicrisis import doc_types, invocation, layout
 from epicrisis.classify.backend import backend_installed
-from epicrisis.classify.pages import PageUnreadable, cannot_be_read, original_png, page_refs
+from epicrisis.classify.pages import PageUnreadable, original_png, page_refs
 from epicrisis.classify.report import latest_pages
 from epicrisis.classify.run import all_refs, is_running
 from epicrisis.extract.run import LOCK_NAME as EXTRACT_LOCK
 from epicrisis.extract.run import document_refs, done_keys
 from epicrisis.consent import has_consent, not_covered as consent_not_covered, record_consent, withdraw_consent
 from epicrisis.corrections import CORRECTABLE, line_key, set_document_date, set_primary_copy, set_value
-from epicrisis import indicators as indicator_store
 from epicrisis import judgements
+from epicrisis.index.build import FILE_NAME as THE_INDEX
 from epicrisis.index.build import index_path, index_state
-from epicrisis.indicator_check import load_checks
+from epicrisis import journal
 from epicrisis import mcp_access
 from epicrisis.mcp_lock import read_secret as read_lock_secret
 from epicrisis import engines
-from epicrisis.engines import set_engine
-from epicrisis.models import KNOWN_MODELS, PASSES, model_for
+from epicrisis import people
 from epicrisis import query as query_index
 from epicrisis import rules
-from epicrisis.rules import kinds, tally
+from epicrisis.rules import kinds
 from epicrisis import series
 from epicrisis.query import IndexMissing, open_index
 from epicrisis.state import NoSpace, Unreadable, no_space
-from epicrisis.printed_values import fold
 from epicrisis.inventory.report import Summary
 from epicrisis.records import read_records, torn_lines
-from epicrisis.runs import ABANDONED_AFTER_HOURS, Busy, holder
-from epicrisis.sources import Source, SourceError, SourceRegistry, source_output_dir
+from epicrisis.runs import Busy
+from epicrisis.sources import (NO_ARCHIVES, Source, SourceError, SourceRegistry, TheArchives,
+                               folder_is_there, source_output_dir)  # fmt: skip
 from epicrisis.web.browse import BrowseError, list_folder
 from epicrisis.web.markdown import render_markdown
 from epicrisis.ask import ask, carried_questions, delete_chat, list_chats, load_chat, new_chat
 from epicrisis.ask import running as chat_running
 from epicrisis.settings import unreadable as settings_unreadable
-from epicrisis.settings import (ANSWER_MODES, answer_mode, ask_enabled,
-                                mcp_lock_minutes, mcp_lock_on, mcp_lock_scope, rule_on,
-                                rule_settings, rules_on, set_answer_mode, set_ask_enabled,
-                                set_chosen_models, set_mcp_lock, set_mcp_lock_minutes,
-                                set_mcp_lock_scope, set_rule_on, set_rule_settings,
-                                set_trusts_read_materials,
-                                trusts_read_materials)  # fmt: skip
+from epicrisis.settings import answer_mode, ask_enabled, mcp_lock_on, rules_on
 from epicrisis.update import start_in_background as start_update
 from epicrisis.update import update_running
 from epicrisis.validate import validate_source, validation_state
 from epicrisis.web.building import Building
-from epicrisis.web.documents import document_card, reading_colour, review_view, source_documents
+from epicrisis.web.documents import (document_card, how_many_documents_to_check, nothing_read_yet,
+                                     one_scanned_page, reading_colour, review_view, said_in,
+                                     source_documents, the_scan_at)  # fmt: skip
+# The row of material tabs lives beside the page that first drew it — the By test view of the
+# timeline — and the page of one test draws the same row, so it is imported rather than written
+# twice. MATERIALS_TO_CHOOSE below is a different list and a different question: what somebody
+# may set by hand, not what there is anything to show for.
+from epicrisis.web.timeline import material_tabs, timeline_view
+# SETTINGS_TABS comes in with them because the sweep in test_the_wall_between_people.py reads it
+# off this module to know which tabs of that page it has to ask for.
+from epicrisis.web.settings_page import SETTINGS_TABS, settings_pressed, settings_view
+# Imported whole rather than by name: the four presses are called `joined`, `declined`,
+# `reconsidered` and `separated`, and those are words about doctors and clinics only where the
+# page they belong to is written beside them.
+from epicrisis.web import who
+from epicrisis.web.indicators_page import indicators_pressed, indicators_view
+from epicrisis.web.looks_misread import how_many_look_misread, what_looks_misread
+# Imported whole, as web/who.py is: `added`, `shown_instead` and `taken_off_the_list` are words
+# about the list of archives only where the module they stand in says so.
+from epicrisis.web import the_list_of_archives as the_list
 from epicrisis.web.jobs import CAN_BE_SAID, InventoryJobs
 from epicrisis.invocation import CLI
 
@@ -77,61 +91,251 @@ PIPELINE_STEPS = ["Inventory", "Classify", "Extract", "Validate", "Index"]
 # The earliest year a person may give a document by hand. Before this it is a typing slip rather
 # than a record, and the field on the card says so as they type as well as the server after.
 EARLIEST_YEAR = 1900
+# A date written out, shown on the page when what somebody typed cannot be read as one. The day
+# that stood here is printed on a Ukrainian laboratory form in the archive this was built for, as
+# the hour a sample was taken — and it has gone out with every release since the first. A bare day
+# with nothing beside it names nobody, so nothing was undone by it; it was simply a real day where
+# an invented one would do. This one is on no form in any archive here, and tests/conftest.py says
+# how that was checked and keeps the same day for the illustrations in the tests.
+A_DATE_WRITTEN_OUT = "2011-07-09"
 LOCAL_HOSTS = ["localhost", "127.0.0.1"]
 
+# Where the page about a file that will not read sends a person on, in the order the two help: the
+# status page is where somebody goes when something is wrong, and the timeline is the archive
+# itself. One of them is offered, and only one that answers.
+WAYS_ON = (("/status", "Archive status"), ("/", "The timeline"))
+# Which of those two is itself drawn out of which file of state, so that the button is never a
+# button back to the page a person is already standing on. This is measured and not reasoned:
+# test_trouble.py tears each of these files in a built archive and asks both pages, and it fails
+# if a line here is wrong in either direction — a door named shut that answers, or a door offered
+# that does not.
+#
+# A file named nowhere here is treated as shutting both, because the one thing this page may not
+# do is promise a way out that is not there: better no button and the sentence that says so.
+# Two of them torn at once is the limit of this table, and it is a limit worth writing down: a
+# refusal carries one file, so the door may lead to a second page about the second file — which
+# names that file and its own way out, rather than repeating the first.
+SHUT_WHILE_TORN = {
+    # Every page of this dashboard begins by asking which archives there are.
+    layout.SOURCES: ("/status", "/"),
+    # Both pages draw their switches and their badges at the defaults over a torn settings file,
+    # and say so in a line of their own rather than refusing.
+    layout.SETTINGS: (),
+    # The vocabulary is read by the page that shows it and by the timeline's cut by test, and the
+    # timeline answers without it on the cut it opens at.
+    layout.INDICATORS: (),
+    # The names a person joined are laid over the timeline's cuts by doctor and by institution.
+    layout.PEOPLE: ("/",),
+    # The findings of the checks: the status page counts them in a badge, the page of things to
+    # check is made of them.
+    layout.VALIDATION: ("/status",),
+    # One document's transcription, which the status page reaches through the count of documents
+    # still to transcribe.
+    layout.EXTRACTED: ("/status",),
+    # The index is what the timeline is drawn from; the status page says which step is broken
+    # instead of refusing as a whole.
+    THE_INDEX: ("/",),
+    # One conversation of the page that asks a model questions. Nothing else reads the chats, so
+    # both ways on answer — which is why it is here: a file named nowhere in this table is treated
+    # as shutting both, and a torn conversation would have been met with no door at all.
+    layout.CHATS: (),
+}
 
-# The four tabs of the settings page, in the order they stand in. First is where an address
-# that names no tab at all, or names one that is not here, arrives.
-SETTINGS_TABS = ("model", "reading", "rules", "network")
-# What each answer mode is called, for the line that says what one press of Save stored. The
-# banner named the setting and not the side — "Saved: what may be said about a value" for the
-# move into the one mode where this application compares a number with a printed range, and the
-# same words for the move back out of it. Its neighbours in that list all say which way they went.
-ANSWER_MODE_NAMES = {"as_printed": "as printed only", "with_meaning": "the values may also be read",
-                     "direct": "no limits set here"}  # fmt: skip
-# What the two filters of the indicator page offer. Nothing else is a filter.
-INDICATOR_STATUSES = ("all", "approved", "proposed")
-INDICATOR_VIEWS = ("all", "to_review", "disagreed")
 
-# The order the material tabs stand in, and the words on them. Blood leads because most of a
-# person's results are blood. What the form did not say comes last and stays its own answer: an
-# unmarked value is probably blood, and probably is not something this archive says out loud.
-MATERIAL_ORDER = ("blood", "urine", "stool", "semen", "swab", "csf", "saliva", "sputum",
-                  # Last, and not materials: the two reasons a value has none. See query.MATERIAL_KEY.
-                  "not_a_sample", "unknown")  # fmt: skip
+#: The numbering of ids inside the page being drawn. Set at the start of every request, so that one
+#: page is numbered from one however many threads draw pages beside it.
+_numbering: ContextVar[Iterator[int]] = ContextVar("numbering")
+
+
+def _an_id(prefix: str = "id") -> str:
+    """An id unique inside this page, numbered from one. Registered as the template global `an_id`.
+
+    A render outside a request — a template drawn straight from a test — gets a counter of its own
+    rather than a refusal: nothing here is worth failing a page over.
+    """
+    numbering = _numbering.get(None)
+    if numbering is None:
+        numbering = count(1)
+        _numbering.set(numbering)
+    return f"{prefix}-{next(numbering)}"
+
+
+def the_torn_file(named: str) -> str:
+    """A refusal's file, named as the table above names it.
+
+    A refusal carries the path a person can walk to — `sources/4f2a9c81/extracted/<sha>.json` —
+    and what settles which pages are down is the *kind* of file it is: one archive's reading of
+    one document, whatever its hash, and one archive's index, whose name carries the archive's
+    id. So a reading is looked up by the folder it sits in and an index by both ends of its name,
+    and everything that sits in the data directory as itself by that name.
+    """
+    parts = PurePosixPath(named).parts
+    if layout.EXTRACTED in parts:
+        return layout.EXTRACTED
+    # One conversation, whatever its random id, the way one transcription is looked up by its
+    # folder rather than by its hash.
+    if layout.CHATS in parts:
+        return layout.CHATS
+    name = parts[-1] if parts else named
+    # Asked of index_path rather than matched against a spelling written out here, so that the
+    # shape of an index's name stays decided in the one module that decides it.
+    one_archives = index_path(Path(), name.removeprefix("index-").removesuffix(Path(THE_INDEX).suffix)).name
+    if name in (THE_INDEX, one_archives):
+        return THE_INDEX
+    return name
+
+
+def a_way_on(broken: Unreadable) -> tuple[str, str] | None:
+    """The first way on this torn file does not take down, or nothing where it takes both.
+
+    The button used to be the status page for everything but sources.json, and the status page is
+    drawn out of three of these files: a torn validation.json, a torn transcription of one
+    document, answered 503 on the status page and offered a button to the status page. The one
+    class of defect this page exists for, on the page that exists for it.
+    """
+    shut = SHUT_WHILE_TORN.get(the_torn_file(broken.file), tuple(where for where, _ in WAYS_ON))
+    return next(((where, label) for where, label in WAYS_ON if where not in shut), None)
+
+
+# The four tabs of the patient card. Personal data leads because it is the shortest and
+# the steadiest of the four: a blood group does not change, and a person looking one up should not
+# have to pass every medication the archive prints to reach it. The settings page's own four are
+# in web/settings_page.py, beside what they draw.
+CARD_TABS = ("person", "medications", "diagnoses", "conflicts")
+
 # What a person may set by hand on one line, where the form's layout leaves it ambiguous: a
 # table with rows of two specimens, a panel headed for one thing and holding a section of
 # another. "none" is here too, for a measurement made on the person rather than in a sample.
 MATERIALS_TO_CHOOSE = ("blood", "urine", "stool", "semen", "swab", "csf", "saliva", "sputum", "none")
-# "Not said" was said of both of these, and they are not the same thing at all: one is an answer
-# about a measurement made on a person, the other is a lab value whose label is missing and which
-# somebody can still supply.
-MATERIAL_LABELS = {"not_a_sample": "Not a sample", "unknown": "Material unknown"}
 
 
-def material_tabs(counted: dict[str, int]) -> list[dict]:
-    """One tab per material there is anything to show for, in that order, with its count."""
-    return [
-        {"key": key, "label": MATERIAL_LABELS.get(key, key), "count": counted[key]}
-        for key in (*MATERIAL_ORDER, *sorted(set(counted) - set(MATERIAL_ORDER)))
-        if key in counted
-    ]  # fmt: skip
+def _the_open_archive(archives: TheArchives, source_id: str) -> Source | None:
+    """The archive named in an address, but only while it is the one that is open.
+
+    A document, its scan and the corrections on it are content, and every page that shows
+    them carries one person's name at the top. Addressed from under another archive they
+    answer as though they do not exist, which is the same rule the chats follow. The status
+    page is the exception it makes itself: it lists every archive, and renaming, rescanning
+    or taking one off the list are acts on the list rather than on anybody's records.
+
+    Both halves are still here and both are still asked. The archive comes out of the
+    address, which is what makes this a door and not a guess, and it is checked against the
+    archive that is open — the one reading this request was decided by, handed in rather than
+    fetched. What is *not* allowed is to take the archive from the request and write to it:
+    switch the archive between the drawing of a page and a press on it and the press must be
+    refused, with the reason said, which is what every caller of this does.
+
+    It stands here, outside `create_app`, and not because anything in it needed to: it closed
+    over nothing. It is here so that it can be handed to the presses that have moved beside
+    their own page — `web/who.py` is given this very function — and so that a test can be
+    given the same one. A door answered in a second place is a door answered two ways, which
+    is the whole history of the four doors ARCHITECTURE.md names.
+    """
+    return archives.get(source_id) if archives.showing_id == source_id else None
 
 
 def create_app(
     data_dir: Path, allowed_hosts: list[str] | None = None, background_jobs: bool = True
 ) -> FastAPI:
     registry = SourceRegistry(data_dir)
+    # Anybody who ran the version of one day has a people.json beside the instance rather than
+    # inside an archive, and it holds work nothing else makes again. Carried in here rather than
+    # read from where it is, because reading it from there is how one person saw another's doctors.
+    #
+    # What it carried is written down. The answer used to be thrown away — the call stood here
+    # with nothing on the left of it — and no page, no command and no line of the README said a
+    # word about the move, so a group carried nowhere waited in that file with nothing on the
+    # machine saying so. The archive status page says what is still waiting; this says what moved.
+    carried_in = people.carry_the_old_file_in(registry.data_dir)
+    if carried_in:
+        journal.record(registry.data_dir, {"event": "the old people.json was carried into the archives",
+                                           "archives": len(carried_in),
+                                           "names": sum(carried_in.values())})  # fmt: skip
     jobs = InventoryJobs(registry.data_dir, background=background_jobs)
     # What a person corrects reaches the chart, the search and the tools only once the index is
     # built again. See building.py: it happens by itself, behind the page, and every page says so
     # while it has not happened yet.
     building = Building(registry.data_dir, registry, background=background_jobs)
-    templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+
+    def the_archives_of(request: Request) -> TheArchives:
+        """Which archive this request is about: decided once, at the top, and handed on as a value.
+
+        Every route that is about somebody's records declares this in its signature, as
+        `Depends(the_archives_of)`, so it arrives as an argument rather than being fetched from
+        the middle of a handler. That is the whole of the change, and the reason is not the cost.
+
+        Three closures used to answer this question — the open archive of an address, the open
+        archive as a list, the id of the open archive — and because they were free variables
+        inside `create_app` they could not be forgotten and could not be passed either: there was
+        nothing to pass, they were already everywhere. So a page asked twice and got two answers
+        on either side of a switch, a press wrote into whichever archive happened to be open when
+        it landed rather than the one the page was drawn from, and four forms of the page of
+        doctors and clinics took the archive out of the air instead of out of the address. Each of
+        those was found and mended one at a time. The next route would have made the same mistake,
+        because the shape of the file invited it.
+
+        A value cannot be re-asked. Whoever holds it is holding the archive this request is about;
+        whoever needs it has to be given it, which is what the signatures below now say.
+
+        Kept on the request as well as returned, because two things that draw a page have no
+        dependencies to declare: the shell every page is drawn in, and the handlers that answer a
+        fault with a page. Both of them ask this same function, and get the same reading.
+        """
+        held = getattr(request.state, "archives", None)
+        if held is None:
+            held = registry.as_one_reading()
+            request.state.archives = held
+        return held
+
+    def the_shell_of_every_page(request: Request) -> dict:
+        """What the bar and the title of every page say about whose archive this is.
+
+        The header prints the owner's name, the picker of archives and the line about the index
+        catching up, and it used to ask for each of those as it rendered — `stage()` three times
+        over, `owners()` and `catching_up()` once each, five readings of the list of archives for
+        one page, and `stage()` opening the index three times. Worse than the cost: the bar could
+        name one person while the page under it was drawn from another's, which is precisely what
+        the first entry of the constitution forbids.
+
+        So the shell is given the one reading this request was decided by, as values. It is a
+        context processor rather than three globals because a global has no request to ask, and
+        the request is where the decision is.
+        """
+        try:
+            archives = the_archives_of(request)
+        except Unreadable:
+            # A line on a page is never a reason for the page not to be drawn, and the list of
+            # archives is one of the files that can be the trouble being reported. Left
+            # unguarded, a person who had torn sources.json was answered with the words Internal
+            # Server Error about the file they had just torn — including for /favicon.ico, which
+            # a browser asks for by itself on every page.
+            archives = NO_ARCHIVES
+        try:
+            here = _how_far(archives)
+        except Unreadable:
+            here = {"state": "no_archive", "whose": "", "consented": False, "installed": False,
+                    "running": False, "archives": 0}  # fmt: skip
+        return {"stage": here, "owners": _owners(archives), "catching_up": _catching_up(archives)}
+
+    templates = Jinja2Templates(directory=Path(__file__).parent / "templates",
+                                context_processors=[the_shell_of_every_page])  # fmt: skip
     templates.env.filters["thousands"] = lambda number: f"{number:,}"
     templates.env.filters["markdown"] = render_markdown
+    # The words for a kind of document, from the one place that holds them. Registered here so a
+    # template can ask the same function the Python side asks, instead of printing the name the
+    # model returned: six pages printed `lab_panel` where the seventh said "Lab results", and the
+    # search results said it twenty-two times on one page. doc_types.py says why.
+    templates.env.filters["in_words"] = doc_types.in_words
+    # The language of the document whose printed text an element carries, as a lang= on that
+    # element. The page itself is English and says so; its content is Russian, Ukrainian, Greek
+    # or Spanish, and said nothing — so a browser picked a fallback face and a reading voice for
+    # all of it from lang="en". documents.said_in says what it does and does not invent.
+    templates.env.filters["said_in"] = said_in
 
-    # Every page shows whose archive it is, so the header asks for it as it renders.
+    # Whose archive a page is of is not here: it is a value this request was decided by, and it
+    # arrives through the context processor above. A global is a question with no request to ask,
+    # which is how the bar came to be able to name somebody the page was not drawn from.
+    #
     # The stylesheet is asked for with its own last-changed time, so a change to it reaches a
     # browser that already has the old one. Written by hand, that number is forgotten exactly
     # when it matters: a page is edited, the style with it, and the person who asked for the
@@ -147,18 +351,29 @@ def create_app(
     # one, and was told it had worked. The settings page asked its route for this; every page
     # that prints a command needs it, so it is asked for once, here, like the spelling itself.
     templates.env.globals["data_dir"] = str(registry.data_dir)
-    templates.env.globals["owners"] = lambda: _owners()
-    templates.env.globals["stage"] = lambda: _stage()
-    templates.env.globals["catching_up"] = lambda: _catching_up()
     # The two dates a document may be given, handed to the browser as well as checked by the server.
     # Both refusals existed and neither was in the field: a person typing 1899 or next year met a
     # refusal after pressing Save, where the date picker itself could have said so as they typed.
     templates.env.globals["date_limits"] = lambda: {"first": f"{EARLIEST_YEAR}-01-01",
                                                     "last": date.today().isoformat()}  # fmt: skip
     # An id for a control that has to be pointed at from another element — an explanation tied to
-    # the button that reveals it. Unique within the page, which is all an id has to be.
-    numbering = count(1)
-    templates.env.globals["an_id"] = lambda prefix="id": f"{prefix}-{next(numbering)}"
+    # the button that reveals it. Unique within the page, which is all an id has to be, and
+    # numbered from one on every page for the same reason.
+    #
+    # The counter used to be made here, once, and so it ran for the life of the server: the same
+    # page read twice differed in nothing but these numbers. Harmless to a person — the ids still
+    # matched inside each page — and expensive to this project, because the sixth entry asks every
+    # change to prove it moved nothing, and the ruler that proves it compares pages byte for byte.
+    # That ruler was noisy by construction. In two days it cost three separate investigations:
+    # "24 of 45 pages shifted", "+2 on pages unrelated to the change", and a report of two entries
+    # swapping places on a page where nothing had swapped. A ruler that cries every time is a
+    # ruler nobody reads on the day it is right.
+    #
+    # A context variable rather than a counter per request handed down the call chain, because the
+    # macro that asks for an id is imported without context (`{% from %}`) and sees environment
+    # globals and nothing else. Starlette copies the context into the threadpool it runs sync
+    # handlers in, so one request has one counter whichever thread draws the page.
+    templates.env.globals["an_id"] = _an_id
 
     app = FastAPI(title="Epicrisis Companion", docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
@@ -180,7 +395,7 @@ def create_app(
         if gone.status_code not in (404, 405) or request.url.path.startswith("/static"):
             return JSONResponse({"detail": gone.detail}, status_code=gone.status_code)
         try:
-            registry.list()
+            the_archives_of(request)
         except Unreadable as broken:
             # The address may lead nowhere *because* nothing can be read. "No page is at that
             # address" is then the smaller of two true things, and the one that helps nobody: a
@@ -203,28 +418,45 @@ def create_app(
         the last. Including, each time, the status page and the settings page, which are where a
         person goes when something is wrong. The file was never named. The MCP server had been
         taught to answer this in words years before its owner's own screen was.
+
+        Two of them are a person's own work and one is a reading a model was paid for, so the
+        sentences differ; the one thing that does not is that there is a page, and that it names a
+        way on which answers. See SHUT_WHILE_TORN for how that way on is chosen.
         """
-        # Where to go on from here, and nowhere at all when the file that will not read is the list
-        # of archives: every page of this dashboard begins by reading it, so each of them answers
-        # with this same page — including the status page the button pointed at. A button that
-        # promises a way out and returns a person to where they are standing is worse than none, and
-        # this page exists for exactly the class of defect that was.
-        every_page_is_this_one = broken.file == layout.SOURCES
+        # Where to go on from here: the first way on that this particular file does not take down,
+        # or no button at all where it takes both of them down. A button that promises a way out
+        # and returns a person to where they are standing is worse than none, and this page exists
+        # for exactly the class of defect that was. It used to say "Archive status" for everything
+        # but the list of archives, while the status page is drawn out of three of these files.
+        way_on = a_way_on(broken)
+        every_page_is_this_one = the_torn_file(broken.file) == layout.SOURCES
+        # The page says it once, to whoever is looking at it. The journal says it again, with a
+        # time and the line it came from, to whoever is asked about it tomorrow. `broken.file` is
+        # already relative to the data directory — state.where() cut it there — and the sentences
+        # the exception carries are left out: the page is where they belong, and the one thing the
+        # journal adds that the page cannot is which of the nine raise sites this was.
+        journal.went_wrong(registry.data_dir, "a file of this instance would not read", broken,
+                           file=broken.file, code=503)  # fmt: skip
         return templates.TemplateResponse(
             request, "trouble.html",
             {"heading": "A file of this instance cannot be read", "what": str(broken).split(". ")[0] + ".",
              "safe": broken.safe, "mend": broken.mend, "where": broken.file,
              "named_archive": False,
-             "nowhere_to_go": ("Until that file is readable there is nowhere in this interface to go: "
-                               "every page of it begins by asking which archives there are."
-                               if every_page_is_this_one else ""),
-             "back": "" if every_page_is_this_one else "/status",
-             "back_label": "Archive status"},
+             "nowhere_to_go": "" if way_on else (
+                 "Until that file is readable there is nowhere in this interface to go: every page "
+                 "of it begins by asking which archives there are."
+                 if every_page_is_this_one else
+                 "Until that file is readable this page cannot name another that would answer, so "
+                 "it offers no button rather than one that leads back to here. The line above is "
+                 "the way out."),
+             "back": way_on[0] if way_on else "",
+             "back_label": way_on[1] if way_on else ""},
             status_code=503,
         )  # fmt: skip
 
     @app.exception_handler(NoSpace)
     async def the_disk_is_full(request: Request, full: NoSpace):
+        journal.went_wrong(registry.data_dir, "there was no space left on the disk", full, code=507)
         return _the_disk_is_full_page(request)
 
     @app.exception_handler(Busy)
@@ -239,6 +471,12 @@ def create_app(
         log instead, with the full path of the lock file in it. One button, the one that runs the
         checks, caught this for itself and said it properly; the rest did not.
         """
+        # The name of the step is written in this program; the lock is named relative to the data
+        # directory, because a path outside it could be an archive folder and those are named
+        # after people and after what was wrong with them.
+        journal.went_wrong(registry.data_dir, "a step was already running", busy, code=409,
+                           **({"step": busy.what} if busy.what else {}),
+                           **({"file": _inside_the_data_dir(busy.lock)} if busy.lock else {}))  # fmt: skip
         return templates.TemplateResponse(
             request, "trouble.html",
             {"heading": "That is already running",
@@ -265,7 +503,10 @@ def create_app(
         folder that holds thirty years of their reading.
         """
         if not no_space(trouble):
+            # Not recorded here: it goes on up, and the middleware below writes the line. Recording
+            # it in both places would put every such fault in the journal twice.
             raise trouble
+        journal.went_wrong(registry.data_dir, "there was no space left on the disk", trouble, code=507)
         return _the_disk_is_full_page(request)
 
     def _the_disk_is_full_page(request: Request) -> Response:
@@ -292,6 +533,34 @@ def create_app(
             {"current": "", "query": "", "wrong": sorted({str(item["loc"][-1]) for item in trouble.errors()})},
             status_code=400,
         )  # fmt: skip
+
+    @app.middleware("http")
+    async def number_the_ids_of_this_page_from_one(request: Request, call_next):
+        """One page, one numbering, from one. See `_an_id` for what a counter per process cost."""
+        _numbering.set(count(1))
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def write_down_a_fault_nothing_answered(request: Request, call_next):
+        """Every failure this dashboard has no page for, recorded on its way out.
+
+        There is no handler for Exception here on purpose: a fault nobody foresaw must not be
+        dressed up as one of the five this program knows how to explain. So it goes on up and the
+        server answers with the words a crash leaves — and until now that was the whole of it. The
+        traceback went to whatever started the server, which on this machine is a terminal
+        somebody closed, and nothing on disk remembered that a request had failed at all.
+
+        Which page was being asked for is not written down. A path here carries an archive's
+        random id, which is safe, and the id of a document, which is a hash — but it also carries
+        whatever a person typed into a search, and the method and the type of the fault are what
+        a person looking into it needs.
+        """
+        try:
+            return await call_next(request)
+        except Exception as nobody_answered:
+            journal.went_wrong(registry.data_dir, "a request failed with no page to answer it",
+                               nobody_answered, method=request.method)  # fmt: skip
+            raise
 
     @app.middleware("http")
     async def refuse_cross_origin_writes(request: Request, call_next):
@@ -356,18 +625,6 @@ def create_app(
             answer.headers.setdefault("Cache-Control", "no-store")
         return answer
 
-    def _the_open_archive(source_id: str) -> Source | None:
-        """The archive named in an address, but only while it is the one that is open.
-
-        A document, its scan and the corrections on it are content, and every page that shows
-        them carries one person's name at the top. Addressed from under another archive they
-        answer as though they do not exist, which is the same rule the chats follow. The status
-        page is the exception it makes itself: it lists every archive, and renaming, rescanning
-        or taking one off the list are acts on the list rather than on anybody's records.
-        """
-        active = registry.active()
-        return registry.get(source_id) if active and active.id == source_id else None
-
     def _not_here(request: Request, what: str, back: str = "/", back_label: str = "The timeline",
                   code: int = 404) -> Response:  # fmt: skip
         """A dead end drawn as a page rather than as a line of text on a white background.
@@ -397,7 +654,7 @@ def create_app(
             {"what": what, "back": back, "back_label": back_label, "heading": heading}, status_code=code,
         )  # fmt: skip
 
-    def _lines_lost() -> dict[str, int]:
+    def _lines_lost(archives: TheArchives) -> dict[str, int]:
         """Lines this server could not read, from every file that holds them — asked, not waited for.
 
         torn_lines() knows only about files something in this process has already opened, and the
@@ -407,7 +664,7 @@ def create_app(
         mentioned it only once somebody had happened to visit the page that reads them. They are a
         few kilobytes; they are read here so that the warning is true when it is drawn.
         """
-        for source in registry.list():
+        for source in archives.all:
             output = source_output_dir(registry.data_dir, source.id)
             for name in (layout.CORRECTIONS, layout.JUDGEMENTS):
                 if (output / name).exists():
@@ -426,24 +683,19 @@ def create_app(
         except ValueError:
             return Path(where).name
 
-    def _folders_not_where_they_were() -> list[dict]:
+    def _folders_not_where_they_were(archives: TheArchives) -> list[dict]:
         """Archives whose folder is not there, or cannot be read, right now.
 
         One is_dir() per archive, asked as the page draws. Without it a folder that had been moved
         or a disk that had not been mounted left this page saying "Files 43 · Pages 43 · Damaged 0"
         beside a path to nothing, with the trouble showing up only as a broken image where a scan
         should have been — and the only way to make the page admit it was to press Rescan.
+
+        The asking itself is `sources.folder_is_there`, because `sources list` has to give the
+        same answer as this page about the same folder, and used to give none at all.
         """
-        gone = []
-        for source in registry.list():
-            folder = Path(source.path)
-            try:
-                there = folder.is_dir() and os.access(folder, os.R_OK | os.X_OK)
-            except OSError:
-                there = False
-            if not there:
-                gone.append({"id": source.id, "whose": source.whose})
-        return gone
+        return [{"id": source.id, "whose": source.whose}
+                for source in archives.all if not folder_is_there(source.path)]  # fmt: skip
 
     def _room_on_the_disk() -> dict:
         """How much room is left where this instance writes, when there is little enough to say so.
@@ -460,35 +712,13 @@ def create_app(
         little = room.free < max(200 * 1024 * 1024, room.total // 100)
         return {"free": room.free, "total": room.total, "little": little}
 
-    def _open_archives(registry: SourceRegistry) -> list[Source]:
-        """The archive being looked at, as a list, or none at all when none is added yet.
+    # The archive being looked at, as a list, and the id of it: `archives.open` and
+    # `archives.showing_id` on the reading this request was decided by. They stood here as two
+    # closures over the registry, each reading sources.json on every call — which is why a page
+    # could be drawn out of two archives, and why `/who` took the archive for four of its forms
+    # out of the air rather than out of the address.
 
-        Every page but the status page is about one person. The status page lists the archives,
-        which is what it is for; the rest answer for whoever is open and for nobody else.
-        """
-        active = registry.active()
-        return [active] if active is not None else []
-
-    def _showing(registry: SourceRegistry = registry) -> str | None:
-        """The id of the archive the interface is showing, or None when none is added yet."""
-        active = registry.active()
-        return active.id if active else None
-
-    def _stage() -> dict:
-        """How far this instance has got, and never a reason for a page to fail.
-
-        Asked by every page as it draws its title and its menu — including the page whose whole
-        job is to say that a file of this instance will not read. Left unguarded, that page asked
-        this question, this question read the same file, and a person who had torn sources.json
-        was answered with the words Internal Server Error about the file they had just torn.
-        """
-        try:
-            return _how_far()
-        except Unreadable:
-            return {"state": "no_archive", "whose": "", "consented": False, "installed": False,
-                    "running": False, "archives": 0}  # fmt: skip
-
-    def _how_far() -> dict:
+    def _how_far(archives: TheArchives) -> dict:
         """How far this instance has got, for the pages that have nothing to show yet.
 
         A tool with no data should read as new, not as broken, and the answer differs: no archive
@@ -503,8 +733,8 @@ def create_app(
             "running": update_running(registry.data_dir),
         }
         # How many archives a reading started from here would walk: it walks all of them.
-        ready_to_start["archives"] = len(registry.list())
-        active = registry.active()
+        ready_to_start["archives"] = len(archives.all)
+        active = archives.showing
         if active is None:
             return {"state": "no_archive", "whose": "", **ready_to_start}
         try:
@@ -565,7 +795,7 @@ def create_app(
             return True
         return not any(page_refs(record) for record in read_records(inventory))
 
-    def _catching_up() -> dict:
+    def _catching_up(archives: TheArchives) -> dict:
         """Whether the open archive's index is older than what it is built from, and what of it.
 
         A document's card is drawn from this archive's own files, so a correction shows on it the
@@ -577,12 +807,11 @@ def create_app(
         Stat calls only, on the few files layout.py names — this is asked once for every page
         drawn, so it cannot be a question that opens the index.
         """
-        try:
-            active = registry.active()
-        except Unreadable:
-            # A line on a page is never a reason for the page not to be drawn, and the list of
-            # archives is one of the files that can be the trouble being reported.
-            return {}
+        # A torn list of archives is not caught here any more: it is caught once, where the
+        # reading is made, and reaches this as no archive at all — which is the same answer, and
+        # the three questions the shell of a page asks now give it together instead of each
+        # catching the same exception its own way.
+        active = archives.showing
         if active is None:
             return {}
         path = index_path(registry.data_dir, active.id)
@@ -607,35 +836,42 @@ def create_app(
             **state,
         }
 
-    def _owners() -> dict:
+    def _owners(archives: TheArchives) -> dict:
         """Who this server holds archives for, and whose is open. Names are shown, ids are not.
 
-        Never a reason for a page not to be drawn, for the same reason _stage is not: this is the
-        second question the header of every page asks, and it reads the same file. Guarded there and
-        not here, a torn list of archives took down the one page that says an address leads nowhere
-        — so a typed address or an old bookmark, at the very moment the file was torn, answered with
-        the two words instead of the page naming the file. Including /favicon.ico, which a browser
-        asks for by itself on every page, filling the log with tracebacks exactly when it is read.
+        The picker in the bar and the name over it come out of one reading, which they always had
+        to and did not: `list()` and `active()` were two readings of the same file, and the switch
+        is a POST the server answers on another thread while this page is being drawn. A bar
+        offering three archives with the wrong one marked as open is the smaller half of it.
+
+        Never a reason for a page not to be drawn, which is why the reading is guarded where it is
+        made rather than here: a torn list of archives took down the one page that says an address
+        leads nowhere — so a typed address or an old bookmark, at the very moment the file was
+        torn, answered with the two words instead of the page naming the file. Including
+        /favicon.ico, which a browser asks for by itself on every page.
         """
-        try:
-            sources = registry.list()
-            active = registry.active()
-        except Unreadable:
-            return {"whose": "", "active_id": "", "all": []}
+        active = archives.showing
         return {
             "whose": active.whose if active else "",
             "active_id": active.id if active else "",
-            "all": [{"id": source.id, "whose": source.whose} for source in sources],
+            "all": [{"id": source.id, "whose": source.whose} for source in archives.all],
         }
 
-    def render(request: Request, error: str | None = None, form_path: str = "", status_code: int = 200,
-               forgotten: str = "", form_owner: str = ""):  # fmt: skip
-        context = build_view(registry.list(), jobs, showing=_showing(registry))
+    def render(request: Request, archives: TheArchives, error: str | None = None, form_path: str = "",
+               status_code: int = 200, forgotten: str = "", form_owner: str = ""):  # fmt: skip
+        context = build_view(archives.all, jobs, showing=archives.showing_id)
         context.update(
             model_ready=backend_installed(),
             mcp={"last": mcp_access.last(registry.data_dir), "counts": mcp_access.counts(registry.data_dir),
                  "day": mcp_access.activity(registry.data_dir), "lock": mcp_lock_on(registry.data_dir),
                  "secret": bool(read_lock_secret())},
+            # The journal is a new file in the data directory, so this page says it is there, what
+            # it is for and — the part that matters more — what is not in it. A file nobody is told
+            # about is a file nobody reads when something goes wrong, and a log of a medical
+            # archive is a thing a person is entitled to be told the contents of.
+            journal={"file": journal.FILE_NAME, "where": str(journal.path(registry.data_dir)),
+                     "counts": journal.counts(registry.data_dir),
+                     "last": journal.last(registry.data_dir)},  # fmt: skip
             model_consent=has_consent(registry.data_dir, engines.engine_name(registry.data_dir)),
             host=request.headers.get("host", ""),
             updated=datetime.now().astimezone().strftime("%H:%M %Z"),
@@ -650,142 +886,91 @@ def create_app(
             # Named within the data directory, not by the base name alone: every archive has a
             # classify.jsonl, so "6 in classify.jsonl" over a server holding three of them said
             # nothing about whose records had lost a line.
-            torn=[{"file": _inside_the_data_dir(where), "lines": count} for where, count in _lines_lost().items()],
+            torn=[{"file": _inside_the_data_dir(where), "lines": count} for where, count in _lines_lost(archives).items()],
             # The three things a person comes to this page to find out when something is wrong,
             # and which it used to answer by looking perfectly healthy: whether the settings file
             # can be read, whether each archive's folder is where it was, and whether the disk
             # this instance writes to has any room left.
             settings_unreadable=settings_unreadable(registry.data_dir),
-            gone_folders=_folders_not_where_they_were(),
+            gone_folders=_folders_not_where_they_were(archives),
             disk=_room_on_the_disk(),
+            # Groups of doctors and clinics still sitting in an instance-wide people.json. Nought
+            # on every instance made since that file moved inside the archives, which is nearly
+            # all of them — and the one thing the migration never had was a place to say that it
+            # had not finished. A group naming nobody this server knows, or one whose archive
+            # already had a file of its own, waited there with nothing on the machine saying so.
+            people_waiting=people.still_beside_the_instance(registry.data_dir),
+            people_file=str(Path(registry.data_dir) / people.FILE_NAME),
         )
         return templates.TemplateResponse(request, "status.html", context, status_code=status_code)
 
     @app.get("/status", response_class=HTMLResponse)
-    def status_page(request: Request, forgotten: str = ""):
-        return render(request, forgotten=forgotten)
+    def status_page(request: Request, forgotten: str = "",
+                    archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The exception every other page is measured against: this one is about the list itself.
 
-    VIEWS = ("feed", "lanes", "indicators")
-    PAGE, FEW_TESTS, INDICATOR_PAGE = 120, 40, 60
+        Every page but this one answers for the archive that is open and for nobody else. This
+        lists them all, with the progress of each, because that is what it is for — and it does
+        it out of the same single reading, `archives.all`, so the rows and the counts above them
+        cannot come from two different readings of the file either.
+        """
+        return render(request, archives, forgotten=forgotten)
 
     @app.get("/", response_class=HTMLResponse)
     def timeline_page(request: Request, view: str = "feed", year: int | None = None, doc_type: str = "",
                       material: str = "", skip: int = 0, undated: bool = False, all_tests: bool = False,
-                      paperwork: bool = False, test: str = ""):  # fmt: skip
-        """The archive by its own dates. Three views of the same documents."""
-        context = {"current": "timeline", "view": view if view in VIEWS else "feed", "year": year,
-                   "doc_type": doc_type, "material": material, "query": "", "skip": max(0, skip),
-                   "undated": undated, "all_tests": all_tests, "paperwork": paperwork, "test": test}  # fmt: skip
-        try:
-            connection = open_index(registry.data_dir, _showing(registry))
-        except IndexMissing:
-            return templates.TemplateResponse(request, "timeline.html", {**context, "missing": True})
-        with closing(connection):
-            since, until = (f"{year}-01-01", f"{year}-12-31") if year else (None, None)
-            # The year strip of the feed view counts the documents of the type that is chosen —
-            # that is what it is for. The other two views draw their own things against an axis,
-            # and an axis counted over one set while the points are drawn from another puts those
-            # points outside it: a type carried here from the feed view built the axis out of that
-            # type's years and then drew every type on it, so eleven points of forty stood from
-            # -31% to 107% of the width. Ten of them were off the left of a phone's screen, and
-            # the rest stood on the wrong year, which is a page stating a date that is not true.
-            showing = context["view"]
-            context["years"] = query_index.years(connection, doc_type or None if showing == "feed" else None)
-            context["overview"] = query_index.overview(connection)
-            context["undated_count"] = query_index.count_documents(connection, undated=True)
-            if context["view"] == "lanes":
-                # One set: the filters that are in force narrow the documents, and the axis is
-                # then the span of the documents that are actually drawn.
-                context["lanes"] = query_index.lanes(connection, since=since, until=until,
-                                                     doc_type=doc_type or None)  # fmt: skip
-                drawn = sorted(int(item["date"][:4]) for lane in context["lanes"] for item in lane["documents"])
-                if drawn:
-                    context["axis"] = {"first": drawn[0], "last": drawn[-1] + 1}
-                    # Marks inside the axis and never on its edge: with `last` one year past the
-                    # newest document, a mark at `last` stands at the full width and names a year
-                    # the page holds nothing of — and a page of a single year was labelled with the
-                    # year after it. Where no fifth year falls inside, the span's own first year is
-                    # the one mark worth printing.
-                    inside = [one for one in range(drawn[0], drawn[-1] + 1) if one % 5 == 0]
-                    context["ticks"] = inside or [drawn[0]]
-            elif context["view"] == "indicators":
-                # One material at a time here too: a row of dots mixing the days a test was
-                # measured in blood with the days it was measured in urine reads as one history
-                # of one test, and it is two.
-                materials = material_tabs(query_index.materials_present(connection))
-                if materials and material not in {item["key"] for item in materials}:
-                    material = materials[0]["key"]
-                context["material"] = material
-                context["materials"] = materials
-                every = query_index.indicator_timeline(connection, material=material or None, limit=1000)
-                if test.strip():
-                    # Against the label and against every printed spelling the group holds, folded
-                    # on both sides. A label is one language — usually English — and a person
-                    # looking for their own result types what their own form printed.
-                    wanted = fold(test)
-                    spellings = {item.id: item.names for item in indicator_store.load(registry.data_dir)}
-                    every = [item for item in every
-                             if wanted in fold(item["label"])
-                             or any(wanted in fold(name) for name in spellings.get(item["indicator_id"], ()))]  # fmt: skip
-                context["series"] = every if all_tests else every[:FEW_TESTS]
-                context["series_total"] = len(every)
-            else:
-                context["documents"] = query_index.timeline(connection, since=since, until=until, undated=undated,
-                                                            doc_type=doc_type or None, limit=PAGE, offset=context["skip"],
-                                                            with_paperwork=paperwork)  # fmt: skip
-                context["total"] = query_index.count_documents(connection, since=since, until=until, undated=undated,
-                                                               doc_type=doc_type or None, with_paperwork=paperwork)  # fmt: skip
-                # Every tab of the row means "click and see this many", and with a year chosen it
-                # did not: the counts were of the whole archive, and the link under each of them
-                # carries the year on. A tab read "consultation 3" in a year that holds none, and
-                # pressing it gave "Showing 0 of 0" — and then the By type view beside it, which
-                # drew nothing at all. Counted here with the year in force, by the same call the
-                # page's own footer counts with, so the tab and the page it leads to agree.
-                context["type_counts"] = {
-                    name: query_index.count_documents(connection, since=since, until=until, doc_type=name)
-                    for name in context["overview"]["types"]
-                }
-                # What the Records tab shows if it is pressed, so the row of tabs adds up to the
-                # archive instead of leaving a person to guess what the difference was.
-                context["records_count"] = query_index.count_documents(connection, since=since, until=until,
-                                                                       with_paperwork=False)  # fmt: skip
-                context["paperwork_count"] = query_index.count_documents(connection, since=since,
-                                                                         until=until) - context["records_count"]  # fmt: skip
-            return templates.TemplateResponse(request, "timeline.html", context)
+                      paperwork: bool = False, test: str = "", provider: str = "", doctor: str = "",
+                      cut: str = "", archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The archive by its own dates. What it shows is gathered in web/timeline.py.
+
+        The defaults above are what the address asked for when it asked for nothing, and they are
+        written in `timeline_view` as well, because FastAPI reads them here to know which of the
+        parameters a query string may leave out. tests/test_the_timeline_without_http.py holds the
+        two signatures to each other, so the pair cannot drift apart unnoticed.
+        """
+        # Decided once for the whole request and handed in, because the rows and the groups laid
+        # over them have to be of one person. Asked twice, they were not: the archive is
+        # switchable from the bar of every page, the switch is an ordinary POST that FastAPI
+        # serves on another thread, and nothing holds a request still. A switch landing between
+        # the two readings drew one archive's documents under the other archive's joined names —
+        # the first entry of the constitution on the page this program opens on.
+        context = timeline_view(registry.data_dir, archives.showing_id, view=view, year=year,
+                                doc_type=doc_type, material=material, skip=skip, undated=undated,
+                                all_tests=all_tests, paperwork=paperwork, test=test,
+                                provider=provider, doctor=doctor, cut=cut)  # fmt: skip
+        return templates.TemplateResponse(request, "timeline.html", context)
 
     @app.get("/progress")
-    def progress():
+    def progress(archives: TheArchives = Depends(the_archives_of)):
         """Step bars only, polled by the status page instead of reloading it."""
-        view = build_view(registry.list(), jobs, showing=_showing(registry))
+        view = build_view(archives.all, jobs, showing=archives.showing_id)
         rows = [{"id": row["id"], "steps": row["steps"]} for row in view["rows"]]
         return {"any_running": view["any_running"], "rows": rows}
 
     @app.post("/sources")
-    def add_source(request: Request, path: str = Form(""), owner: str = Form("")):
-        # Whose records these are is not decoration: every page carries the name and every answer
-        # the tools give says it. An archive added without one reads as nobody's, and the reading
-        # starts the moment it is added, so it is asked for before anything begins.
-        if not owner.strip():
-            return render(request, error="Say whose archive this is. The name is on every page and in every answer.",
-                          form_path=path, form_owner=owner, status_code=400)  # fmt: skip
-        try:
-            source = registry.add(path, owner)
-        except SourceError as exc:
-            return render(request, error=str(exc), form_path=path, form_owner=owner, status_code=400)
-        if len(registry.list()) == 1:
-            registry.set_active(source.id)
-        jobs.start(source)
+    def add_source(request: Request, path: str = Form(""), owner: str = Form(""),
+                   archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/the_list_of_archives.py.
+
+        A refusal is this page again, with what was typed still standing in the form: a folder
+        path typed by hand and lost to a sentence is a person typing it twice.
+        """
+        pressed = the_list.added(registry, path=path, owner=owner)
+        if pressed.refused:
+            return render(request, archives, error=pressed.trouble, form_path=path,
+                          form_owner=owner, status_code=pressed.code)  # fmt: skip
+        if pressed.started is not None:
+            jobs.start(pressed.started)
         return RedirectResponse("/status", status_code=303)
 
     @app.post("/owner")
-    def choose_owner(request: Request, source: str = Form(""), back: str = Form("")):
-        """Show another owner's archive, without leaving the page the question was asked on.
+    def choose_owner(request: Request, source: str = Form(""), back: str = Form(""),
+                     archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/the_list_of_archives.py.
 
-        Each archive keeps its own index, so the same page simply answers for somebody else —
-        and where they have nothing, it says so where it stands rather than sending a person
-        back to the timeline to find their way again.
+        Where it lands is this file's business, because it is an address: `_same_page` below.
         """
-        registry.set_active(source)
+        the_list.shown_instead(registry, archives, source)
         return RedirectResponse(_same_page(back, source), status_code=303)
 
     def _same_page(back: str, active: str) -> str:
@@ -814,45 +999,34 @@ def create_app(
 
     @app.post("/owners/{source_id}/name")
     def name_owner(request: Request, source_id: str, owner: str = Form("")):
-        registry.set_owner(source_id, owner)
+        """The shell: what this press does is decided in web/the_list_of_archives.py."""
+        the_list.owner_named(registry, source_id, owner=owner)
         return RedirectResponse("/status", status_code=303)
 
     @app.post("/sources/{source_id}/forget")
-    def forget_source(request: Request, source_id: str, understood: str = Form("")):
-        """Read this archive again from nothing. The folder stays; the reading is put aside."""
-        if understood != "yes":
+    def forget_source(request: Request, source_id: str, understood: str = Form(""),
+                      archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/the_list_of_archives.py.
+
+        Where the reading went is carried to the page in the address, because the page says it in
+        so many words and a person wants the path: §8 is that their own work is moved aside and
+        kept, and a sentence that does not say where it went is not that promise kept.
+        """
+        pressed = the_list.read_again_from_nothing(registry, source_id, understood=understood)
+        if pressed.refused:
+            return render(request, archives, error=pressed.trouble, status_code=pressed.code)
+        if not pressed.stored:
             return RedirectResponse("/status", status_code=303)
-        # A run writing into the folder we are about to move would carry on writing into nowhere.
-        # Every lock in the folder, not a list of three by name: the search for dates and the
-        # checks write here too and were not among the three, so a run of either was moved out
-        # from under itself.
-        output = source_output_dir(registry.data_dir, source_id)
-        held = [lock for lock in sorted(output.glob("*.lock")) if holder(lock)]
-        if update_running(registry.data_dir) or held:
-            # Which lock, named. "Wait for it to finish" was the whole of this answer, and over a
-            # lock left behind by a run that had died it was advice to wait for ever — under the
-            # one button that would have put the archive back in order.
-            error = "Something is reading this archive right now. Wait for it to finish."
-            if held and not update_running(registry.data_dir):
-                error += (" What holds it is the lock "
-                          + ", ".join(str(lock.relative_to(registry.data_dir)) for lock in held)
-                          + ". If nothing is running — the machine was restarted, or the run died — that "
-                          "file is left over, and deleting it lets this archive be read again. A lock "
-                          f"older than {ABANDONED_AFTER_HOURS} hours is ignored by itself.")
-            return render(request, error=error, status_code=409)
-        aside = registry.forget(source_id)
-        where = f"?forgotten={quote(str(aside))}" if aside else "?forgotten=nothing"
+        where = "?forgotten=nothing" if pressed.nothing_to_move else f"?forgotten={quote(str(pressed.moved_aside))}"
         return RedirectResponse(f"/status{where}", status_code=303)
 
     @app.post("/owners/{source_id}/remove")
     def remove_owner(request: Request, source_id: str):
-        """Take an archive off the list. What was read from it stays on disk, as does the folder."""
-        going = registry.remove(source_id)
-        if going and going.active and registry.list():
-            registry.set_active(registry.list()[0].id)
+        """The shell: what this press does is decided in web/the_list_of_archives.py."""
+        the_list.taken_off_the_list(registry, source_id)
         return RedirectResponse("/status", status_code=303)
 
-    def consent_context(error: str | None = None) -> dict:
+    def consent_context(archives: TheArchives, error: str | None = None) -> dict:
         """What a run would send — which is every archive on this server, not only the open one.
 
         Agreeing is for the instance, once, and the reading it allows walks every archive here.
@@ -861,7 +1035,7 @@ def create_app(
         """
         pages = files = 0
         whose = []
-        for source in registry.list():
+        for source in archives.all:
             inventory = jobs.records_path(source.id)
             if not inventory.exists():
                 continue
@@ -870,7 +1044,7 @@ def create_app(
                 whose.append(source.whose)
             pages += len(refs)
             files += len({ref.file_sha256 for ref in refs})
-        showing = registry.active()
+        showing = archives.showing
         consented = has_consent(registry.data_dir, engines.engine_name(registry.data_dir))
         # Which engine this is about. Consent is kept per engine, so changing the engine asks
         # again — and the page used to describe Claude Code and a consumer subscription whichever
@@ -881,18 +1055,19 @@ def create_app(
         # was not named on the page when somebody pressed the button, and often a person who never
         # sees this program at all. Their pages used to go to a provider on the strength of it.
         added_since = consent_not_covered(registry.data_dir, engines.engine_name(registry.data_dir))
-        by_id = {source.id: source.whose for source in registry.list()}
+        by_id = {source.id: source.whose for source in archives.all}
         return {"consented": consented, "error": error, "pages": pages, "files": files,
                 "whose": showing.whose if showing else "", "archives": whose,
                 "added_since": [by_id.get(source_id, source_id) for source_id in added_since],
                 "engine": engines.chosen_engine(registry.data_dir)}  # fmt: skip
 
     @app.get("/consent", response_class=HTMLResponse)
-    def consent_page(request: Request):
-        return templates.TemplateResponse(request, "consent.html", consent_context())
+    def consent_page(request: Request, archives: TheArchives = Depends(the_archives_of)):
+        return templates.TemplateResponse(request, "consent.html", consent_context(archives))
 
     @app.post("/consent")
-    def confirm_consent(request: Request, understood: str = Form(""), action: str = Form("on")):
+    def confirm_consent(request: Request, understood: str = Form(""), action: str = Form("on"),
+                        archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         # Taken back by one press, as it was given by one. There was no way at all before this —
         # not a button, not a command, not a line of documentation, only editing consent.json by
         # hand — while the button that gives it is called "Turn on model processing" and a section
@@ -902,13 +1077,14 @@ def create_app(
             withdraw_consent(registry.data_dir, engines.engine_name(registry.data_dir))
             return RedirectResponse("/consent", status_code=303)
         if understood != "yes":
-            context = consent_context(error="Tick the box to confirm.")
+            context = consent_context(archives, error="Tick the box to confirm.")
             return templates.TemplateResponse(request, "consent.html", context, status_code=400)
         record_consent(registry.data_dir, engines.engine_name(registry.data_dir))
         return RedirectResponse("/", status_code=303)
 
     @app.get("/tests/{indicator_id}", response_class=HTMLResponse)
-    def test_series(request: Request, indicator_id: str, material: str = ""):
+    def test_series(request: Request, indicator_id: str, material: str = "",
+                    archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """One test over the years, one material at a time.
 
         There is no view of every material at once. The same printed name means a different
@@ -917,9 +1093,14 @@ def create_app(
         chosen, and where the form said nothing, "not said" is its own answer rather than a
         guess folded in with blood.
         """
-        context = {"current": "timeline", "indicator_id": indicator_id, "query": ""}
+        # Decided once and carried into the page, because the one button this page offers writes
+        # a correction and has to write it against the archive these values were read out of. See
+        # `settle_the_material`.
+        showing = archives.showing_id
+        context = {"current": "timeline", "indicator_id": indicator_id, "query": "",
+                   "archive": showing or ""}  # fmt: skip
         try:
-            connection = open_index(registry.data_dir, _showing(registry))
+            connection = open_index(registry.data_dir, showing)
         except IndexMissing:
             return templates.TemplateResponse(request, "series.html", {**context, "material": material, "missing": True})
         with closing(connection):
@@ -975,8 +1156,9 @@ def create_app(
         )  # fmt: skip
         return templates.TemplateResponse(request, "series.html", context)
 
-    @app.post("/tests/{indicator_id}/material")
-    def settle_the_material(request: Request, indicator_id: str, material: str = Form("")):
+    @app.post("/tests/{source_id}/{indicator_id}/material")
+    def settle_the_material(request: Request, source_id: str, indicator_id: str, material: str = Form(""),
+                            archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """Say what these were measured in, for every value of this test that has no answer.
 
         One press for a page of them, because that is how they arrive: a form holding two specimens
@@ -988,10 +1170,20 @@ def create_app(
         Only the values nobody has corrected yet. A line that already carries a correction is keyed
         by what the model printed, and the index shows it as the person left it, so the two cannot
         be matched from here without guessing; those are said out loud and settled on their card.
+
+        The archive is in the address, as it is for every other door that writes a correction. This
+        one read whichever archive was open instead — the one open when the press landed — and a page
+        of values takes a while to read, with the archive switchable from the bar of any page in
+        another tab meanwhile. So the press settled the specimen of every unlabelled value of that
+        test in an archive the person was not looking at, writing their own work against somebody
+        else's printed lines, and said so nowhere. See `_the_open_archive`.
         """
-        source = registry.active()
+        source = _the_open_archive(archives, source_id)
         if source is None:
-            return _not_here(request, "That is not an archive this server holds.", "/status", "Archive status")
+            return _not_here(request, "That was an answer about an archive other than the one open "
+                                      "now, so nothing was changed. This page was drawn before the "
+                                      "archive was switched.",
+                             f"/tests/{indicator_id}", "The test")  # fmt: skip
         if material not in MATERIALS_TO_CHOOSE:
             return _refused(request, "That is not a material this archive can be told about",
                             "The specimen has to be one this program knows: " + ", ".join(MATERIALS_TO_CHOOSE) + ".",
@@ -1059,7 +1251,7 @@ def create_app(
 
     @app.get("/search", response_class=HTMLResponse)
     def search_page(request: Request, q: str = "", doc_type: str = "", limit: int = 40, offset: int = 0,
-                    s: str = ""):  # fmt: skip
+                    s: str = "", archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """One line over the whole archive: text, titles, institutions and the printed names of values."""
         # The question this key stands for, asked a moment ago or last night. Not popped: this page
         # is one a person comes back to. A key this server no longer holds is not an empty search —
@@ -1086,7 +1278,7 @@ def create_app(
         context = {"current": "search", "query": q, "doc_type": doc_type, "limit": limit, "offset": offset,
                    "forgotten_question": forgotten_question}  # fmt: skip
         try:
-            connection = open_index(registry.data_dir, _showing(registry))
+            connection = open_index(registry.data_dir, archives.showing_id)
         except IndexMissing:
             return templates.TemplateResponse(request, "search.html", {**context, "missing": True})
         with closing(connection):
@@ -1106,7 +1298,9 @@ def create_app(
             # even when documents matched, because a word can be both. This is the machinery that
             # makes a question in one language find values printed in another, and the search page
             # was the one place that did not use it.
-            context["tests"] = query_index.indicators_matching(connection, q) if asked else []
+            # With the everyday words, because this is a box a person types into: see
+            # everyday_words.py, and `said` on a row, which the page prints beside it.
+            context["tests"] = query_index.indicators_matching(connection, q, everyday_words_too=True) if asked else []
             # And, where nothing at all matched, what there is instead: a person who typed the word
             # people use for a thing rather than the word a laboratory prints was told "Nothing
             # matched. Try a shorter word, or another language", did both, and was told it again.
@@ -1117,20 +1311,21 @@ def create_app(
             return templates.TemplateResponse(request, "search.html", context)
 
     @app.get("/documents", response_class=HTMLResponse)
-    def documents(request: Request):
+    def documents(request: Request, archives: TheArchives = Depends(the_archives_of)):
         # The archive that is open, and no other. These pages carry one person's name at the top
         # and listing everybody's under it is how one archive is read as another's.
         sources = [
             view
-            for source in _open_archives(registry)
+            for source in archives.open
             if (view := source_documents(source, jobs.records_path(source.id).parent)) is not None
         ]
         legend = [{"label": f"{round(share * 100)}%", **reading_colour(share)} for share in (0, 0.5, 0.75, 0.9, 1)]
         return templates.TemplateResponse(request, "documents.html", {"sources": sources, "legend": legend})
 
     @app.get("/documents/{source_id}/{sha256}/{first_page}", response_class=HTMLResponse)
-    def card(request: Request, source_id: str, sha256: str, first_page: int):
-        source = _the_open_archive(source_id)
+    def card(request: Request, source_id: str, sha256: str, first_page: int,
+             archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        source = _the_open_archive(archives, source_id)
         view = document_card(source, jobs.records_path(source_id).parent, sha256, first_page) if source else None
         if view is None:
             return _not_here(request, "No document of this archive is at that address.",
@@ -1140,8 +1335,9 @@ def create_app(
         )
 
     @app.post("/documents/{source_id}/{sha256}/{first_page}/date")
-    def set_date(request: Request, source_id: str, sha256: str, first_page: int, value: str = Form("")):
-        source = _the_open_archive(source_id)
+    def set_date(request: Request, source_id: str, sha256: str, first_page: int, value: str = Form(""),
+                 archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        source = _the_open_archive(archives, source_id)
         output = jobs.records_path(source_id).parent
         view = document_card(source, output, sha256, first_page) if source else None
         if view is None:
@@ -1156,7 +1352,7 @@ def create_app(
         try:
             chosen = date.fromisoformat(value) if value else None
         except ValueError:
-            return refused(what="That is not a date this page can read. A date is written as 2019-07-08.")
+            return refused(what=f"That is not a date this page can read. A date is written as {A_DATE_WRITTEN_OUT}.")
         if chosen and chosen > date.today():
             return refused(what="A document cannot be dated in the future.")
         if chosen and chosen.year < EARLIEST_YEAR:
@@ -1170,7 +1366,8 @@ def create_app(
 
     @app.post("/rules")
     def write_rule(request: Request, kind: str = Form(""), name: str = Form(""), summary: str = Form(""),
-                   settles: str = Form(""), attaches: str = Form("document"), about: str = Form("")):  # fmt: skip
+                   settles: str = Form(""), attaches: str = Form("document"), about: str = Form(""),
+                   archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """A rule of this archive's own: a kind that already exists, and words of a person's own.
 
         No code is written anywhere. The kinds are the ones in the repository under tests, which
@@ -1180,19 +1377,20 @@ def create_app(
                                       {"kind": kind, "name": name, "summary": summary,
                                        "settles": settles, "attaches": attaches}, about, kinds.KINDS)  # fmt: skip
         if wrong:
-            return _settings_page(request, tab="rules", trouble=wrong)
+            return _settings_page(request, archives, tab="rules", trouble=wrong)
         return RedirectResponse(
             f"/settings?tab=rules&saved={_remember_saved(f'the rule {made}', '')}#{made}", status_code=303)  # fmt: skip
 
     @app.post("/review/{source_id}/judge")
     def judge_finding(request: Request, source_id: str, rule: str = Form(""), sha256: str = Form(""),
-                      pages: str = Form(""), verdict: str = Form("")):  # fmt: skip
+                      pages: str = Form(""), verdict: str = Form(""),
+                      archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """A person's word about one finding: that it was real, or that it was noise.
 
         It marks and does not hide. Hiding what somebody called noise is the obvious next step
         and it is wrong: one mistaken click would lose a real finding with nothing to show it.
         """
-        source = _the_open_archive(source_id)
+        source = _the_open_archive(archives, source_id)
         if source is None:
             return _not_here(request, "That is not the archive this server has open.", "/status", "Archive status")
         try:
@@ -1204,99 +1402,107 @@ def create_app(
         # opens nothing: a closed details block has to be told, so the check is named twice.
         return RedirectResponse(f"/review?check={quote(rule)}#{quote(rule)}", status_code=303)
 
-    def _spelling(folded: str, printed: dict) -> dict:
-        found = printed.get(folded)
-        if found:
-            return {"folded": folded, **found}
-        return {"folded": folded, "name": folded, "times": 0, "units": [], "elsewhere": True}
+    @app.get("/card", response_class=HTMLResponse)
+    def patient_card_page(request: Request, tab: str = CARD_TABS[0],
+                          archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """What the documents print about the person: the personal facts, medications, diagnoses.
+
+        Printed, not current. "What this person takes" is a judgement about whether a prescription
+        is still in force, and nothing on a page says that — so this page says what each document
+        prints and when it printed it, and leaves the judging where it belongs.
+
+        Four tabs, each its own address, and the whole card read for every one of them: the three
+        rolls and the disagreements between them come out of one pass over the index, and asking
+        for a quarter of it would cost a reader of the page nothing and cost this route a second
+        shape of answer to keep right.
+        """
+        # An unknown tab is the first tab, the way an unknown tab of the settings page is. A tab
+        # that is none of the four would otherwise draw the four links and nothing underneath them.
+        tab = tab if tab in CARD_TABS else CARD_TABS[0]
+        empty = {"current": "card", "tab": tab, "diagnoses": [], "medications": [], "blood": [],
+                 "personal": [], "conflicts": []}  # fmt: skip
+        try:
+            connection = open_index(registry.data_dir, archives.showing_id)
+        except IndexMissing:
+            return templates.TemplateResponse(request, "patient.html", empty)
+        with closing(connection):
+            return templates.TemplateResponse(request, "patient.html",
+                                              {**empty, **query_index.patient_card(connection)})  # fmt: skip
+
+    @app.get("/who", response_class=HTMLResponse)
+    def who_page(request: Request, kind: str = "doctor", trouble: str = "",
+                 archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this page shows is gathered in web/who.py and drawn here."""
+        # Why a press did nothing, where it did nothing. The words travel in this server's memory
+        # and the address carries only a key to them, as on the settings page: a link that carries
+        # the sentence lets anything that can open a page in the owner's browser put words on
+        # their own page — and the words here would be about their own doctors.
+        said = just_saved.pop(trouble, (0.0, "", ""))[2] if trouble else ""
+        return templates.TemplateResponse(request, "who.html", who.who_view(
+            registry.data_dir, archives.showing_id, kind=kind, trouble=said))  # fmt: skip
+
+    def _what_the_press_decided(request: Request, decided: who.Decided) -> Response:
+        """A press on the page of doctors and clinics, drawn: a dead end, a sentence, or the page.
+
+        What a dead end and a sentence look like is this file's business; what they say is
+        web/who.py's. The tab the person comes back on is the one the press carried, and the
+        module hands it back rather than the route guessing it a second time.
+        """
+        if decided.a_dead_end:
+            return _not_here(request, decided.trouble, f"/who?kind={decided.kind}", "Doctors and clinics")
+        if decided.trouble:
+            return _back_to_who(decided.kind, decided.trouble)
+        return RedirectResponse(f"/who?kind={decided.kind}", status_code=303)
+
+    @app.post("/who/{source_id}/join")
+    def join_names(request: Request, source_id: str, kind: str = Form("doctor"), one: str = Form(""),
+                   other: str = Form(""), label: str = Form(""), names: list[str] = Form([]),
+                   archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/who.py and answered here."""
+        return _what_the_press_decided(request, who.joined(
+            registry.data_dir, archives, source_id, the_open_archive=_the_open_archive,
+            kind=kind, one=one, other=other, label=label, names=names))  # fmt: skip
+
+    def _back_to_who(kind: str, trouble: str) -> RedirectResponse:
+        """To the page, carrying a key to the sentence rather than the sentence itself."""
+        return RedirectResponse(f"/who?kind={kind}&trouble={_remember_saved('', trouble)}",
+                                status_code=303)  # fmt: skip
+
+    @app.post("/who/{source_id}/decline")
+    def decline_names(request: Request, source_id: str, kind: str = Form("doctor"),
+                      names: list[str] = Form([]),
+                      archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/who.py and answered here."""
+        return _what_the_press_decided(request, who.declined(
+            registry.data_dir, archives, source_id, the_open_archive=_the_open_archive,
+            kind=kind, names=names))  # fmt: skip
+
+    @app.post("/who/{source_id}/reconsider")
+    def reconsider_names(request: Request, source_id: str, kind: str = Form("doctor"),
+                         names: list[str] = Form([]),
+                         archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/who.py and answered here."""
+        return _what_the_press_decided(request, who.reconsidered(
+            registry.data_dir, archives, source_id, the_open_archive=_the_open_archive,
+            kind=kind, names=names))  # fmt: skip
+
+    @app.post("/who/{source_id}/split")
+    def split_names(request: Request, source_id: str, kind: str = Form("doctor"), label: str = Form(""),
+                    archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this press does is decided in web/who.py and answered here."""
+        return _what_the_press_decided(request, who.separated(
+            registry.data_dir, archives, source_id, the_open_archive=_the_open_archive,
+            kind=kind, label=label))  # fmt: skip
 
     @app.get("/indicators", response_class=HTMLResponse)
     def indicators_page(request: Request, status: str = "all", find: str = "", show: str = "all",
-                        skip: int = 0, trouble: str = ""):  # fmt: skip
-        trouble = just_saved.pop(trouble, (0.0, "", ""))[2] if trouble else ""
-        # A status or a view that is none of the ones this page offers would silently empty it,
-        # and an archive drawn with none of its vocabulary reads as an archive that lost it.
-        # Anything unrecognised means no filter at all, the way an unknown view does elsewhere.
-        status = status if status in INDICATOR_STATUSES else "all"
-        show = show if show in INDICATOR_VIEWS else "all"
-        context = {"current": "indicators", "status": status, "find": find, "show": show,
-                   "query": "", "trouble": trouble}  # fmt: skip
-        try:
-            connection = open_index(registry.data_dir, _showing(registry))
-        except IndexMissing:
-            return templates.TemplateResponse(request, "indicators.html", {**context, "missing": True})
-        try:
-            printed = {item["folded"]: item for item in indicator_store.printed_names(connection)}
-            materials = {
-                item["id"]: [name for name in item["materials"] if name]
-                for item in query_index.indicator_list(connection, status=None)
-            }
-        finally:
-            connection.close()
-        wanted = fold(find)
-        assigned = indicator_store.assigned_names(registry.data_dir)
-        # What a second reader said about each group. Agreement is quiet; a disagreement is the
-        # only thing here that asks for a person's time.
-        checks = load_checks(registry.data_dir)
-        coverage = indicator_store.coverage(registry.data_dir, list(printed.values()))
-        labels = {item.id: item.label for item in indicator_store.load(registry.data_dir)}
-        rows = []
-        for indicator in indicator_store.load(registry.data_dir):
-            if status != "all" and indicator.status != status:
-                continue
-            check = checks.get(indicator.id)
-            if show == "to_review" and indicator.reviewed and not indicator.proposed_names:
-                continue
-            if show == "disagreed" and (check is None or check.get("agrees")):
-                continue
-            # The names of an indicator are kept in their search form, with accents and the
-            # Ukrainian and Russian letter pairs already folded; what was typed has to be folded
-            # the same way or most printed names in this archive match nothing. The page says
-            # above the results that they are matched as one.
-            if wanted and wanted not in fold(indicator.label) and not any(wanted in fold(name) for name in indicator.names + indicator.proposed_names):
-                continue
-            rows.append({
-                "indicator": indicator,
-                "materials": materials.get(indicator.id, []),
-                # Not "values": every dict has a .values method, and a template asking for
-                # row.values is handed the method rather than the number.
-                "values_count": sum(printed.get(name, {}).get("times", 0) for name in indicator.names),
-                # A spelling the open archive has never printed has no printed form to show:
-                # what is left is the folded key, which is lower case with the letters of the two
-                # alphabets merged ("леикоцити"). Shown as it is, it reads as a misspelling of a
-                # name; it is marked instead, and the mark says where it came from.
-                "spellings": [_spelling(name, printed) for name in sorted(indicator.names)],
-                "proposed": [_spelling(name, printed) for name in sorted(indicator.proposed_names)],
-                "related": [{**item, "in_label": labels.get(item["indicator"])} for item in coverage.get(indicator.id, [])][:12],
-                "check": check,
-            })  # fmt: skip
-        waiting = [item for folded, item in printed.items() if folded not in assigned]
-        # 507 groups with every spelling under each is megabytes of page: a phone should not have
-        # to carry the whole archive's vocabulary to look at sixty groups of it.
-        ordered = sorted(rows, key=lambda row: (-row["values_count"], row["indicator"].label.casefold()))
-        skip = max(0, min(skip, max(len(ordered) - 1, 0)))
-        return templates.TemplateResponse(
-            request,
-            "indicators.html",
-            {
-                # Built on the context made at the top, which carries `trouble`. Written out fresh
-                # here, the one message this page exists to show — that the index could not be
-                # built, so these numbers answer the old question — reached nothing at all.
-                **context,
-                "rows": ordered[skip : skip + INDICATOR_PAGE],
-                "rows_total": len(ordered),
-                "skip": skip,
-                "page_size": INDICATOR_PAGE,
-                "waiting": sorted(waiting, key=lambda item: -item["times"])[:200],
-                "checked": len(checks),
-                "disagreed": sum(1 for item in checks.values() if not item.get("agrees")),
-                "waiting_total": len(waiting),
-                "printed_total": len(printed),
-                "to_review": sum(1 for item in indicator_store.load(registry.data_dir) if not item.reviewed or item.proposed_names),
-                "related_loose": sum(1 for items in coverage.values() for item in items if item["indicator"] is None),
-                "all_indicators": sorted(indicator_store.load(registry.data_dir), key=lambda item: item.label.casefold()),
-            },
-        )
+                        skip: int = 0, all_waiting: bool = False, trouble: str = "",
+                        archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this page shows is gathered in web/indicators_page.py and drawn here."""
+        said = just_saved.pop(trouble, (0.0, "", ""))[2] if trouble else ""
+        return templates.TemplateResponse(request, "indicators.html", indicators_view(
+            registry.data_dir, archives.showing_id, status=status, find=find, show=show, skip=skip,
+            all_waiting=all_waiting, trouble=said))  # fmt: skip
 
     @app.post("/indicators")
     def save_indicator(
@@ -1310,46 +1516,21 @@ def create_app(
         # Where on the page the person was standing, carried by the form. See _where_i_was.html:
         # the way back was read from the Referer, and this server sends none.
         at_status: str = Form(""), at_find: str = Form(""), at_show: str = Form(""), at_skip: int = Form(0),
+        at_all_waiting: str = Form(""),
+        archives: TheArchives = Depends(the_archives_of),
     ):  # fmt: skip
-        data_dir = registry.data_dir
-        changed = True
-        if action == "save":
-            try:
-                indicator_store.upsert(data_dir, indicator_id or None, label, names.splitlines(), status)
-            except ValueError as problem:
-                # Back to the page, with the reason on it. This page is five hundred groups of the
-                # vocabulary, and a person who cleared the label field and pressed Save lost the
-                # whole of it for one sentence of plain text on a white background — while the page
-                # already had a channel for saying exactly this kind of thing and it went unused.
-                # The words travel by key rather than in the address, as everything here does.
-                return _back_to_the_indicators(str(problem).capitalize() + ".",
-                                               {"status": at_status, "find": at_find,
-                                                "show": at_show, "skip": at_skip}, indicator_id)  # fmt: skip
-        elif action == "delete" and indicator_id:
-            indicator_store.remove(data_dir, indicator_id)
-        elif action in ("accept", "reject") and indicator_id:
-            indicator_store.decide_names(data_dir, indicator_id, [line for line in names.splitlines() if line.strip()], accept=action == "accept")
-        elif action == "assign" and indicator_id and spelling:
-            indicator_store.add_names(data_dir, indicator_id, [spelling], reviewed=True)
-        elif action == "drop" and indicator_id and spelling:
-            indicator_store.drop_name(data_dir, indicator_id, spelling)
-        elif action == "reviewed" and indicator_id:
-            # "I have looked at this group" changes no spelling, so the index has nothing to learn
-            # from it. Rebuilding every archive for it made working through five hundred groups —
-            # which is what this page is for — five hundred full builds, each a hung request.
-            indicator_store.mark_reviewed(data_dir, indicator_id)
-            changed = False
-        else:
-            changed = False  # a form that asked for nothing this page does is not a reason to build
-        # Which spellings are one test decides the indicator of every value in the index, so a
-        # decision here is not a decision about a page: it is built in, at once. Seconds, no
-        # model, nothing sent. Left out, the page a person went to look at was the page they had
-        # just changed nothing on, and they agreed the same spelling again.
-        # A build that failed leaves the page showing the old answer to a question that has changed,
-        # and saying nothing is how a person comes to trust a number that is stale.
+        """The shell: what this press does is decided in web/indicators_page.py and answered here."""
+        saved = indicators_pressed(
+            registry.data_dir, archives, action=action, indicator_id=indicator_id, label=label,
+            names=names, status=status, spelling=spelling,
+            # Building every archive's index again is the settings page's door as well, so it is
+            # one thing in one place here and handed to the press rather than reached for.
+            rebuild_index=_rebuild_index,
+        )  # fmt: skip
         return _back_to_the_indicators(
-            _rebuild_index() if changed else None,
-            {"status": at_status, "find": at_find, "show": at_show, "skip": at_skip},
+            saved.trouble,
+            {"status": at_status, "find": at_find, "show": at_show, "skip": at_skip,
+             "all_waiting": at_all_waiting},  # fmt: skip
             indicator_id,
         )  # fmt: skip
 
@@ -1388,7 +1569,8 @@ def create_app(
         return key
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, saved: str = "", tab: str = ""):
+    def settings_page(request: Request, saved: str = "", tab: str = "",
+                      archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         when_stored, trouble = "", ""
         # Whether anything was in fact just saved, and not merely whether the address carries the
         # word. A key is read once, on purpose — it is how the words of a message are kept out of an
@@ -1399,129 +1581,15 @@ def create_app(
         said = just_saved.pop(saved, None) if saved else None
         if said:
             _when, when_stored, trouble = said
-        return _settings_page(request, bool(said), trouble, tab, stored=when_stored)
+        return _settings_page(request, archives, bool(said), trouble, tab, stored=when_stored)
 
-    def _settings_page(request: Request, saved: bool = False, trouble: str = "", tab: str = "",
-                       waiting: dict | None = None, trying: tuple | None = None,
+    def _settings_page(request: Request, archives: TheArchives, saved: bool = False, trouble: str = "",
+                       tab: str = "", waiting: dict | None = None, trying: tuple | None = None,
                        stored: str = "", kept: dict | None = None):  # fmt: skip
-        """The page: for a visit, for a change held back for asking, or for a threshold tried out."""
-        # The tab is a radio button and the panels are drawn by CSS from which one is checked, so
-        # a name that is none of the four leaves every panel hidden and the page empty. An
-        # unknown tab is the first tab, the way an unknown view is on the timeline.
-        tab = tab if tab in SETTINGS_TABS else SETTINGS_TABS[0]
-        waiting = waiting or {}
-        # Worked out once for the whole page. Asked for per rule, this read the index, ran every
-        # rule of the search and re-read the settings nineteen times over, and the page took four
-        # seconds to open.
-        loaded = rules.load(registry.data_dir)
-        switches = {rule.id: rule_on(registry.data_dir, rule) for rule in loaded}
-        chosen = {rule.id: rule_settings(registry.data_dir, rule) for rule in loaded}
-        counts = _tally(loaded, {rule for rule, on in switches.items() if on})
-        tried, asked_for = _trial(loaded, trying)
-        context = {
-                "current": "settings",
-                "enabled": ask_enabled(registry.data_dir),
-                "mode": answer_mode(registry.data_dir),
-                "model_ready": backend_installed(),
-                "rules": [
-                    {"id": rule.id, "name": rule.name, "summary": rule.summary, "about": render_markdown(rule.about),
-                     "at": rule.at, "cost": rule.cost, "shipped": rule.shipped, "costly": rule.costly,
-                     # Where turning it off does more than stop a line being reported, the rule
-                     # says so itself and the switch says it too.
-                     "switching_off": rule.switching_off,
-                     "on": waiting.get(rule.id, switches[rule.id]),
-                     "found": counts.get(rule.id, tally.Tally(counted=False)).says,
-                     # What this archive's own verdicts say about whether the rule earns its
-                     # place. Usually nothing, which is right: it speaks only where a person has
-                     # judged enough of its findings for their judgement to mean something.
-                     "worth_keeping": counts.get(rule.id, tally.Tally(counted=False)).worth_keeping,
-                     # The form is built from what the kind declares, so a name it does not
-                     # have cannot be typed and a number cannot be given as a word.
-                     "tried": tried if tried and trying and trying[0] == rule.id else None,
-                     "knobs": [{"name": name.replace("_", " "),
-                                "value": asked_for.get(f"{rule.id}:{name}", chosen[rule.id][name]),
-                                "field": f"{rule.id}:{name}", "means": rule.check.means.get(name, ""),
-                                "number": isinstance(default, int | float) and not isinstance(default, bool),
-                                "default": default}
-                               for name, default in rule.settings.items()],  # fmt: skip
-                     "tryable": rule.at == kinds.SUSPECTS,
-                     "waiting": rule.id in waiting, "turning_on": waiting.get(rule.id)}
-                    # By the step that runs them, in the order the program runs its steps: what
-                    # turning one on asks of a person is decided by its step, so rules that ask
-                    # the same thing stand together.
-                    for rule in sorted(loaded, key=lambda rule: (kinds.AT.index(rule.at), rule.name))
-                ],
-                "rule_problems": loaded.problems,
-                # Only the kinds a person can honestly fill in: one that places a value on a
-                # scale answers in a shape of its own, and there is nothing here to type for it.
-                "kinds": [{"name": name, "about": item.about, "at": item.at, "cost": item.cost,
-                           "settings": ", ".join(item.settings) or "none"}
-                          for name, item in sorted(kinds.KINDS.items()) if item.does == kinds.MARKS],  # fmt: skip
-                "read_materials": trusts_read_materials(registry.data_dir),
-                "passes": [
-                    {"key": key, "label": item["label"], "about": item["about"],
-                     "chosen": model_for(registry.data_dir, key)}
-                    for key, item in PASSES.items()
-                ],
-                "known_models": KNOWN_MODELS,
-                "engines": [
-                    {"name": item.name, "label": item.label, "about": item.about,
-                     "ready": not engines.what_it_needs(item.name, registry.data_dir),
-                     "chosen": item.name == engines.chosen_engine(registry.data_dir),
-                     "needs_what": engines.what_it_needs(item.name, registry.data_dir)}
-                    for item in engines.ENGINES
-                ],  # fmt: skip
-                "known_names": [name for name, _about in KNOWN_MODELS],
-                "read_materials_known": _tables_read(),
-                "mcp_lock": mcp_lock_on(registry.data_dir),
-                "mcp_lock_scope": mcp_lock_scope(registry.data_dir),
-                "mcp_lock_minutes": mcp_lock_minutes(registry.data_dir),
-                "mcp_secret": bool(read_lock_secret()),
-                "confirmed": has_consent(registry.data_dir, engines.engine_name(registry.data_dir)),
-                "saved": saved,
-                "stored": stored,
-                "trying": bool(trying),
-                "tab": tab,
-                "waiting": waiting,
-                "trouble": trouble,
-                # Asked on the way in, not only on the way out. The switches below come from the
-                # file, and over a file that cannot be read every one of them is drawn at its
-                # default — the answer mode, the materials, the length of the code's window —
-                # which a person reads as the truth about their own instance. Worse for the lock:
-                # it fails closed on an unreadable file, so it drew as on over an archive whose
-                # owner had never turned it on, indistinguishable from their own choice. The only
-                # way to learn any of this was to press Save and be refused.
-                "settings_unreadable": settings_unreadable(registry.data_dir),
-                # The folder this instance keeps its files in, so that the commands this page gives
-                # can be copied whole. Every one of them that writes a setting needs to be told
-                # which instance, and the page used to print them without it.
-                "data_dir": str(registry.data_dir),
-        }
-        # Trying a threshold draws this page again from the submission it came in, not from
-        # storage. Without this, pressing "Try it" on the Rules tab silently put back whatever a
-        # person had just changed on the other three — a switch, an answer mode, a model — and
-        # said nothing about it. Nothing is stored either way: trying is not saving.
-        if kept:
-            was_drawn = set(kept["shown"])
-            if "ask_page" in was_drawn:
-                context["enabled"] = kept["ask_page"] == "on"
-            if "read_materials" in was_drawn:
-                context["read_materials"] = kept["read_materials"] == "on"
-            if "mcp_lock" in was_drawn:
-                context["mcp_lock"] = kept["mcp_lock"] == "on"
-            if kept["mode"] in ANSWER_MODES:
-                context["mode"] = kept["mode"]
-            context["mcp_lock_scope"] = kept["mcp_lock_scope"]
-            context["mcp_lock_minutes"] = kept["mcp_lock_minutes"]
-            for item in context["engines"]:
-                if any(kept["engine"] == known.name for known in engines.ENGINES):
-                    item["chosen"] = item["name"] == kept["engine"]
-            for item in context["passes"]:
-                item["chosen"] = kept["models"].get(item["key"]) or item["chosen"]
-            for rule in context["rules"]:
-                if rule["id"] in was_drawn:
-                    rule["on"] = rule["id"] in kept["rules_on"]
-        return templates.TemplateResponse(request, "settings.html", context)
+        """The shell: what the page shows is gathered in web/settings_page.py and drawn here."""
+        return templates.TemplateResponse(request, "settings.html", settings_view(
+            registry.data_dir, archives, saved=saved, trouble=trouble, tab=tab,
+            waiting=waiting, trying=trying, stored=stored, kept=kept))  # fmt: skip
 
     @app.post("/settings")
     def save_settings(request: Request, ask_page: str = Form(""), mode: str = Form("as_printed"),
@@ -1535,191 +1603,34 @@ def create_app(
                       mcp_lock: str = Form(""), mcp_lock_scope_choice: str = Form("conversation", alias="mcp_lock_scope"),
                       mcp_lock_minutes_choice: int = Form(240, alias="mcp_lock_minutes"),
                       knob_name: list[str] = Form([]), knob_value: list[str] = Form([]),
-                      try_rule: str = Form(""), tab: str = Form("")):  # fmt: skip
-        # Which settings a rule has is the kind's business and changes with it, so the knobs
-        # cannot be declared one by one here. They travel as two lists in the order the page
-        # wrote them: what each one is, and what was typed into it.
-        form = dict(zip(knob_name, knob_value, strict=False))
-        # Nothing on this page can be stored while the file it is all stored in cannot be read:
-        # every write builds the whole file from what is there, so one saved setting would take
-        # the place of all the rest. Said on the page rather than raised at it.
-        if settings_unreadable(registry.data_dir):
-            return _settings_page(request, tab=tab, trouble=(
-                "The settings file of this instance is there and cannot be read, so nothing was "
-                "changed. Repair data/settings.json, or move it aside to start from the defaults. "
-                "Until then the lock over the network stays on, if a code was ever set up here."
-            ))  # fmt: skip
-        # Trying is not saving. Nothing at all is stored on this path: a person turning a
-        # threshold over in their hands has not decided anything yet.
-        if try_rule:
-            return _settings_page(request, tab="rules", trying=(try_rule, form), kept={
-                "shown": shown, "ask_page": ask_page, "engine": engine, "mode": mode,
-                "models": {"first": model_first, "strong": model_strong, "second_reader": model_second_reader},
-                "read_materials": read_materials, "mcp_lock": mcp_lock,
-                "mcp_lock_scope": mcp_lock_scope_choice, "mcp_lock_minutes": mcp_lock_minutes_choice,
-                "rules_on": set(rule_on_ids),
-            })  # fmt: skip
-        # What was in fact stored, in a person's words. "Saved." on its own, over a page that can
-        # store an engine, three models, an answer mode, nineteen switches, their thresholds and
-        # the lock in one press, says that something happened and not what.
-        stored: list[str] = []
-        if "ask_page" in shown and ask_enabled(registry.data_dir) != (ask_page == "on"):
-            set_ask_enabled(registry.data_dir, ask_page == "on")
-            stored.append("answering questions " + ("on" if ask_page == "on" else "off"))
-        # An engine that is not built, or not known, is simply not stored: the page offers it as a
-        # thing that is coming, and a form can always be made to say something the page did not.
-        with suppress(ValueError):
-            if engine and engine != engines.chosen_engine(registry.data_dir):
-                set_engine(registry.data_dir, engine)
-                stored.append(f"the engine — {engine}")
-        # Checkboxes only say what is ticked, so what is not in the list is what was turned off.
-        # A rule whose step reads documents again is not stored on the strength of a click: it
-        # is held back, said out loud with what it will cost, and stored on the second answer.
-        # A checkbox that is not ticked is not sent at all, so a form arriving without one is
-        # indistinguishable from a form that turned it off. The page says what it drew, and only
-        # those are changed — otherwise a half-sent form silently turns off everything at once,
-        # and for the switch that reads materials that also means rebuilding the index.
-        waiting, changed = {}, set()
-        thresholds, switched = 0, 0
-        for rule in rules.load(registry.data_dir):
-            if rule.id not in shown:
-                continue
-            # The thresholds are saved for every rule, switched on or not: turning one on next
-            # month should find what somebody set for it, not what it shipped with. Saved only
-            # when they differ, so that an untouched page rewrites nothing.
-            given = {name: form[f"{rule.id}:{name}"] for name in rule.settings
-                     if form.get(f"{rule.id}:{name}") not in (None, "")}  # fmt: skip
-            now = {name: str(value) for name, value in rule_settings(registry.data_dir, rule).items() if name in given}
-            if given and given != now:
-                with suppress(ValueError):
-                    set_rule_settings(registry.data_dir, rule, given)
-                    changed.add(rule.at)
-                    thresholds += 1
-            wanted = rule.id in rule_on_ids
-            if wanted == rule_on(registry.data_dir, rule):
-                continue
-            if rule.costly and rule.id not in confirmed_rules:
-                waiting[rule.id] = wanted
-                continue
-            set_rule_on(registry.data_dir, rule.id, wanted)
-            changed.add(rule.at)
-            switched += 1
-        if thresholds:
-            stored.append(f"thresholds of {thresholds} rule" + ("s" if thresholds != 1 else ""))
-        if switched:
-            stored.append(f"{switched} rule" + ("s" if switched != 1 else "") + " switched")
-        if "models" in shown:
-            was_models = {key: model_for(registry.data_dir, key) for key in PASSES}
-            set_chosen_models(registry.data_dir, {
-                "first": model_first, "strong": model_strong, "second_reader": model_second_reader,
-            })  # fmt: skip
-            if {key: model_for(registry.data_dir, key) for key in PASSES} != was_models:
-                stored.append("the models")
-        # This one changes what is in the index, not only how a page draws it, so the index is
-        # built again — and only when the answer actually changed.
-        trouble = None
-        build_again = False
-        if "read_materials" in shown and trusts_read_materials(registry.data_dir) != (read_materials == "on"):
-            set_trusts_read_materials(registry.data_dir, read_materials == "on")
-            stored.append("reading the material from the table heading "
-                          + ("on" if read_materials == "on" else "off")
-                          + ", and the index built again")
-            build_again = True
-        # A rule turned off has to stop counting now, not at the next run of the checks. The
-        # findings of an archive are a file on disk; leaving it as it was would show a person
-        # findings from a rule they have just switched off, with no way to tell why they persist.
-        if kinds.VALIDATE in changed:
-            trouble = _check_every_archive() or trouble
-            # And then built in. The findings of a check live in the index as well as in the file
-            # of findings, and the tools answer over the network from the index: a rule switched
-            # off cleared the page and went on being handed to a model as something to look at,
-            # with nothing on either side to say why.
-            build_again = True
-            stored.append("every archive checked again and built in")
-        # Once for the whole press, however many of the things above asked for it. Two of them in
-        # one press built every archive's index twice, and the second build's failure quietly
-        # replaced the first one's.
-        if build_again:
-            trouble = _rebuild_index() or trouble
-        if "mcp_lock" in shown and mcp_lock_on(registry.data_dir) != (mcp_lock == "on"):
-            set_mcp_lock(registry.data_dir, mcp_lock == "on" and bool(read_lock_secret()))
-            stored.append("the lock over the network " + ("on" if mcp_lock_on(registry.data_dir) else "off"))
-        with suppress(ValueError):
-            if mcp_lock_scope_choice != mcp_lock_scope(registry.data_dir):
-                set_mcp_lock_scope(registry.data_dir, mcp_lock_scope_choice)
-                stored.append("what a code opens")
-        with suppress(ValueError):
-            if mcp_lock_minutes_choice != mcp_lock_minutes(registry.data_dir):
-                set_mcp_lock_minutes(registry.data_dir, mcp_lock_minutes_choice)
-                stored.append("how long a code lasts")
-        if mode in ANSWER_MODES and mode != answer_mode(registry.data_dir):
-            set_answer_mode(registry.data_dir, mode)
-            stored.append("what may be said about a value — " + ANSWER_MODE_NAMES[mode])
-        said = ", ".join(stored)
-        if waiting:
-            # Everything else is already stored; only the held-back ones come back as a question,
-            # shown the way they were asked for so that answering yes is one step and not two.
-            return _settings_page(request, saved=True, trouble=trouble or "", tab="rules",
-                                  waiting=waiting, stored=said)  # fmt: skip
-        return RedirectResponse(f"/settings?saved={_remember_saved(said, trouble or '')}&tab={quote(tab)}",
+                      try_rule: str = Form(""), tab: str = Form(""),
+                      archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what the press does is decided in web/settings_page.py and answered here."""
+        pressed = settings_pressed(
+            registry.data_dir, archives, ask_page=ask_page, mode=mode, engine=engine,
+            rule_on_ids=rule_on_ids, shown=shown, confirmed_rules=confirmed_rules,
+            read_materials=read_materials,
+            models={"first": model_first, "strong": model_strong, "second_reader": model_second_reader},
+            mcp_lock=mcp_lock, mcp_lock_scope_choice=mcp_lock_scope_choice,
+            mcp_lock_minutes_choice=mcp_lock_minutes_choice,
+            knob_name=knob_name, knob_value=knob_value, try_rule=try_rule, tab=tab,
+            # Building every archive's index again is the indicator page's door as well, so it
+            # is one thing in one place here and handed to the press rather than reached for.
+            build_indexes=lambda: _rebuild_index(archives),
+        )  # fmt: skip
+        # A press that is not over: a settings file that cannot be read, a threshold being tried
+        # out, or a costly rule held back for asking. The words are already decided; this draws
+        # them.
+        if pressed.draw_again is not None:
+            return _settings_page(request, archives, **pressed.draw_again)
+        return RedirectResponse(f"/settings?saved={_remember_saved(pressed.said, pressed.trouble)}&tab={quote(tab)}",
                                 status_code=303)  # fmt: skip
 
-    def _check_every_archive() -> str:
-        """Every archive checked again with the rules as they now stand. No model, seconds."""
-        for source in registry.list():
-            try:
-                validate_source(source_output_dir(registry.data_dir, source.id), Path(source.path))
-            except Exception as exc:  # the type only: a message can quote a document
-                return f"The archive could not be checked again: {type(exc).__name__}. Run {CLI} validate."
-        return ""
-
-    def _trial(loaded, trying: tuple | None):
-        """What one rule would find with the thresholds just typed, and those thresholds back.
-
-        The numbers a person typed are handed back to the page whether the trial worked or not:
-        a form that forgot what was in it the moment you asked a question of it is worse than no
-        question at all.
-        """
-        if not trying:
-            return None, {}
-        rule_id, typed = trying
-        rule = loaded.get(rule_id)
-        if rule is None:
-            return None, typed
-        wanted = {name: typed[f"{rule_id}:{name}"] for name in rule.settings if f"{rule_id}:{name}" in typed}
-        showing = registry.active()
-        try:
-            asked = {name: type(rule.settings[name])(value) for name, value in wanted.items()}
-            return tally.trial(registry.data_dir, showing.id if showing else "", rule, asked), typed
-        except (TypeError, ValueError):
-            return {"trouble": "Those are not numbers this rule can use."}, typed
-        except Exception:  # a half-built archive is not a reason for the page to fail
-            return {"trouble": "This archive could not be read just now."}, typed
-
-    def _tally(loaded, on: set[str]) -> dict:
-        """What every rule has found on the archive being shown. A fifth of a second, so it is
-        worked out when the page is drawn rather than kept and left to go stale."""
-        showing = registry.active()
-        try:
-            return tally.counts(registry.data_dir, showing.id if showing else "", loaded, on)
-        except Exception:  # a half-built archive is not a reason for the settings page to fail
-            return {}
-
-    def _tables_read() -> int:
-        """How many tables a model has already been asked about, in the archive that is open.
-
-        Not every archive here: what it is shown beside is what this archive's own reading has
-        settled, and a total of several people's would be a number about nobody.
-        """
-        from epicrisis.material_reading import answered
-
-        return sum(len(answered(jobs.records_path(source.id).parent)) for source in _open_archives(registry))
-
-    def _rebuild_index() -> str | None:
+    def _rebuild_index(archives: TheArchives) -> str | None:
         """Build every archive's index again. The first failure is returned, and shown."""
         from epicrisis.index.build import build_index
 
-        for source in registry.list():
+        for source in archives.all:
             try:
                 build_index(registry.data_dir, [source])
             except Exception as problem:  # noqa: BLE001 - whatever went wrong, the page must say so
@@ -1732,11 +1643,17 @@ def create_app(
 
     @app.get("/ask", response_class=HTMLResponse)
     @app.get("/ask/{chat_id}", response_class=HTMLResponse)
-    def ask_page(request: Request, chat_id: str | None = None):
+    def ask_page(request: Request, chat_id: str | None = None,
+                 archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         # A chat is about one person's archive. Asked for from another, it is not found — the
         # same answer as one that never existed, because which chats exist is not this page's
         # to tell.
-        chat = load_chat(registry.data_dir, chat_id, registry.active()) if chat_id else None
+        #
+        # Decided once and carried, because the conversation shown and the list it is shown in
+        # have to be of one person. Asked twice, a switch landing between them put one person's
+        # conversation at the head of the other person's list of them.
+        open_archive = archives.showing
+        chat = load_chat(registry.data_dir, chat_id, open_archive) if chat_id else None
         if chat_id and chat is None:
             return _not_here(request, "No conversation of this archive is at that address.", "/ask", "Ask")
         return templates.TemplateResponse(
@@ -1744,7 +1661,7 @@ def create_app(
             "ask.html",
             {
                 "current": "ask",
-                "chats": list_chats(registry.data_dir, registry.active()),
+                "chats": list_chats(registry.data_dir, open_archive),
                 "chat": chat,
                 "enabled": ask_enabled(registry.data_dir),
                 "mode": answer_mode(registry.data_dir),
@@ -1755,7 +1672,9 @@ def create_app(
 
     @app.post("/ask")
     @app.post("/ask/{chat_id}")
-    def ask_question(request: Request, chat_id: str | None = None, question: str = Form(""), continue_chat: str = Form("", alias="continue")):
+    def ask_question(request: Request, chat_id: str | None = None, question: str = Form(""),
+                     continue_chat: str = Form("", alias="continue"),
+                     archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         if not (ask_enabled(registry.data_dir) and has_consent(registry.data_dir, engines.engine_name(registry.data_dir))):
             # A page, and the one place this is changed. It was a sentence of plain text on a white
             # background, which is what this program answers with nowhere else.
@@ -1765,7 +1684,7 @@ def create_app(
                             "would be sent is on Model processing.",
                             "/settings", "Settings", 403)  # fmt: skip
         # Unchecked box: the question starts its own chat, so nothing said earlier reaches the model.
-        open_archive = registry.active()
+        open_archive = archives.showing
         chat = (load_chat(registry.data_dir, chat_id, open_archive) if chat_id and continue_chat
                 else new_chat(registry.data_dir, open_archive))  # fmt: skip
         if chat is None:
@@ -1775,31 +1694,51 @@ def create_app(
         return RedirectResponse(f"/ask/{chat['id']}", status_code=303)
 
     @app.post("/ask/{chat_id}/delete")
-    def remove_chat(request: Request, chat_id: str):
-        if load_chat(registry.data_dir, chat_id, registry.active()) is None:
+    def remove_chat(request: Request, chat_id: str,
+                    archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        if load_chat(registry.data_dir, chat_id, archives.showing) is None:
             return _not_here(request, "No conversation of this archive is at that address.", "/ask", "Ask")
         if not delete_chat(registry.data_dir, chat_id):
             return _not_here(request, "No conversation of this archive is at that address.", "/ask", "Ask")
         return RedirectResponse("/ask", status_code=303)
 
     @app.get("/ask/{chat_id}/state")
-    def ask_state(chat_id: str):
-        chat = load_chat(registry.data_dir, chat_id, registry.active())
+    def ask_state(chat_id: str, archives: TheArchives = Depends(the_archives_of)):
+        chat = load_chat(registry.data_dir, chat_id, archives.showing)
         if chat is None:
             return Response("Unknown chat.", status_code=404)
         return JSONResponse({"running": chat_running(chat), "messages": chat["messages"]})
 
     @app.get("/review", response_class=HTMLResponse)
-    def review(request: Request, copies: str = "", check: str = ""):
+    def review(request: Request, copies: str = "", check: str = "",
+               archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         sources = []
-        for source in _open_archives(registry):
+        for source in archives.open:
             view = review_view(source, jobs.records_path(source.id).parent)
             if view is not None:
-                sources.append(_from_the_index(view, source))
+                # One line and a link, never the findings themselves. The rules of the suspects
+                # step find a hundred and twenty-five documents on this archive, and poured into
+                # the list above they would bury the checks a person actually works through —
+                # "I shall go mad working through hundreds", in the owner's own words. The count
+                # is asked for from the one place that answers it, so this line and the page
+                # behind it cannot disagree: see web/looks_misread.py.
+                sources.append({**_from_the_index(view, source),
+                                "misread": how_many_look_misread(registry.data_dir, source.id)})  # fmt: skip
         return templates.TemplateResponse(
             request, "review.html", {"sources": sources, "current": "review",
                                      "open_copies": bool(copies), "open_check": check}  # fmt: skip
         )
+
+    @app.get("/misread", response_class=HTMLResponse)
+    def misread(request: Request, archives: TheArchives = Depends(the_archives_of)):
+        """The lines that look misread, heaviest first. One archive's, and nobody else's."""
+        sources = [
+            {"id": source.id, "whose": source.whose,
+             **what_looks_misread(registry.data_dir, source.id)}  # fmt: skip
+            for source in archives.open
+        ]
+        return templates.TemplateResponse(request, "misread.html",
+                                          {"sources": sources, "current": "review"})  # fmt: skip
 
     def _from_the_index(view: dict, source: Source) -> dict:
         """What the index can add to a list of findings, so the page asks one clear thing.
@@ -1830,12 +1769,18 @@ def create_app(
                 ]}
                 for check in checks
             ]  # fmt: skip
-        return {**view, "copy_groups": groups, "checks": checks}
+        # Counted again, because this is where what the page draws was last changed: taking
+        # possible_copy out of the blocks left its documents in the header's number, and putting
+        # the groups in their own block put theirs on the page. One answer, asked where the
+        # drawing is settled — web/documents.py holds it.
+        drawn = {**view, "copy_groups": groups, "checks": checks}
+        return {**drawn, "documents_with_findings": how_many_documents_to_check(drawn)}
 
     @app.post("/review/{source_id}/{sha256}/{first_page}/copy")
-    def choose_copy(request: Request, source_id: str, sha256: str, first_page: int):
+    def choose_copy(request: Request, source_id: str, sha256: str, first_page: int,
+                    archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """This one of the copies is the one that answers."""
-        source = _the_open_archive(source_id)
+        source = _the_open_archive(archives, source_id)
         output = jobs.records_path(source_id).parent
         if source is None:
             return _not_here(request, "That is not an archive this server holds.", "/status", "Archive status")
@@ -1860,10 +1805,11 @@ def create_app(
         return RedirectResponse("/review?copies=open#copies", status_code=303)
 
     @app.post("/sources/{source_id}/validate")
-    def run_validation(request: Request, source_id: str):
+    def run_validation(request: Request, source_id: str,
+                       archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         # The checks read one archive's transcriptions and write into its own folder, so they
         # run for the archive that is open and for no other. See _the_open_archive.
-        source = _the_open_archive(source_id)
+        source = _the_open_archive(archives, source_id)
         output = jobs.records_path(source_id).parent
         if source is None or not (output / layout.CLASSIFY).exists():
             return _not_here(request, "That is not an archive this server holds.", "/status", "Archive status")
@@ -1908,8 +1854,9 @@ def create_app(
         key: str = Form(""), action: str = Form("save"),
         name: str = Form(""), value: str = Form(""), unit: str = Form(""), reference: str = Form(""), flag: str = Form(""),
         material: str = Form(""),
+        archives: TheArchives = Depends(the_archives_of),
     ):  # fmt: skip
-        source = _the_open_archive(source_id)
+        source = _the_open_archive(archives, source_id)
         output = jobs.records_path(source_id).parent
         view = document_card(source, output, sha256, first_page) if source else None
         if view is None or not key:
@@ -1939,71 +1886,40 @@ def create_app(
         building.after_a_change(source_id)
         return RedirectResponse(f"/documents/{source_id}/{sha256}/{first_page}", status_code=303)
 
-    def _the_page(source_id: str, sha256: str, page: int):
-        """The archive, the file's record and the one page of it named in an address."""
-        source = _the_open_archive(source_id)
-        inventory = jobs.records_path(source_id)
-        if source is None or not inventory.exists():
-            return None, None, None
-        record = next((record for record in read_records(inventory) if record.get("sha256") == sha256), None)
-        refs = page_refs(record) if record else []
-        return source, refs, next((ref for ref in refs if ref.page == page), None)
-
     @app.get("/sources/{source_id}/files/{sha256}/pages/{page}", response_class=HTMLResponse)
-    def page_original(request: Request, source_id: str, sha256: str, page: int):
-        """The scan of one page, with enough around it to know what one is looking at.
+    def page_original(request: Request, source_id: str, sha256: str, page: int,
+                      archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        """The shell: what this page shows is gathered in web/documents.py and drawn here.
 
-        This was the image alone, opened in a tab of its own: no page number, no name of the file
-        it came from, no way to the next page of the same form and no way back. Checking a
-        four-page form against its card meant four tabs and no captions. The image itself is
-        still one address of its own, which is what this page draws.
+        It is gathered there and not beside the list of archives, although its address stands
+        under /sources: what it draws is one page of one document, and the card it offers a way
+        back to is gathered two functions above it.
         """
-        source, refs, ref = _the_page(source_id, sha256, page)
-        if source is None:
+        source = _the_open_archive(archives, source_id)
+        output = jobs.records_path(source_id).parent
+        if source is None or nothing_read_yet(output):
             # Not "there is no such archive": the archive is on this list and has simply been
             # switched, which is what the paragraph under this sentence goes on to explain. A
             # person who had this very page open a minute ago read the first line as their
             # archive having gone. The card of the same document says it of the address.
             return _not_here(request, "That page is not in the archive that is open.",
                              "/status", "Archive status")  # fmt: skip
-        if ref is None:
+        shown = one_scanned_page(source, output, sha256, page)
+        if shown is None:
             return _not_here(request, "No page of this archive is at that address.", "/documents", "The documents")
-        numbers = sorted(one.page for one in refs)
-        at = numbers.index(page)
-        # Which document this page belongs to, so there is a way back to the card it was opened
-        # from. A page can belong to none, in a file whose pages were never grouped.
-        view = source_documents(source, jobs.records_path(source_id).parent)
-        belongs = next((row for group in (view or {}).get("years", []) for row in group["documents"]
-                        if row["file"]["sha256"] == sha256 and page in row["pages"]), None)  # fmt: skip
-        return templates.TemplateResponse(request, "page.html", {
-            "current": "documents", "source_id": source_id, "sha256": sha256, "page": page,
-            "path": Path(record_path(source, sha256) or "").name,
-            "pages": numbers,
-            "previous": numbers[at - 1] if at else None,
-            "next": numbers[at + 1] if at + 1 < len(numbers) else None,
-            "document": belongs,
-            # Why this scan cannot be shown, where it cannot, in words on the page. It used to ask
-            # one question — is the folder there — and say a sentence for that and nothing at all
-            # for the likelier trouble: one file changed under the archive, rescanned or resaved or
-            # damaged, where the page stayed whole with a broken image in the middle of it. Over the
-            # one promise this program makes about every value it shows: that the page it was read
-            # from is one click away.
-            "cannot_be_shown": cannot_be_read(ref, Path(source.path)),
-        })  # fmt: skip
-
-    def record_path(source: Source, sha256: str) -> str:
-        """The name of the file a page came from. The folder it sits in is not shown anywhere."""
-        record = next((one for one in read_records(jobs.records_path(source.id)) if one.get("sha256") == sha256), None)
-        return (record or {}).get("path", "")
+        return templates.TemplateResponse(request, "page.html", shown)
 
     @app.get("/sources/{source_id}/files/{sha256}/pages/{page}/image")
-    def page_image(request: Request, source_id: str, sha256: str, page: int):
+    def page_image(request: Request, source_id: str, sha256: str, page: int,
+                   archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """The scan itself, one page of it, drawn by the page above and by nothing else."""
-        source, _refs, ref = _the_page(source_id, sha256, page)
-        if source is None:
+        source = _the_open_archive(archives, source_id)
+        output = jobs.records_path(source_id).parent
+        if source is None or nothing_read_yet(output):
             # Said of the address and not of the archive, for the reason written over the page above.
             return _not_here(request, "That page is not in the archive that is open.",
                              "/status", "Archive status")  # fmt: skip
+        ref = the_scan_at(source, output, sha256, page)
         if ref is None:
             return _not_here(request, "No page of this archive is at that address.", "/documents", "The documents")
         try:
@@ -2017,7 +1933,7 @@ def create_app(
         return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/browse")
-    def browse(path: str = ""):
+    def browse(path: str = "", archives: TheArchives = Depends(the_archives_of)):
         if not path:
             # Somewhere the picker is allowed to look. It opened on the home folder of whoever
             # runs the server, and a server run as root has a home the picker refuses — so the
@@ -2028,7 +1944,7 @@ def create_app(
             roots = registry.roots()
             path = str(archive if archive.is_dir() else (roots[0] if roots else Path.home()))
         try:
-            listing = list_folder(path, added_paths={source.path for source in registry.list()},
+            listing = list_folder(path, added_paths={source.path for source in archives.all},
                                   roots=registry.roots(), data_dir=registry.data_dir)  # fmt: skip
         except BrowseError as exc:
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
@@ -2062,7 +1978,8 @@ def create_app(
         return RedirectResponse("/status", status_code=303)
 
     @app.post("/index/{source_id}/build")
-    def build_in_what_changed(request: Request, source_id: str):
+    def build_in_what_changed(request: Request, source_id: str,
+                              archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """Build this archive's index again, because a person asked for it on the page saying so.
 
         It happens by itself after a correction. This is for every other way an index comes to be
@@ -2072,7 +1989,7 @@ def create_app(
         """
         # One archive's own, and only the one being looked at: the same boundary as the checks and
         # the corrections. See _the_open_archive.
-        source = _the_open_archive(source_id)
+        source = _the_open_archive(archives, source_id)
         if source is None:
             return _not_here(request, "That is not an archive this server holds.", "/status", "Archive status")
         # What went wrong is not carried back in the address: it is kept beside the archive it
@@ -2083,10 +2000,11 @@ def create_app(
 
     @app.post("/sources/{source_id}/inventory")
     def rescan_source(request: Request, source_id: str):
-        source = registry.get(source_id)
-        if source is None:
+        """The shell: what this press does is decided in web/the_list_of_archives.py."""
+        pressed = the_list.looked_through_again(registry, source_id)
+        if pressed.started is None:
             return _not_here(request, "That is not an archive this server holds.", "/status", "Archive status")
-        jobs.start(source)
+        jobs.start(pressed.started)
         return RedirectResponse("/status", status_code=303)
 
     return app

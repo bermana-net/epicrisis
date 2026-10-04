@@ -13,6 +13,8 @@ from typer.testing import CliRunner
 
 from epicrisis.cli import app
 from epicrisis.inventory import probes
+from epicrisis.readers import pdf as pdf_reader
+from epicrisis.readers import text as text_reader
 from epicrisis.inventory.report import Summary, render
 from epicrisis.inventory.scan import folder_year_hint, scan, sha256_file
 
@@ -22,8 +24,15 @@ SYNTHETIC_TEXT = (
 )
 
 
-def make_text_pdf(path: Path, page_texts: list[str]) -> None:
-    """Minimal PDF with a real text layer, one Helvetica line per page."""
+def make_text_pdf(path: Path, page_texts: list[str | list[tuple[int, int, str]]], rotate: int | None = None) -> None:
+    """Minimal PDF with a real text layer: one Helvetica line per page, or a page laid out.
+
+    A page given as a string is that one line. A page given as a list of (x, y, text) is a page
+    with those pieces printed where they are put, which is what a form of columns is and what a
+    single line cannot be — a reader of a text layer answers for the order it puts the pieces in,
+    and a page of one piece has no order to get wrong. `rotate` turns every page of the file, for
+    the form that was fed into the scanner sideways.
+    """
     count = len(page_texts)
     objects = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -33,10 +42,13 @@ def make_text_pdf(path: Path, page_texts: list[str]) -> None:
         3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     }
     for i, text in enumerate(page_texts):
-        content = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("ascii")
+        pieces = [(72, 720, text)] if isinstance(text, str) else text
+        content = b" ".join(b"BT /F1 12 Tf %d %d Td (%s) Tj ET" % (x, y, piece.encode("ascii"))
+                            for x, y, piece in pieces)
+        turned = b" /Rotate %d" % rotate if rotate else b""
         objects[4 + 2 * i] = (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>" % (5 + 2 * i)
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]" + turned
+            + b" /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>" % (5 + 2 * i)
         )
         objects[5 + 2 * i] = b"<< /Length %d >>\nstream\n%s\nendstream" % (len(content), content)
 
@@ -208,7 +220,7 @@ def test_cli_refuses_output_inside_archive(archive):
 def test_stamp_below_threshold_is_not_a_text_layer(tmp_path):
     path = tmp_path / "stamped_scan.pdf"
     make_text_pdf(path, ["SCANNED 1992 PAGE 01", "SCANNED 1992 PAGE 02"])
-    facts = probes.probe_pdf(path, "application/pdf")
+    facts = pdf_reader.probe(path, "application/pdf")
     assert facts["text_layer"] == "none"
     assert all(0 < chars < probes.MIN_TEXT_CHARS_PER_PAGE for chars in facts["text_chars_per_page"])
 
@@ -219,7 +231,7 @@ def test_garbled_text_layer_counts_as_no_text(tmp_path):
     path = tmp_path / "garbled.pdf"
     make_text_pdf(path, [SYNTHETIC_TEXT, garbled])
 
-    facts = probes.probe_pdf(path, "application/pdf")
+    facts = pdf_reader.probe(path, "application/pdf")
 
     assert (facts["garbled_text_pages"], facts["pages_with_text"], facts["text_layer"]) == ([2], 1, "partial")
     assert not probes.text_looks_garbled(SYNTHETIC_TEXT + " Гемоглобін ș ț «»№")
@@ -271,7 +283,7 @@ def test_aes_encrypted_pdf_with_empty_password(tmp_path):
     locked = tmp_path / "locked.pdf"
     writer.write(locked)
 
-    facts = probes.probe_pdf(locked, "application/pdf")
+    facts = pdf_reader.probe(locked, "application/pdf")
 
     assert facts["encrypted"] is True
     assert facts["pages"] == 1
@@ -301,6 +313,48 @@ def test_images_inside_office_files_count_for_vision(tmp_path):
     assert record["word"]["embedded_images"] == 1
     assert summary.office_images == 1
     assert summary.vision_pages == 1
+
+
+def test_a_media_directory_written_into_the_zip_is_not_a_picture(tmp_path):
+    """One page more than the file has pictures, and the page that is not there raised bare.
+
+    A zip may hold a directory as an entry of its own — "word/media/", with no name after it.
+    python's zipfile writes one, LibreOffice writes one, and a .doc is read here through a .docx
+    LibreOffice converted, so this is an ordinary shape and not a damaged file. Which entries are
+    the pictures was decided in three places and the filter stood in one: the probe counted the
+    directory, the reader did not serve it, and the page in between went to classify and extract
+    and failed with an IndexError naming neither the file nor the page, while the ledger recorded
+    a refusal against a page that does not exist. An error with no cause is a defect.
+    """
+    import io
+    import zipfile
+
+    from epicrisis.readers import office, word
+
+    picture = tmp_path / "scan.png"
+    Image.new("RGB", (40, 40), "white").save(picture)
+    document = docx.Document()
+    document.add_paragraph("Synthetic cover note")
+    document.add_picture(str(picture))
+    plain = io.BytesIO()
+    document.save(plain)
+
+    written = tmp_path / "with-a-directory-entry.docx"
+    with zipfile.ZipFile(plain) as source, zipfile.ZipFile(written, "w") as out:
+        out.writestr("word/media/", b"")  # the directory, as an entry of its own
+        for item in source.infolist():
+            out.writestr(item, source.read(item.filename))
+    data = written.read_bytes()
+
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        under = [name for name in archive.namelist() if name.startswith("word/media/")]
+    assert under == ["word/media/", "word/media/image1.png"]  # the shape this is about
+
+    facts = word.probe(written, probes.DOCX_MIME)
+    # One picture: what the probe counts, what the reader serves, and what pages() makes of it.
+    assert facts["embedded_images"] == len(office.media_names(data, "word")) == 1
+    record = {"word": facts, "category": "word"}
+    assert word.pages(record) == [("text", "office_text", None), ("vision", "office_image", None)]
 
 
 def test_damaged_versus_unsupported(tmp_path):
@@ -442,3 +496,127 @@ def test_one_torn_line_does_not_take_the_whole_archive_down(tmp_path):
 
     assert [row["page"] for row in read_records(path)] == [1, 3]
     assert torn_lines().get(str(path)) == 1
+
+
+# A document can arrive as plain text: no PDF, no photograph, no spreadsheet — a file of lines.
+# Everything below is invented and written at test time.
+
+SYNTHETIC_RU = (
+    "ЛАБОРАТОРИЯ ИНВЕНТА - ОБЩИЙ АНАЛИЗ КРОВИ\n"
+    "Пациент: Андерс Линдквист   Дата: 14.03.2019\n"
+    "Гемоглобин 134 г/л (130 - 160)\n"
+    "Лейкоциты 6,3 10^9/л (4,0 - 9,0)\n"
+    "Заключение: отклонений не выявлено.\n"
+)
+SYNTHETIC_EL = (
+    "ΕΡΓΑΣΤΗΡΙΟ ΙΝΒΕΝΤΑ - ΓΕΝΙΚΗ ΕΞΕΤΑΣΗ ΑΙΜΑΤΟΣ\n"
+    "Αιμοσφαιρίνη 13,4 g/dL (13,0 - 16,0)\n"
+    "Συμπέρασμα: εντός φυσιολογικών ορίων.\n"
+)
+SYNTHETIC_ES = "Hemoglobina 13,4 g/dL, dentro del rango. Informe de laboratorio, análisis general.\n"
+
+
+def test_a_plain_text_file_is_a_document_like_any_other(tmp_path):
+    """A .txt is read, counted and cut into pages. It used to be inventoried and then ignored."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / "blood.txt").write_text(SYNTHETIC_RU, encoding="utf-8")
+
+    record = by_name(list(scan(root)))["blood.txt"]
+
+    assert record["category"] == "text"
+    assert record["text"] == {
+        "coding": "utf-8",
+        "text_chars": probes._visible_chars(SYNTHETIC_RU),
+        "pages": 1,
+    }
+    assert "unsupported" not in record and "error" not in record
+
+
+@pytest.mark.parametrize(
+    ("text", "coding"),
+    [
+        (SYNTHETIC_RU, "utf-8"),
+        (SYNTHETIC_RU, "cp1251"),
+        (SYNTHETIC_RU, "koi8-r"),
+        (SYNTHETIC_RU, "utf-16"),
+        (SYNTHETIC_EL, "utf-8"),
+        (SYNTHETIC_EL, "cp1253"),
+        (SYNTHETIC_ES, "utf-8"),
+        (SYNTHETIC_ES, "cp1252"),
+    ],
+)
+def test_a_text_file_says_nothing_about_its_coding_so_it_is_read_out_of_the_letters(text, coding):
+    """Cyrillic read with the Western coding is not an error any decoder reports.
+
+    It comes out as letters too — "Ð¡Ð¾" where the file says a word — so the only thing that tells
+    the codings apart is reading the result: one alphabet, no alphabet changing inside a word, no
+    capital in the middle of one. Greek accented vowels under the Russian coding are capitals,
+    which is what tells those two apart.
+    """
+    read, found = text_reader.read_text(text.encode(coding))
+
+    assert read.lstrip("﻿") == text
+    assert found == coding
+
+
+def test_a_long_text_file_falls_into_pages_at_line_ends(tmp_path):
+    """A page is about the size of a printed one, not of the whole file.
+
+    It was twenty thousand characters, which made a document of four pages eighty thousand in one
+    request — two documents of the first text archive read here never finished — and put the line
+    between one visit and the next inside a page, where the reader could not place it.
+    """
+    assert text_reader.TEXT_PAGE_CHARS <= 6_000
+
+    line = "строка 12,3 г/л результат в пределах нормы\n"
+    text = line * 1000
+    pages = text_reader.text_pages(text)
+
+    assert len(pages) > 1
+    assert "".join(pages) == text  # nothing is lost between the pages and nothing is repeated
+    assert all(len(page) <= text_reader.TEXT_PAGE_CHARS for page in pages)
+    assert all(page.endswith("\n") for page in pages)  # cut where a line ends
+
+
+def test_a_text_file_with_nothing_visible_in_it_has_no_pages(tmp_path):
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / "blank.txt").write_text("   \n\n\t\n", encoding="utf-8")
+
+    record = by_name(list(scan(root)))["blank.txt"]
+
+    assert record["category"] == "text"
+    assert record["text"]["pages"] == 0  # nothing to send to a model, and nothing pretends there is
+
+
+def test_a_saved_web_page_is_not_a_document_of_the_archive(tmp_path):
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / "results.html").write_text("<html><body><p>Hemoglobin 134</p></body></html>", encoding="utf-8")
+
+    record = by_name(list(scan(root)))["results.html"]
+
+    assert "unsupported" in record
+    assert "pages" not in record.get("text", {})
+
+
+def test_a_walk_of_the_folder_says_how_far_it_got_whoever_asked_for_it(tmp_path):
+    """The first step of an archive on the dashboard is drawn from this, and only the dashboard
+    wrote it. An archive read end to end by `epicrisis update` showed "Queued" on that step for
+    ever: 257 documents, every one of them read, and the first step saying it had not begun."""
+    import json
+
+    root = tmp_path / "archive"
+    (root / "2004").mkdir(parents=True)
+    make_text_pdf(root / "2004" / "labs.pdf", [SYNTHETIC_TEXT])
+    out = tmp_path / "out" / "inventory.jsonl"
+
+    from epicrisis.inventory.run import write_inventory
+
+    summary = write_inventory(root, out)
+
+    status = json.loads((out.parent / "inventory.status.json").read_text())
+    assert status["state"] == "done"
+    assert status["scanned"] == summary.files + summary.skipped == 1
+    assert status["started_at"] <= status["finished_at"]

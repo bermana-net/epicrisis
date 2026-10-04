@@ -19,14 +19,25 @@
     <p><a class="btn" href="/?view=indicators">The tests this archive has</a></p>
   </section>
   {% elif missing %}
-  {{ nothing("Test") }}
+  {{ nothing("Test", stage) }}
   {% else %}
 
   <section class="rule" style="padding-top: 16px;">
     <a class="caps back" href="/?view=indicators">&larr; Timeline by test</a>
     <div class="timeline-head">
       <h1>{{ label }}</h1>
-      <p class="caps muted">{{ values | length }} values{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}{% if derived_left_out %} &middot; {{ derived_left_out }} more the laboratory calculated rather than measured, not drawn here{% endif %}<br>every number exactly as its form printed it</p>
+      {# The heading counts every value of this test; each chart below counts what it drew, and the
+         two differ by the retellings folded away. One archive showed 26 up here and 25 down there
+         with nothing anywhere to say where the other had gone, which is the seventh entry of the
+         constitution: a count that differs from another count on the same page is a defect. So the
+         difference is named here, where the larger number is, rather than left to be found. #}
+      {% set folded_away = charts | map(attribute="folded") | sum if charts else 0 %}
+      {# And which values they are. This count follows the tab that is open, and said so nowhere:
+         "45 values" stood over tabs reading "blood 45" and "urine 7", so the large number at the
+         top read as the whole test while being one material of it. The tabs are the other count
+         on this page, and the difference is named here, where the number is. #}
+      {% set in_every_material = materials | map(attribute="count") | sum %}
+      <p class="caps muted">{{ values | length }} values<span class="chart-material caps">{{ material_label }}</span>{% if materials | length > 1 %} &middot; of {{ in_every_material }} this test has here, one material at a time{% endif %}{% if folded_away %} &middot; {{ folded_away }} of them {{ "are" if folded_away != 1 else "is" }} a later document retelling a measurement already here, folded into the row it belongs to{% endif %}{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}{% if derived_left_out %} &middot; {{ derived_left_out }} more the laboratory calculated rather than measured, not drawn here{% endif %}<br>every number exactly as its form printed it</p>
     </div>
     {% if materials | length > 1 %}
     <div class="materials caps">
@@ -45,14 +56,17 @@
       {% endif %}{% endfor %}
       {% if material == "unknown" %}No form said what these were measured in, and the panel each stands on holds more than one specimen, so a model would not say either. They are lab values missing a label, not measurements of no sample &mdash; that is the tab beside this one. Set it below if you know, from the page itself.{% endif %}
       {% if material == "not_a_sample" %}These were measured on the person rather than in a sample &mdash; a size on an imaging report, a refraction, a pressure &mdash; so there is no specimen to name. Nothing is missing here.{% endif %}
-      {% if read_by_model %}<br><span class="signal">{{ read_by_model }} of these {{ "value" if read_by_model == 1 else "values" }} came on a form that printed no material; a model read the table it stands in and said this one.</span>{% endif %}
     </p>
     {# Said once for all of them. They arrive together — a form holding two specimens leaves its
        whole panel without a label — and settling twelve values one card at a time is twelve visits
        to say one thing. It is written as a person's own correction, which outlives every later
-       reading of the page. #}
+       reading of the page.
+
+       The archive these values were read out of is in the address it posts to: the press writes a
+       correction, and the archive can be switched in the bar above between this page being drawn
+       and the button being pressed. See `settle_the_material`. #}
     {% if material == "unknown" %}
-    <form class="settle-material" method="post" action="/tests/{{ indicator_id }}/material">
+    <form class="settle-material" method="post" action="/tests/{{ archive }}/{{ indicator_id }}/material">
       <label class="caps" for="settle-material">These were measured in</label>
       <select id="settle-material" name="material">
         {% for one in materials_to_choose %}<option value="{{ one }}">{{ one }}</option>{% endfor %}
@@ -62,17 +76,26 @@
     </form>
     {% endif %}
     {% endif %}
+    {# Which values a model named the specimen of, said whatever else is on this page.
+       This sentence stood inside the note above, which is drawn only where the test has more than
+       one material — so on a test with one, the rows carried an asterisk and nothing anywhere on
+       the page said what it meant. The fourth entry of the constitution asks for those words
+       beside the group, in the page's own words, and an asterisk whose key is in a title= a phone
+       never shows is not those words. Outside the tabs now, where it is said either way. #}
+    {% if read_by_model %}
+    <p class="caps read-by-model-note"><span class="signal">An asterisk on a specimen below means the form printed none: a model read the table the value stands in and said this one. {{ read_by_model }} of these {{ "value is" if read_by_model == 1 else "values are" }} marked that way.</span></p>
+    {% endif %}
   </section>
 
   {% for chart in charts %}
   <section class="card-section">
     <div class="chart-head">
       <h2>{{ chart.unit or "no unit printed" }}</h2>
-      <span class="caps muted">{{ chart.count }} value{{ "s" if chart.count != 1 }}{% if chart.spellings | length > 1 %} &middot; printed as {{ chart.spellings | join(", ") }}{% endif %}{% if chart.converted_from %} &middot; brought to {{ chart.unit }}: {% for from_unit, factor in chart.converted_from.items() %}{{ from_unit }} &times; {{ "%g"|format(factor) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if chart.by_numbers %} &middot; {{ chart.by_numbers }} with no unit printed, placed here by their numbers{% endif %}{% if chart.scaled %} &middot; {{ chart.scaled }} printed at another scale, drawn on this one{% endif %}{% if chart.beside_the_result %} &middot; {{ chart.beside_the_result }} printed beside the result, listed but not drawn{% endif %}</span>
+      <span class="caps muted">{{ chart.count }} value{{ "s" if chart.count != 1 }}{% if chart.spellings | length > 1 %} &middot; printed as {{ chart.spellings | join(", ") }}{% endif %}{% if chart.converted_from %} &middot; brought to {{ chart.unit }}: {% for from_unit, factor in chart.converted_from.items() %}{{ from_unit }} &times; {{ "%g"|format(factor) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if chart.by_numbers %} &middot; {{ chart.by_numbers }} with no unit printed, placed here by their numbers{% endif %}{% if chart.scaled %} &middot; {{ chart.scaled }} printed at another scale, drawn on this one{% endif %}{% if chart.beside_the_result %} &middot; {{ chart.beside_the_result }} printed beside the result, listed but not drawn{% endif %}{% if chart.folded %} &middot; <span title="A consultation retelling a result from another day is the same measurement, not a second one. Where the form it quotes is in this archive, the form is kept and the retelling is folded into it; where no form was ever scanned, the first retelling is kept and the rest are the same sentence said again.">{{ chart.folded }} retelling{{ "s" if chart.folded != 1 }} of {{ "these" if chart.folded != 1 else "this" }} folded into {{ "rows" if chart.folded != 1 else "a row" }} below</span>{% endif %}</span>
     </div>
 
     {% if chart.points %}
-    <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.count }} values of {{ label }} in {{ material_label }}, in {{ chart.unit }}, from the archive of {{ owners().whose }}, oldest first. The numbers are listed in the table below.">
+    <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.count }} values of {{ label }} in {{ material_label }}, in {{ chart.unit }}, from the archive of {{ owners.whose }}, oldest first. The numbers are listed in the table below.">
       {% for band in chart.bands %}
       <rect x="{{ band.x }}" y="{{ band.y }}" width="{{ band.width }}" height="{{ band.height }}" class="band"></rect>
       {% endfor %}
@@ -97,7 +120,44 @@
       {% endfor %}
     </svg>
     {% else %}
-    <p class="empty">Not enough numbers to draw a line here.</p>
+    {# One sentence stood here for every chart that drew nothing: "Not enough numbers to draw a
+       line here." On a chart of eight urine colours printed as words it reads as "have the test
+       taken again", and no number of further tests would ever draw that line — not one of those
+       values is a number, and never will be. Which of the three causes it is comes from
+       series.py; the sentence for each is here, and each one says where the values are, because
+       they are all in the table directly below. #}
+    {% set why = chart.not_drawn %}
+    {% set words = why.shapes.get("a word", 0) %}
+    {% set spans = why.shapes.get("a span", 0) %}
+    {% set numerals = why.shapes.get("a number", 0) %}
+    {% set otherwise = why.shapes.get("another shape", 0) %}
+    {% if why.reason == "not numbers" %}
+    {# "No further test would draw one" is true of a word and of a span and would be a lie about a
+       form that printed a number this archive read as a word, so it is not said where one of those
+       stands: that chart is waiting on a correction, not on a laboratory. #}
+    <p class="empty">No line here{% if not numerals %}, and no further test would draw one{% endif %}: nothing on this scale reached this chart as a number.
+      {%- if words %} {% if words == chart.count %}{{ "It is" if words == 1 else "They are" }}{% else %}{{ words }} of them {{ "is" if words == 1 else "are" }}{% endif %} a word the form printed &mdash; {{ why.examples["a word"] | join(", ") }} &mdash; and a word stands at no height on an axis.{% endif %}
+      {%- if spans %} {% if spans == chart.count %}{{ "It is" if spans == 1 else "They are" }}{% else %}{{ spans }} of them {{ "is" if spans == 1 else "are" }}{% endif %} printed as a span rather than a number &mdash; {{ why.examples["a span"] | join(", ") }} &mdash; and a span has no one height to stand at.{% endif %}
+      {%- if otherwise %} {% if otherwise == chart.count %}{{ "It is" if otherwise == 1 else "They are" }}{% else %}{{ otherwise }} of them {{ "is" if otherwise == 1 else "are" }}{% endif %} printed in a shape no axis takes &mdash; {{ why.examples["another shape"] | join(", ") }}.{% endif %}
+      That is the result and not a gap where one should be: {% if chart.count == 1 %}it is in the table below, with the day and the form it came from{% else %}all {{ chart.count }} are in the table below, each with the day and the form it came from{% endif %}, exactly as printed.</p>
+    {% if numerals %}
+    {# The one shape in this branch that is somebody's to put right, so it is said apart from the
+       rest: the form printed a number, the reading brought it back as a word, and the chart was
+       never offered a point. It is two of the eight urine protein values of the demo archive. #}
+    <p class="empty"><span class="signal">{{ numerals }} of them {{ "reads" if numerals == 1 else "read" }} as a number on the form &mdash; {{ why.examples["a number"] | join(", ") }} &mdash; and came back from the reading as a word, so {{ "it was" if numerals == 1 else "they were" }} never offered to this chart. Open {{ "its document" if numerals == 1 else "their documents" }} below, compare with the page and correct the line, and {{ "it" if numerals == 1 else "they" }} will be drawn.</span></p>
+    {% endif %}
+    {% elif why.reason == "nowhere to put them" %}
+    <p class="empty">{{ why.numbers }} number{{ "s" if why.numbers != 1 }} on this scale and nowhere to put {{ "it" if why.numbers == 1 else "them" }}.
+      {%- if why.numbers_undated %} {{ why.numbers_undated }} of {{ "them" if why.numbers != 1 else "it" }} {{ "comes" if why.numbers_undated == 1 else "come" }} from a document whose date is not settled, and a point needs a day to stand on: settling the date on those documents, on each document's own page, is what draws them.{% endif %}
+      {%- if why.numbers_beside %} {{ why.numbers_beside }} {{ "is" if why.numbers_beside == 1 else "are" }} printed beside the result of {{ "its" if why.numbers_beside == 1 else "their" }} own form and {{ "belongs" if why.numbers_beside == 1 else "belong" }} to another day, so {{ "it is" if why.numbers_beside == 1 else "they are" }} listed and not drawn.{% endif %}
+      {%- if why.not_numbers %} The other {{ why.not_numbers }} value{{ "s" if why.not_numbers != 1 }} of this scale {{ "is" if why.not_numbers == 1 else "are" }} not {{ "a number" if why.not_numbers == 1 else "numbers" }} at all.{% endif %}
+      {% if chart.count == 1 %}It is{% else %}All {{ chart.count }} are{% endif %} in the table below, exactly as printed.</p>
+    {% else %}
+    <p class="empty">{{ why.drawable }} number{{ "s" if why.drawable != 1 }} {{ "is" if why.drawable == 1 else "are" }} not a line: a line needs {{ why.least }} points to run between, and this scale has {{ why.drawable }}.
+      {%- if why.not_numbers %} The other {{ why.not_numbers }} value{{ "s" if why.not_numbers != 1 }} here {{ "is" if why.not_numbers == 1 else "are" }} not {{ "a number" if why.not_numbers == 1 else "numbers" }}{% if words or spans %} &mdash; {{ (why.examples.get("a word", []) + why.examples.get("a span", [])) | join(", ") }}{% endif %}, so {{ "it" if why.not_numbers == 1 else "they" }} cannot make up the difference.{% endif %}
+      {%- if charts | length > 1 %} Another measurement printed in {{ chart.unit or "this unit" }} would draw one; the values of this test on the other scales of this page are not brought here, because nothing is converted.{% else %} Another measurement printed in {{ chart.unit or "this unit" }} would draw one.{% endif %}
+      {% if chart.count == 1 %}It is{% else %}All {{ chart.count }} are{% endif %} in the table below, exactly as printed.</p>
+    {% endif %}
     {% endif %}
     {# Directly under the drawing, not over it: every chart says which test and what was
        measured, and at the top that line runs into the unit and the count. A chart with too few
@@ -108,9 +168,21 @@
        daughter with her mother in one tab and her father in another had two of these side by side
        with nothing on either to say which was which. The strip of tabs is answered by the title;
        this is the same answer inside the picture. #}
-    <p class="chart-what">{{ label }} <span class="chart-material caps">{{ material_label }}</span> <span class="chart-unit">{{ chart.unit or "no unit printed" }}</span>{% if owners().whose %} <span class="chart-whose caps">archive of {{ owners().whose }}</span>{% endif %}</p>
+    <p class="chart-what">{{ label }} <span class="chart-material caps">{{ material_label }}</span> <span class="chart-unit">{{ chart.unit or "no unit printed" }}</span>{% if owners.whose %} <span class="chart-whose caps">archive of {{ owners.whose }}</span>{% endif %}</p>
     {% if chart.points %}
-    <p class="caps muted chart-note">The shaded band is the reference range printed on the form beside that value, drawn around the value it belongs to. Where a form printed no range there is no band: the range on the form before it says nothing about a value printed without one. It moves because laboratories differ, not because anything was calculated.{% if chart.points | selectattr("corrected") | first %} A point drawn as a coloured ring is a value you corrected by hand against the page; the table below says so on its row.{% endif %}</p>
+    <p class="caps muted chart-note">The shaded band is the reference range printed on the form beside that value, drawn around the value it belongs to. Where a form printed no range there is no band: the range on the form before it says nothing about a value printed without one. It moves because laboratories differ, not because anything was calculated.</p>
+    {% endif %}
+    {# A row said "corrected" and stopped there. What the line used to hold is on the document's
+       own card, and this page named neither the fact nor the way to it — on the page the readme
+       offers for showing a doctor from a phone, where there is no hovering to fall back on. The
+       word is now the way, and this says so once per chart.
+
+       Said about the rows and not about the points, which is where it used to be said: a chart of
+       one value, or of words a form printed, draws nothing and still has a table of corrected
+       rows under it, and the sentence was inside the note that only appears where a line was
+       drawn. #}
+    {% if chart.rows | selectattr("corrected") | first %}
+    <p class="caps muted chart-note">A value you corrected by hand against the page says so on its row{% if chart.points | selectattr("corrected") | first %}, and is drawn as a coloured ring{% endif %}; that word opens the document, where what the model had read is kept beside the way back to it.</p>
     {% endif %}
 
     <div class="obs-table series-table">
@@ -120,10 +192,18 @@
       {% for item in chart.rows %}
       <div class="obs-row" style="grid-template-columns: 96px minmax(120px, 1fr) 110px 150px minmax(0, 1.4fr) 76px;">
         <span class="mono">{{ item.date_label or item.date or "date to check" }}</span>
-        <span>{{ item.name }}{% if item.material %} <span class="caps muted{% if item.material_source == "model" %} read-by-model{% endif %}"{% if item.material_source == "model" %} title="The form printed no material. A model read the table this value stands in."{% endif %}>{{ item.material }}{% if item.material_source == "model" %}*{% endif %}</span>{% endif %}</span>
-        <span class="value mono">{% if item.comparator and not item.value.startswith(item.comparator) %}{{ item.comparator }}{% endif %}{{ item.value }}{% if item.corrected %} <span class="caps signal">corrected</span>{% endif %}{% if item.value_role and item.value_role != "result" %} <span class="caps muted" title="Printed beside the result of this form{% if item.column_heading %}, under &laquo;{{ item.column_heading }}&raquo;{% endif %}. It belongs to another day, so it is listed here and not drawn.">{{ item.column_heading or "beside the result" }}</span>{% endif %}{% if item.scaled %} <span class="caps muted" title="This form printed the value and its range at another scale. The number here is as printed; the point on the chart is moved by {{ "%g"|format(item.scaled.factor) }} so that one test printed two ways draws one history.">&times;{{ "%g"|format(item.scaled.factor) }} on the chart</span>{% endif %}{% if item.unit_by_numbers %} <span class="caps muted" title="This form printed no unit for this value. It is shown on this scale because its numbers agree with it.">unit by numbers</span>{% endif %}{% if item.unit_from_reference %} <span class="caps muted" title="This form printed no unit column. The unit was read from the range printed beside the value.">unit from the range</span>{% endif %}{% if item.unit_from_the_row %} <span class="caps muted" title="The unit is the one printed for this row of the form.">unit from the row</span>{% endif %}</span>
-        <span class="mono">{{ item.reference or "–" }}</span>
-        <span class="muted">{{ item.provider or "–" }}</span>
+        {# The asterisk is keyed above the table, in the page's own words, not in a title= here. #}
+        {# The name is as one form printed it and the rows of this table come from many forms, so
+           the language goes on the name and not on the table: one test's history runs through
+           Ukrainian, Russian and Greek pages. The specimen beside it is this program's word for
+           what was measured, in English, and stays outside. #}
+        <span><span{{ item.language | said_in }}>{{ item.name }}</span>{% if item.material %} <span class="caps muted{% if item.material_source == "model" %} read-by-model{% endif %}">{{ item.material }}{% if item.material_source == "model" %}*{% endif %}</span>{% endif %}</span>
+        <span class="value mono">{% if item.comparator and not item.value.startswith(item.comparator) %}{{ item.comparator }}{% endif %}{{ item.value }}{% if item.corrected %} <a class="caps signal corrected-to" href="{{ item.card_url }}">corrected</a>{% endif %}{% if item.value_role and item.value_role != "result" %} <span class="caps muted" title="Printed beside the result of this form{% if item.column_heading %}, under &laquo;{{ item.column_heading }}&raquo;{% endif %}. It belongs to another day, so it is listed here and not drawn.">{{ item.column_heading or "beside the result" }}</span>{% endif %}{% if item.scaled %} <span class="caps muted" title="This form printed the value and its range at another scale. The number here is as printed; the point on the chart is moved by {{ "%g"|format(item.scaled.factor) }} so that one test printed two ways draws one history.">&times;{{ "%g"|format(item.scaled.factor) }} on the chart</span>{% endif %}{% if item.unit_by_numbers %} <span class="caps muted" title="This form printed no unit for this value. It is shown on this scale because its numbers agree with it.">unit by numbers</span>{% endif %}{% if item.unit_from_reference %} <span class="caps muted" title="This form printed no unit column. The unit was read from the range printed beside the value.">unit from the range</span>{% endif %}{% if item.unit_from_the_row %} <span class="caps muted" title="The unit is the one printed for this row of the form.">unit from the row</span>{% endif %}{% if item.quoted %} <span class="caps muted" title="A consultation of {{ item.quoted_from or "another day" }} retells this measurement and prints the day it was taken. It is drawn on that day rather than on the day of the consultation, because that is the day the laboratory gave it.">retold, dated from the line{% endif %}{% if item.quoted %}</span>{% endif %}{% if item.folded_retellings %} <span class="caps muted" title="Another {{ item.folded_retellings }} document{{ "s" if item.folded_retellings != 1 }} in this archive {{ "retell" if item.folded_retellings != 1 else "retells" }} this same measurement. One measurement is one point, so {{ "they are" if item.folded_retellings != 1 else "it is" }} folded into this row rather than drawn again.">+{{ item.folded_retellings }} retelling{{ "s" if item.folded_retellings != 1 }} folded in</span>{% endif %}</span>
+        {# Where a form printed two ranges on one line, one per scale, the band drawn is the one
+           printed in this chart's unit. The program chose between them, so the row says so here,
+           beside the printed text a reader can see both of them in. #}
+        <span class="mono">{{ item.reference or "–" }}{% if item.band_by_its_unit %} <span class="caps muted" title="This form printed two ranges on one line, one for each scale, each with its own unit. The band on the chart is the one printed in {{ chart.unit }}, because that is the unit this chart is drawn in; the other range is the same test at the other scale.">band drawn: the one in {{ chart.unit }}</span>{% endif %}</span>
+        <span class="muted"{{ item.language | said_in }}>{{ item.provider or "–" }}</span>
         <span><a class="mono" href="{{ item.card_url }}">{{ item.file_id }}</a></span>
       </div>
       {% endfor %}

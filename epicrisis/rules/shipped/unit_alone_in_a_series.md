@@ -6,7 +6,7 @@ the unit was misread, or the line belongs to a different measurement that shares
 name — an absolute count standing among percentages, a sediment count among blood counts."""
 kind = "unit-alone-in-a-series"
 attaches = "document"
-settles = """Open the page and read the unit. If the form prints what the card says, this is a laboratory that writes it differently and nothing is wrong; if the line belongs to another measurement, it does not belong in this history."""
+settles = """Open the document beside the original and read the unit; every one of these is listed on Looks misread, behind the line on To check. If the form prints what the card says, this is a laboratory that writes it differently and nothing is wrong; if the line belongs to another measurement, it does not belong in this history."""
 does = "marks"
 at = "suspects"
 on_by_default = true

@@ -91,10 +91,22 @@ def list_folder(raw_path: str, added_paths: set[str], roots: list[Path] | None =
         raise BrowseError("The server cannot read this folder.", 403) from exc
 
     folders.sort(key=lambda entry: entry.name.casefold())
+    # Which of the folders above this one the picker can actually open. Every crumb was a live
+    # button up to "/", and every one of them above the roots answered with the refusal above —
+    # a trail of links of which all but the last two or three fail, and the same for "Up one
+    # level" standing on the topmost folder a person is allowed in. The refusal itself is good
+    # and stays: it is what somebody who typed a path out by hand reads, and the dialog still
+    # reaches it that way. What is wrong is offering a press that cannot work.
+    inside = [{"name": part, "path": str(Path(*target.parts[: index + 1]))} for index, part in enumerate(target.parts)]
+    for crumb in inside:
+        crumb["inside"] = any(Path(crumb["path"]).is_relative_to(root) for root in roots)
+    parent = target.parent if target.parent != target else None
+    if parent is not None and not any(parent.is_relative_to(root) for root in roots):
+        parent = None
     return {
         "path": str(target),
-        "parent": str(target.parent) if target.parent != target else None,
-        "crumbs": [{"name": part, "path": str(Path(*target.parts[: index + 1]))} for index, part in enumerate(target.parts)],
+        "parent": str(parent) if parent is not None else None,
+        "crumbs": inside,
         "folders": [
             {"name": entry.name, "path": entry.path, "added": entry.path in added_paths}
             for entry in folders[:MAX_FOLDERS]

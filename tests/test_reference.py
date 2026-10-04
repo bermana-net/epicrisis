@@ -108,6 +108,38 @@ def test_every_way_a_form_says_less_than_is_known_to_both_halves_of_the_program(
         assert not comparator_printed(text) and reference.parse(text)
 
 
+def test_a_word_of_direction_behind_its_number_is_one_to_both_halves_too():
+    """The half of that list the reader of values could not match, in all five languages at once.
+
+    The comment over the list says a form prints "до 5" as readily as "5 и более", and names the
+    English "20 or less" as a shape printed by the thousand. The reader was anchored to the start
+    of the string, so not one word standing behind its number was ever a comparator to it — while
+    reference.parse, reading a word "wherever it stands", read every one of these correctly. Each
+    such value was handed `comparator_not_printed` with its comparator read exactly right, and the
+    document went to "to check" for it.
+    """
+    from epicrisis import reference
+    from epicrisis.printed_values import comparator_printed, unexplained_letters
+
+    below = ("20 or less", "20 или менее", "5 або менше", "5 o menos", "5 ή λιγότερο", "5 Ή ΛΙΓΟΤΕΡΟ")
+    above = ("18 и более", "5 і більше", "40 and above", "5 o más", "5 ή περισσότερο")
+
+    for text in below:
+        assert comparator_printed(text), text
+        assert not unexplained_letters(text), text
+    for text in above:
+        assert comparator_printed(text), text
+        assert not unexplained_letters(text), text
+    # Both halves of the list on one number, which is how "от 5 до 10" is printed, and the two
+    # readers must still agree that something was printed.
+    assert comparator_printed("от 5 до 10") and reference.parse("от 5 до 10") == (5.0, 10.0)
+
+    # And what stands behind a number and is not a direction: a unit, and the two words of the
+    # list that head a column and are a time behind a number.
+    for text in ("5 mg", "120 мин", "120 min", "5 max", "3,5 - 5,5", "5"):
+        assert not comparator_printed(text), text
+
+
 def test_a_sign_beside_the_number_outranks_a_word_further_along():
     """"≤75% від білірубіну загального" was read as a floor of seventy-five, not a ceiling.
 

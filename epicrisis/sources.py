@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-OUTPUT_DIR_NAME = "sources"
+OUTPUT_DIR_NAME = layout.ARCHIVES  # one name for it, in layout, where a refusal can also read it
 
 
 # Folders that belong to the server rather than to a person: a scan of them reads thousands of
@@ -44,13 +44,16 @@ SYSTEM_FOLDERS = {"/etc", "/bin", "/sbin", "/lib", "/lib64", "/usr", "/var", "/b
 ARCHIVE_ROOT_VARIABLE = "EPICRISIS_ARCHIVE_ROOT"
 RUNTIME_FOLDERS = ("/proc", "/sys", "/dev", "/run")
 
-# What a reading of an archive leaves behind, and therefore what starting again puts aside.
-# corrections.jsonl is not here: a correction is the person's own, keyed to the file's whole
-# sha256 and to the line as printed, and it applies again to the next reading of the same file.
-READING_ARTEFACTS = (
-    layout.INVENTORY, layout.INVENTORY_STATUS, layout.CLASSIFY, layout.EXTRACTED, layout.RECHECKED,
-    layout.REPLACED, layout.VALIDATION, layout.DATE_SEARCH, layout.LEDGER,
-)
+# What a reading of an archive leaves behind, and therefore what starting again puts aside. Worked
+# out in layout, where the lists of names live, and only named here — the hand-written copy of it
+# that stood here held layout.REPLACED, which layout calls a person's own work: the only copy of a
+# reading that a later reading displaced went into forgotten-<when>/, where backup.py does not
+# look, and the eighth entry of the constitution is written about exactly that file.
+#
+# corrections.jsonl is not in it, and that is the same list speaking: a correction is the person's
+# own, keyed to the file's whole sha256 and to the line as printed, and it applies again to the
+# next reading of the same file.
+READING_ARTEFACTS = layout.READING_ARTEFACTS
 
 
 class SourceError(ValueError):
@@ -71,6 +74,63 @@ class Source:
         return self.owner or self.name
 
 
+def _the_open_one(sources: list[Source]) -> Source | None:
+    """Which of these is being shown. With none chosen, the first one added.
+
+    One place, asked by `SourceRegistry.active` and by `as_one_reading` below, because those two
+    have to agree about the same list and the rule is not obvious: "none is marked" happens on
+    every instance between adding the first archive and anything choosing it.
+    """
+    return next((source for source in sources if source.active), sources[0] if sources else None)
+
+
+@dataclass(frozen=True)
+class TheArchives:
+    """One reading of the list: every archive on it, and which of them is open.
+
+    Reading the file answers both questions at once, and this is what that one answer is carried
+    in. `list()` and `active()` each read the file afresh, which is right for a command that asks
+    once and exits — and wrong for anything that asks twice, because the archive is switchable
+    from the bar of every page, the switch is an ordinary POST that the server answers on another
+    thread, and nothing holds a request still. Two readings inside one answer can be two
+    different archives, and a page drawn out of two readings is a page of two people: that is the
+    first entry of the constitution, and it had already drawn one archive's documents under
+    another archive's joined names.
+
+    So it is a value and not a question. Whoever is handed it cannot ask again, and whoever needs
+    it has to be given it.
+    """
+
+    all: tuple[Source, ...]
+    showing: Source | None
+
+    @property
+    def showing_id(self) -> str | None:
+        """The id of the archive being shown, or None when none is added yet."""
+        return self.showing.id if self.showing else None
+
+    @property
+    def open(self) -> tuple[Source, ...]:
+        """The archive being looked at, as a list, or none at all when none is added yet.
+
+        For the pages that draw one block per archive and must draw it for one person: every page
+        but the status page is about one person, and listing everybody's under a heading carrying
+        one name is how one archive is read as another's.
+        """
+        return (self.showing,) if self.showing is not None else ()
+
+    def get(self, source_id: str) -> Source | None:
+        """The archive of this id, if it is on the list at all. Whether it is the open one is a
+        separate question, and the pages that must ask it ask it of `showing` as well."""
+        return next((source for source in self.all if source.id == source_id), None)
+
+
+#: No archive on the list, for a caller whose reading of it did not come off. A page is still
+#: drawn over a torn list of archives — it is the page that says the list is torn — and it is
+#: drawn about nobody.
+NO_ARCHIVES = TheArchives(all=(), showing=None)
+
+
 def belongs_to_the_server(path: Path) -> bool:
     """Whether this folder is the server's own rather than a person's, and so never an archive.
 
@@ -82,6 +142,26 @@ def belongs_to_the_server(path: Path) -> bool:
     """
     path = Path(path)
     return str(path) == "/" or any(path.is_relative_to(folder) for folder in SYSTEM_FOLDERS | set(RUNTIME_FOLDERS))
+
+
+def folder_is_there(path: Path | str) -> bool:
+    """Whether an archive's folder is where the list says it is, and can be read through, now.
+
+    One is_dir() and one access(). It is here and not at the point of use because it is asked by
+    two doors that have to agree: the status page draws a notice from it, and `sources list` is
+    the one command that prints the folders themselves — and printed one that was not there like
+    any other, a path to nothing in a column of paths, with nothing beside it. A disk that did
+    not mount and a folder renamed are the ordinary reasons, and the ordinary moment somebody
+    asks for the list is just after it happened.
+
+    R_OK and X_OK both: a folder that can be listed but not entered is as unreadable as one that
+    is gone, and both of them walk empty rather than raising.
+    """
+    folder = Path(path)
+    try:
+        return folder.is_dir() and os.access(folder, os.R_OK | os.X_OK)
+    except OSError:
+        return False
 
 
 def source_output_dir(data_dir: Path, source_id: str) -> Path:
@@ -178,8 +258,15 @@ class SourceRegistry:
 
     def active(self) -> Source | None:
         """The archive being shown. With none chosen, the first one added."""
+        return _the_open_one(self.list())
+
+    def as_one_reading(self) -> TheArchives:
+        """Every archive and which of them is open, out of a single reading of the file.
+
+        For a caller that needs both, or that needs either more than once: see `TheArchives`.
+        """
         sources = self.list()
-        return next((source for source in sources if source.active), sources[0] if sources else None)
+        return TheArchives(all=tuple(sources), showing=_the_open_one(sources))
 
     def set_active(self, source_id: str) -> Source | None:
         """Choose whose archive the interface shows. Exactly one is active at a time."""
@@ -243,9 +330,16 @@ class SourceRegistry:
 
         The folder stays on the list and the files in it are not touched. What moves is what the
         models and the checks wrote about them: the inventory, the classification, the
-        transcriptions, the validation and the index. Corrections stay where they are, because
-        they are the person's own words about a printed line, keyed to the file and not to any
-        reading of it, and they apply again as soon as the documents are read again.
+        transcriptions, the materials, the boundaries, the validation and the index — the list is
+        layout.READING_ARTEFACTS and is not kept here, because a second copy of it had a file in
+        it that nothing on this machine can make again.
+
+        What a person did themselves stays where it is, and so does the only copy of anything.
+        Corrections and verdicts are their own words about a printed line, keyed to the file and
+        not to any reading of it, and they apply again as soon as the documents are read again.
+        replaced/ stays for a harder reason: it is the one copy of each reading that a later
+        reading displaced, nothing rebuilds it, and moving it into forgotten-<when>/ took it out
+        of sight of the one command that carries such things off the machine.
 
         Nothing is deleted. The work of hours and of a subscription's worth of reading goes into
         data/sources/<id>/forgotten-<when>/, and a person who pressed this by mistake can carry

@@ -1,0 +1,95 @@
+{% extends "_page.html" %}
+{% set page_class = "documents review" %}
+{% block title %}Looks misread{% endblock %}
+{% block page %}
+
+  {% from "_nothing.html" import nothing %}
+  {# The menu keeps "To check" lit: this is that page's own list, reached from the line on it, and
+     a menu claiming a person is somewhere they are not is the interface telling them they are
+     lost. #}
+  {% set current = "review" %}
+  {% include "_header.html" %}
+
+  {% set here = stage %}
+  {% if not sources or here.state in ("no_archive", "unread", "nothing_to_read", "scanning") %}
+  {{ nothing("Looks misread", stage) }}
+  {% else %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <h1>Looks misread</h1>
+    <p class="lead caps">Lines where the page may have been read wrong: a number many times away from every other reading of the same test, a unit nobody else on that test prints. Found in the index, without a model, each time this page is asked for &mdash; so this and <span class="mono">epicrisis suspects</span> cannot disagree. Nothing here is an error and nothing is changed: it is a queue of pages worth opening beside the original. Heaviest first.</p>
+    <p><a class="btn small" href="/review">To check</a></p>
+  </section>
+
+  {% for source in sources %}
+  <section class="docs-source">
+    <div class="docs-summary caps">
+      <span>Archive of {{ source.whose }}</span>
+      {% if source.missing %}
+      <span>Nothing is indexed yet</span>
+      {% elif source.every_rule_off %}
+      <span>Every rule of this search is off</span>
+      {% else %}
+      <span>{{ source.documents }} document{{ "s" if source.documents != 1 }} &middot; {{ source.findings }} line{{ "s" if source.findings != 1 }}</span>
+      {% endif %}
+      <a class="btn small" href="/settings?tab=rules">The rules and their switches</a>
+    </div>
+
+    {% if source.missing %}
+    <p class="empty">Nothing is indexed yet, so there is nothing to look through. The index is built here, from what is already on this machine, in seconds, and nothing is sent anywhere.</p>
+    {% elif source.every_rule_off %}
+    {# Not an empty list: every rule off and an archive with nothing to find look the same
+       otherwise, and only one of the two has anything a person can do about it. #}
+    <p class="empty">Every rule that finds these is turned off for this archive, so nothing was looked for.</p>
+    <p class="caps muted">Each of them says what it looks at and how it can be wrong, beside its own switch. Turning one on costs nothing and sends nothing: it takes effect the next time this page is asked for.</p>
+    {% elif not source.shown %}
+    <p class="empty">Nothing looks misread in this archive.</p>
+    {% else %}
+
+    {# Which rules found this, what each weighs, and what settles one of its findings &mdash; the
+       rule's own words, from its own file, which is the only place that sentence is written. #}
+    <div class="card-findings">
+      <span class="caps">What was looked for</span>
+      <ul>
+        {% for rule in source.rules %}
+        <li>
+          <b>{{ rule.name }}</b>
+          <span class="caps muted">&middot; {{ rule.findings }} line{{ "s" if rule.findings != 1 }} on {{ rule.documents }} document{{ "s" if rule.documents != 1 }}</span>
+          {% if rule.settles %}<p class="caps muted">{{ rule.settles }}</p>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="doc-table">
+      <div class="doc-row head caps">
+        <span>Date</span><span>Type</span><span>File</span><span>Why</span>
+      </div>
+      {% for item in source.shown %}
+      <div class="doc-row">
+        <span class="mono">{{ item.date or "–" }}</span>
+        <span><a class="doc-link" href="/documents/{{ source.id }}/{{ item.sha256 }}/{{ item.first_page }}">{{ item.title or (item.doc_type | in_words) }}</a></span>
+        <span class="doc-file-cell"><span class="file-id" title="File ID {{ item.file_id }}">{{ item.file_id }}</span> <span class="caps muted">p. {{ item.first_page }}</span></span>
+        <span class="caps muted">{% for one in item.why %}{{ one.name }}{% if one.times > 1 %} &times;{{ one.times }}{% endif %}{% if not loop.last %} &middot; {% endif %}{% endfor %}</span>
+      </div>
+      <div class="doc-row unreadable-row">
+        <ul class="unreadable-parts">
+          {% for line in item.lines %}
+          {# As the rule printed it: the printed name, the printed value and the printed unit, and
+             what the other forms of the same test print. No verdict on the number. #}
+          <li>{{ line }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if source.more %}
+    <p class="caps muted">{{ source.more }} more document{{ "s" if source.more != 1 }} carry a signal and are not drawn here. The heaviest are above; the whole list is <span class="mono">epicrisis suspects --limit {{ source.documents }}</span>.</p>
+    {% endif %}
+    {% endif %}
+  </section>
+  {% endfor %}
+  {% endif %}
+
+{% endblock %}

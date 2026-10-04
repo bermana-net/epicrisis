@@ -122,7 +122,26 @@ def test_an_answer_with_nothing_in_it_is_a_failure_and_not_an_empty_answer(monke
     assert events == [{"kind": "error", "text": "no answer"}]
 
 
-def test_the_api_engine_starts_no_process_at_all(monkeypatch, archive_index, a_call):  # noqa: F811
+@pytest.fixture
+def a_key_this_test_brought_itself(monkeypatch):
+    """A key in the environment, so that choosing the API engine does not depend on this machine.
+
+    Both tests below need an instance where the API engine is ready, and readiness means a key.
+    They had none, and passed anyway — because `key_for` falls back to a .env beside the program,
+    and on the machine this was written on that file holds the author's real key. So they were
+    green here and red in every worktree and every fresh clone: two failures about a missing key,
+    on a change that had nothing to do with keys, in the middle of every report. CLAUDE.md promises
+    the suite needs no network and no model, and a test that needs somebody's key is that promise
+    broken rather than a key missing.
+
+    The value is nonsense on purpose. Nothing here calls Anthropic — the provider is a fake and
+    `a_call` is replaced — so what the key says never leaves the process, and a key that could
+    work would mean a test that could spend money.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-key-nothing-here-calls-anybody")
+
+
+def test_the_api_engine_starts_no_process_at_all(monkeypatch, archive_index, a_call, a_key_this_test_brought_itself):  # noqa: F811
     """The point of this loop: an instance with a key and no Claude Code can still answer."""
     import subprocess
 
@@ -140,7 +159,7 @@ def test_the_api_engine_starts_no_process_at_all(monkeypatch, archive_index, a_c
     assert events[-1] == {"kind": "answer", "text": "Three documents."}
 
 
-def test_the_pass_that_asks_the_web_follows_the_engine_too(tmp_path, monkeypatch):
+def test_the_pass_that_asks_the_web_follows_the_engine_too(tmp_path, monkeypatch, a_key_this_test_brought_itself):
     """The one place that talks to anything but Anthropic, on either engine.
 
     And the destination changes with it, which is what the consent is recorded against.

@@ -16,20 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from epicrisis.classify.pages import Payload
-
-DOC_TYPES = [
-    "lab_panel",
-    "imaging_report",
-    "consultation",
-    "discharge",
-    "prescription",
-    "referral",
-    "admin",
-    "insurance",
-    "id_document",
-    "blank",
-    "other",
-]
+from epicrisis.doc_types import DOC_TYPES
 
 SYSTEM_PROMPT = """You index pages of a person's own medical document archive. You see one page at a time and know nothing about the file it came from. Report only what is visible on this page. Never infer, normalise, translate or complete anything, and never comment on health or findings.
 

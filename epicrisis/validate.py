@@ -5,27 +5,32 @@ in the transcription. The result is written whole to data/sources/<id>/validatio
 """
 
 import json
+import math
 import re
 import tempfile
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import median
 
 from epicrisis import layout
 from epicrisis.classify.pages import PageUnreadable, document_payloads, page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.corrections import as_a_person_left_it, load_corrections, load_value_corrections
 from epicrisis.datesearch import load_search_results
+from epicrisis.dates import read_printed_date
 from epicrisis.document_dates import document_date, provider_key, source_day_first
+from epicrisis.eyes import measurements_named, several_measurements_in_one, the_eye_alone
 from epicrisis.extract.run import load_extracted, transcription_problems
-from epicrisis.state import Unreadable
+from epicrisis.material_reading import load_materials
+from epicrisis.state import Unreadable, where
 from epicrisis.records import read_records, torn_under
 from epicrisis.printed_values import SIGNS, comparator_printed, fold, squeezed, number_matches, number_tokens
 from epicrisis import reference
 from epicrisis.rules import load as load_rules
 from epicrisis.rules.kinds import VALIDATE
 from epicrisis.rules.subjects import ONE_DOCUMENT, THE_ARCHIVE, Archive, Document, Found
-from epicrisis.settings import rules_on
+from epicrisis.settings import rules_on, trusts_read_materials
 from epicrisis.sources import data_dir_of
 from epicrisis.runs import one_at_a_time, write_whole
 from epicrisis.values import is_result
@@ -72,14 +77,44 @@ def vocabulary(data_dir: Path | None = None) -> dict[str, dict]:
 
 
 NUMBER = re.compile(r"[-+]?(?:\d+(?:[.,]\d+)?|[.,]\d+)")
-# Codes from the extract checks that other checks here already cover or that do not point at an error.
-COVERED_CHECK_PROBLEMS = {"unreadable_on_images", "no_column_headings", "no_column_headings_in_multi_value_rows"}
+# Codes from the extract checks that other checks here already cover or that do not point at an
+# error. A code that belongs here and is not here is counted twice on one document: once as the
+# rule's own finding, and once in "the checks still fail after the strong model" — and that second
+# one answers to no switch, so turning the rule off on the settings page left the finding standing
+# with nothing on the page to say why. web/settings_page.py says in its own words that this is the
+# thing not to let happen.
+#
+# `comparator_not_printed` is half of the rule `comparator_missing`, which checks both directions,
+# so a value with a sign stored and none printed made two findings of one printed fact. It fires
+# on no value of the three archives here today — the shape is in the suite instead — and it is
+# still asked of the extract step itself, where it decides whether a document is read again by a
+# stronger model: a question about this program's own reading, and not a finding to show anybody.
+#
+# `institution_looks_like_a_name` was **not** in this set until the index began writing down what
+# it does with such a name, and why it was not is worth keeping: covering a code whose rule is
+# blind deletes the finding instead of moving it. Measured then — it fired on 15, 4 and 255
+# transcriptions, which is 274 of the 285 `checks_still_failing` findings the three archives hold,
+# while the rule of that name found nothing at all on any of them, because
+# `index/build.institution_and_doctor` had already moved every such name out of the provider
+# column the rule was reading.
+#
+# The index now records the move at the moment it makes it and the rule reads that record, so the
+# rule finds those 274 and 9 besides: names read off the page by classify, which the extract step's
+# own check cannot see because it reads the transcription's provider field and those documents have
+# none there. 283 documents, one finding each, under a name, an explanation and a switch that works
+# — and the 274 leave this line, which is why the code belongs here now. Turning the rule off takes
+# the finding away instead of handing it back nameless, which is what this set is for.
+#
+# `no_column_headings` was here and is gone: nothing has produced that code since the check became
+# `no_column_headings_in_multi_value_rows`, and a name in this set that nothing can say is a line
+# the next reader has to go and check.
+COVERED_CHECK_PROBLEMS = {"unreadable_on_images", "no_column_headings_in_multi_value_rows",
+                          "comparator_not_printed", "institution_looks_like_a_name"}  # fmt: skip
 # Checks that mean a transcription is incomplete: listed on their own, ahead of the rest.
 INCOMPLETE_CHECK_PROBLEMS = {"page_text_missing", "page_text_short", "page_numbers_missing", "table_page_without_values"}
 # Checks from the extract pass that stand on their own here, with their own line and their own
 # ask, rather than being counted together as "the checks still fail".
 OWN_FINDING_PROBLEMS = {"value_not_on_the_page"}
-RANGE = re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)?)\s*[-–—]\s*([-+]?\d+(?:[.,]\d+)?)\s*$")
 
 
 def _rows(item: dict) -> dict[tuple, list[dict]]:
@@ -124,11 +159,22 @@ def quantitative_without_number(document, settings: dict) -> list[Found]:
 
 
 def reference_reversed(document, settings: dict) -> list[Found]:
-    """A printed range whose lower bound is above its upper one."""
+    """A printed range whose lower bound is above its upper one.
+
+    Read by reference.py, the one reader of a printed range in this program — the same reader the
+    check below this one asks, and for the same reason. This had a pattern of its own, which knew
+    a dash between two plain numbers and nothing else: of nine spellings of one reversed range it
+    caught one, so a Spanish "17,0 a 13,0" and a Greek "5,5 έως 3,5" were never put in front of
+    anybody, and neither was a range printed under a label of its own or with its unit after it.
+    Which is the worst thing for this check of all the checks here to be blind in: a range that
+    reads backwards is read as no range at all, so the band under the chart is missing and the
+    third answer mode has nothing to compare the number with — and this check is the only thing
+    that says so.
+    """
     found = []
     for value in document.item["observations"]:
-        reference = RANGE.match(value.get("reference_as_printed") or "")
-        if reference and _number(reference.group(1)) > _number(reference.group(2)):
+        ends = reference.printed_ends(value.get("reference_as_printed"))
+        if ends and ends[0] > ends[1]:
             found.append(_found(document, value))
     return found
 
@@ -177,6 +223,73 @@ def row_without_result(document, settings: dict) -> list[Found]:
     """A row with a unit or a range but nothing that is the result of it."""
     return [_found(document, values[0]) for values in _rows(document.item).values()
             if values and not any(is_result(value) for value in values)]  # fmt: skip
+
+
+def named_after_the_eye(document, settings: dict) -> list[Found]:
+    """A value named by nothing but an eye, where its own printed line names the measurement.
+
+    "OD" and "ОС" say which eye, not what was measured, and an ophthalmic form names the
+    measurement inside the line rather than in a column of its own. The reading of the line is in
+    eyes.py; what is decided here is only which values are worth a person's eye.
+
+    Silent where the stored value itself holds several measurements. A name cannot be made right
+    for a field holding a whole refraction, so telling somebody to rename one would be asking for
+    the wrong work; those belong to the rule beneath this one, which says what they really need.
+    """
+    found = []
+    for value in document.item["observations"]:
+        eye = the_eye_alone(value.get("name_as_printed"))
+        if not eye or several_measurements_in_one(value.get("value_as_printed")):
+            continue
+        named = measurements_named((value.get("provenance") or {}).get("snippet"))
+        if named:
+            found.append(_found(document, value,
+                                f'{value["name_as_printed"]} is {eye}, which is not what was measured: '
+                                f'its printed line names {", ".join(named)}'))  # fmt: skip
+    return found
+
+
+def several_measurements_in_one_value(document, settings: dict) -> list[Found]:
+    """A stored value holding the words of more than one measurement.
+
+    The line was split in the wrong places, so one field now holds the sphere, the cylinder and
+    the axis together. Nothing about the name is the matter with it and no correction to a name
+    improves it: the document has to be read again.
+    """
+    found = []
+    for value in document.item["observations"]:
+        named = several_measurements_in_one(value.get("value_as_printed"))
+        if named:
+            found.append(_found(document, value,
+                                f'{value["name_as_printed"]}: one value holding {", ".join(named)}. '
+                                f'Renaming it cannot put this right — the document has to be read again'))  # fmt: skip
+    return found
+
+
+def dates_far_apart(document, settings: dict) -> list[Found]:
+    """Pages of one document dated far apart: two documents that were cut into one.
+
+    A scan has pages because somebody printed it, and a form that prints a date twice prints the
+    same one. A text file has no pages at all — this program cuts it — and where it cut in the
+    wrong place a visit of one year and a visit of another end up as one document, each page
+    carrying its own date and the whole thing carrying the first. Before this archive was cut at
+    the lines its own export draws, six of its twenty documents covered more than two months and
+    one covered 1666 days.
+
+    The dates are the ones the reading gave each page, not every date printed on it: a form
+    carries a birth date, a date of collection and a date of report, and a rule over all of those
+    fires on a third of an archive of ordinary scans.
+    """
+    apart = settings.get("apart_by_days", 60)
+    read = sorted({printed_date.value for printed_date in
+                   (read_printed_date(printed, (document.item or {}).get("language"))
+                    for printed in document.page_dates) if printed_date.value})  # fmt: skip
+    if len(read) < 2 or (read[-1] - read[0]).days <= apart:
+        return []
+    return [Found(file_sha256=document.file_sha256, first_page=document.pages[0],
+                  date=read[0].isoformat(),
+                  line=f"pages of one document dated {(read[-1] - read[0]).days} days apart, "
+                       f"from {read[0].isoformat()} to {read[-1].isoformat()}")]  # fmt: skip
 
 
 def repeated_value(document, settings: dict) -> list[Found]:
@@ -270,10 +383,20 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
     # A list of work that does not shrink as the work is done is not a list of work.
     value_corrections = load_value_corrections(output)
     searches = load_search_results(output)
+    # The specimen a model read off a table heading the form left unlabelled, and only where the
+    # person whose archive this is has said those readings may be used — the same switch the index
+    # asks, and asked here because a check that groups values of one test by what they were
+    # measured in has to know the whole answer and not the printed part of it. layout.BUILT_FROM
+    # has listed MATERIALS under this step since it was written; nothing here read the file.
+    read_materials = load_materials(output) if trusts_read_materials(data_dir_of(output)) else {}
 
     groups = group_documents(pages)
     day_first_documents, day_first_providers = source_day_first(output, groups)
     documents = []
+    # The heading of the last document seen in each file, with the page it ended on: what the back
+    # of a two-sheet form needs in order to know which form it is the back of. Read the same way
+    # the index reads it, because it is an input to the same decision.
+    before: dict[str, tuple[int, str | None]] = {}
     for group in groups:
         sha256, numbers = group[0]["file_sha256"], tuple(page["page"] for page in group)
         if sha256 not in records:
@@ -296,9 +419,15 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
             item, group, correction=corrections.get((sha256, numbers, "document_date")), search=searches.get((sha256, numbers)),
             day_first=(sha256, numbers) in day_first_documents or provider_key(item, group) in day_first_providers,
         )
+        # Only the page immediately before, and only in the same file: a form's back page is the
+        # next sheet of the same form, never a document further off in the folder.
+        ended = before.get(sha256)
+        carries_on_from = ended[1] if ended and ended[0] == numbers[0] - 1 else None
+        before[sha256] = (numbers[-1], (item or {}).get("title_as_printed"))
         tabular = tuple(page["page"] for page in group if page.get("has_tabular_results"))
         subject = Document(file_sha256=sha256, pages=numbers, item=as_left, tabular_pages=tabular,
-                           goes_to_extract=goes_to_extract(group[0]), date_flags=tuple(date["flags"]))  # fmt: skip
+                           goes_to_extract=goes_to_extract(group[0]), date_flags=tuple(date["flags"]),
+                           page_dates=tuple(page.get("date_on_page") for page in group))  # fmt: skip
         findings = findings_for(subject, checked_by)
         if item:
             # Checks run again with today's rules: the page text for text pages, the transcription otherwise.
@@ -318,7 +447,7 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
         # left — and a list of work that does not shrink as the work is done is not a list of work,
         # which is written twenty lines above this and was true of every check but that one.
         documents.append({"file_sha256": sha256, "pages": list(numbers), "date": date["value"],
-                          "item": as_left, "findings": findings})  # fmt: skip
+                          "item": as_left, "findings": findings, "carries_on_from": carries_on_from})  # fmt: skip
 
     # The rules of this step that look at the archive as a whole, rather than at one document:
     # they run once, after every document has been read, and hang their findings on the documents
@@ -330,7 +459,8 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
             # the habits and numbers of every test in it — so a rule written against those finds
             # nothing here rather than failing, and the halves are named here instead of guessed
             # at. kinds.SERVED says which steps hand out this subject at all.
-            for hit in rule.check.run(Archive(rows=[], documents=documents), rule.settings):
+            for hit in rule.check.run(Archive(rows=[], documents=documents, read_materials=read_materials),
+                                      rule.settings):  # fmt: skip
                 for doc in _the_document_of(documents, hit):
                     # Counted, not set. A rule of the whole archive may have several things to say
                     # about one document, and the line-by-line path beside this one counts them;
@@ -430,7 +560,7 @@ def load_validation(output: Path) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as broken:
         raise Unreadable(
-            FILE_NAME,
+            where(path),
             "Nothing that was read is lost. These are the findings of the checks that need no "
             "model: they are made from what is already on this machine, in seconds.",
             # The command, with the archive and the instance in it, and nothing about a button.
@@ -520,7 +650,97 @@ def _mostly_same_values(one: dict, other: dict, settings: dict) -> bool:
     return len(a & b) >= settings["results_shared"] * min(len(a), len(b))
 
 
-def _number(text: str) -> float:
-    text = text.replace(",", ".")
-    return float("0" + text if text.startswith(".") else text.replace("+.", "+0.").replace("-.", "-0."))
+# One printed range against the ranges printed beside the rest of its own test
+#
+# A haematocrit stored as 0,48 was drawn as 48 per cent, correctly, with «0,2-1,0 %» printed
+# beside it as its range, and the axis of the chart stretched from a fifth of a per cent to fifty.
+# 0,2–1,0 % is the line of basophils on the same form. No haematocrit is ever that, and the band
+# under that chart belonged to another row of the page.
+#
+# What makes the question answerable without judging anybody's health: a printed reference range
+# is a fact about the test and the laboratory, never about the person. One person's haematocrit
+# may read 21 one year and 48 the next, and both are theirs — while the range printed beside both
+# is 35–50 either way. So the ranges of one test are weighed against each other and the stored
+# value is not read at all. "This reading is far from normal" is the thing the whole program
+# exists to show, and it cannot reach this check even in principle.
+
+
+def range_powers_from_the_rest(archive, settings: dict) -> list[Found]:
+    """A printed range powers of ten from the ranges printed beside the rest of its test.
+
+    One test, one printed unit and one specimen at a time, over every document at once: the middle
+    of a range is taken geometrically, in units.band_middle, and the middle of the test's ranges is
+    the median of those. A range far from that median is reported, and nothing is reported unless
+    most of the test's ranges agree with the median in the first place — a test two laboratories
+    print at two scales is not one range, and which of its ranges is the odd one is then a question
+    with no answer. Moving the points of such a test is the business of the two-scales reading in
+    units.py; this check steps aside from it rather than shouting over it.
+
+    Silent where no unit is printed, in the column or inside the range itself. Without a printed
+    unit the form has not said what scale its range is at, and then a range at another size is
+    indistinguishable from a form printing the whole test at another scale — a haematocrit written
+    as a fraction, 0,35-0,50 beside 0,44, which is an honest form and not a misplaced row.
+
+    It never says which row a range came from, and never moves or alters it: the band under the
+    chart is drawn from the printed text as before. It says the row is worth a person's eye.
+    """
+    # Inside the function because index/build imports this module: asked for at the top of the
+    # file, neither of the two would load at all. What is wanted from there is a reading of the
+    # same transcription and nothing else — a total protein in serum and a protein in urine are
+    # printed under one name in one unit and are a thousand apart, so the specimen has to be part
+    # of what counts as "the same test" or every urine protein in the archive is a finding.
+    #
+    # settled_material and not material_of, which answers only with the word the form printed.
+    # Three shapes it says nothing about, and in each of them two tests under one printed name
+    # fell into one group and the range of one was reported as a range that cannot be the other's
+    # — a false finding on exactly the test the paragraph above warns about. A specimen a model
+    # read off an unlabelled heading (which is what material_reading is for, and most old forms
+    # have no heading); a table printed sideways, where the row names the specimen; and a
+    # material the person whose archive this is corrected by hand. The third is the worst: "their
+    # word wins" is written where that order is decided, and this check could not see their word.
+    from epicrisis.corrections import BY_A_PERSON
+    from epicrisis.index.build import inverted_tables, settled_material
+    from epicrisis.units import band_middle, unit_from_reference, unit_key
+
+    of_a_test: dict[tuple, list[tuple[dict, dict, float]]] = defaultdict(list)
+    for doc in archive.documents:
+        item = doc["item"]
+        sideways = inverted_tables((item or {}).get("observations", ()))
+        for value in (item or {}).get("observations", ()):
+            printed = value.get("reference_as_printed")
+            middle = band_middle(reference.parse(printed))
+            name = fold(value.get("name_as_printed")).strip()
+            unit = unit_key(value.get("unit_as_printed")) or unit_from_reference(printed) or ""
+            if middle is None or not name or not unit:
+                continue
+            material, _ = settled_material(
+                value, item, doc.get("carries_on_from"), archive.read_materials,
+                doc["file_sha256"], tuple(doc["pages"]), value.get(BY_A_PERSON),
+                (value.get("table_as_printed") or "").strip() in sideways,
+            )  # fmt: skip
+            of_a_test[(name, unit, material)].append((doc, value, math.log10(middle)))
+
+    found: list[Found] = []
+    for group in of_a_test.values():
+        if len(group) < settings["ranges_at_least"]:
+            continue
+        powers = [power for _, _, power in group]
+        middle_of_the_test = median(powers)
+        # What counts as agreeing with the rest is the same distance that counts as standing away
+        # from it, and not a second number of its own: a test is one range when most of its
+        # printed ranges are ranges this check would not report. Written as its own constant it
+        # would have been a threshold nobody could see, move or measure — which is the defect the
+        # registry exists to undo, and it would have sat eight lines above the three settings
+        # saying so.
+        apart = [abs(power - middle_of_the_test) for power in powers]
+        if sum(one < settings["powers_apart"] for one in apart) < settings["ranges_agree"] * len(powers):
+            continue
+        for (doc, value, _), stands in zip(group, apart, strict=True):
+            if stands < settings["powers_apart"]:
+                continue
+            page = (value.get("provenance") or {}).get("page") or (doc["pages"][0] if doc["pages"] else 0)
+            found.append(Found(doc["file_sha256"], page, doc["date"],
+                               f"the range printed beside it stands about {round(10**stands)} times from the "
+                               f"ranges printed beside the other readings of this test"))  # fmt: skip
+    return found
 

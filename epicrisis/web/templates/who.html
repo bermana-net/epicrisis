@@ -1,0 +1,307 @@
+{% extends "_page.html" %}
+{% block title %}Doctors and clinics{% endblock %}
+{% block page %}
+
+  {% include "_header.html" %}
+
+  {# Why the last press changed nothing, said where the press was made. Without it, one spelling
+     ticked out of five looked exactly like a join that had worked. #}
+  {% if trouble %}<div class="notice caps"><span class="alert">{{ trouble }}</span></div>{% endif %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <div class="timeline-head">
+      <h1>Doctors and clinics</h1>
+      {# This line read "every institution and every doctor named on these documents, as printed",
+         and the page does not hold every one of them: a name reaches it by having been read into
+         the provider or the doctor field of a document, and a surname printed inside a document's
+         own text and nowhere else is in neither. The owner read the promise as a promise — looked
+         here for two doctors he had seen, by their surnames, found neither, and concluded the
+         archive did not hold them.
+
+         So it says the three numbers instead, and they are counted rather than claimed: see
+         `who.what_the_page_holds` for the sentence and `query.how_many_name_them` for the two
+         numbers off the index. It stands where the promise stood, because a sentence that
+         corrects a heading from the foot of the page corrects nothing. #}
+      <p class="caps muted">{{ holds }}</p>
+    </div>
+  </section>
+
+  {# Two tabs over one question. Which of them a person wants is not the same question twice: a
+     laboratory is written one way by its own software and another by a letter that cites it, and
+     a doctor is written with a speciality in front of the name as often as without. #}
+  <nav class="tabs caps">
+    <a href="/who?kind=doctor"{% if kind == "doctor" %} aria-current="page"{% endif %}>Doctors</a>
+    <a href="/who?kind=institution"{% if kind == "institution" %} aria-current="page"{% endif %}>Institutions</a>
+  </nav>
+
+  <section class="card-section">
+    {% if proposals %}
+    {# Proposed by counting words and nothing else: every word of one name stands in the other,
+       and names that chain together are offered as one family rather than as every pair inside
+       it. It is never applied by itself. Joining names is a claim about one person being one
+       person, and two doctors of one surname and one initial work in two clinics of every city. #}
+    <h2>Look like one and the same</h2>
+    <p class="note caps">Proposed, not done. Every spelling is ticked; untick any that is not the
+      same one, choose which spelling to keep, and press the button. The ticked ones then answer
+      as one, here and on every page that asks about them, and the group below can be separated
+      again by one press. What you untick is not lost: it is offered again next time, as a smaller
+      family or as a pair.</p>
+    {# And what is being offered when one of the names in a family is a group already. Two groups
+       standing for one doctor used to stay apart for ever: a group appears here as its label, and
+       the filter that hid a family whose every name was settled hid exactly that pair, so nothing
+       on this page ever asked. What the press does is said in the heading of the row and the
+       spellings under each group stand beside it, because a label on its own shows nothing and §4
+       lets a page offer a pair only where a reader can see that it is wrong. #}
+    {% if proposals | selectattr("under") | first %}
+    <p class="note caps">A name below may be a group you have already joined, standing under the
+      spelling you kept, with the rest of its spellings beside it. Joining two of those joins every
+      spelling under both &mdash; and &ldquo;Separate them&rdquo; afterwards leaves every one of
+      those spellings standing on its own again, not the two groups you had.</p>
+    {% endif %}
+    {# What the counting can and cannot tell apart, said here because nothing else can say it, and
+       said differently for the two kinds because they are offered on two different rules.
+
+       A doctor: only where the longer name ends with the shorter one, which is a speciality or a
+       title printed in front of the name. The shape where a name grows at its end — a second
+       initial, a patronymic written out, a second surname — is refused in the counting and never
+       reaches this page, because "Гдеж І.В." standing inside "Гдеж-Абва І.В." is two people as
+       often as it is one marriage and no document anywhere says which. §4: a page may offer a
+       pair only where a reader can see that it is wrong, and nobody can see that one.
+
+       An institution: every word of one name standing in the other, which is what a laboratory
+       does to its own name — the software, a version, a point release, a branch, a city, all of
+       them added behind it. Asking an institution the doctors' question would take 62 of the 86
+       pairs the three archives here offer. What a reader has to look at instead is whether the
+       longest spelling is a different place, and the forms print the branch and the city beside
+       the name, so it is there to be read. #}
+    {% if kind == "doctor" %}
+    <p class="note caps">A name that stands inside another is not the same name. Only a speciality
+      or a title printed in front of a name is offered here &mdash; a surname with a second
+      surname or another initial after it is never put to you, because nothing printed anywhere
+      says whether those are one person.</p>
+    {% else %}
+    <p class="note caps">A name that stands inside another is not the same name. A branch, a city
+      or a version of the software reads the same way to the counting as another place of a similar
+      name &mdash; look at the longest spelling in a family before you press, and untick it if it
+      is somewhere else.</p>
+    {% endif %}
+    <dl class="makers">
+      {% for family in proposals %}
+      <div class="reasoned">
+        <dt>{{ family.said }}</dt>
+        <dd>
+          {# Tick boxes, and not one button over the whole family in hidden fields. Where one of
+             five spellings is in fact another laboratory, that button left a person two moves and
+             both were bad: press it, and a name that is somebody else's is joined to the four
+             that are right and the documents under it are renamed — the refusal of the first line
+             of the constitution, and it has happened, on thirty-four documents — or leave it, and
+             the row stands on the page for ever.
+
+             Every form on this page, this one and the three below it, posts to the archive these
+             names were read off, named in the address. They carried the kind, the spellings and
+             the label and nothing about whose spellings they were, so a press landing after the
+             archive had been switched in the bar above wrote a group of one person's printed
+             names into another person's own file of decisions. See `_the_archive_that_was_drawn`. #}
+          <form method="post" action="/who/{{ archive }}/join" class="inline family">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            <ul class="ticks">
+              {# A name that is the label of a group carries that group's other spellings beside
+                 it: the tick box joins all of them, and a reader who cannot see them cannot see
+                 that one of them does not belong. #}
+              {% for name in family.names %}
+              <li><label class="check"><input type="checkbox" name="names" value="{{ name }}" checked> {{ name }}</label>
+                {% if family.under.get(name) %}<span class="caps muted">{{ family.under[name] | join(" · ") }}</span>{% endif %}</li>
+              {% endfor %}
+            </ul>
+            {# Which of five spellings is the name is a question only the person reading them can
+               answer, so the page asks it rather than choosing in silence — and the first answer
+               it offers says out loud what it will choose if they leave it alone. The shortest,
+               because a version of the software, a branch and a city are what one form adds to a
+               laboratory's name, not part of it, and a speciality in front of a doctor is not
+               part of theirs. Picking a spelling and then unticking it is refused rather than
+               quietly swapped for another: the two say opposite things about the same name. #}
+            <label class="visually-hidden" for="keep-{{ loop.index }}">Which spelling to keep</label>
+            <select id="keep-{{ loop.index }}" name="label">
+              <option value="">keep the shortest of the ones ticked</option>
+              {% for name in family.names %}<option value="{{ name }}">keep &ldquo;{{ name }}&rdquo;</option>{% endfor %}
+            </select>
+            <button class="btn small joining" type="submit">Join the ones ticked</button>
+            {# "Not these" stood under what a model offered and nowhere else, so a family the word
+               count had counted could only be joined or left alone — and left alone it came back
+               on every draw of this page, for ever. Separating a group put it straight back here
+               too. It is remembered now, and taken back under "You said these are not the same".
+               The same form, so the boxes decide this as well: unticking one spelling says no to
+               the rest and leaves that one its own question. #}
+            <button class="btn small quiet" type="submit" formaction="/who/{{ archive }}/decline">Not these</button>
+          </form>
+        </dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+
+    {% if thought %}
+    {# What counting cannot see: an abbreviation beside a full name, one laboratory in two
+       alphabets, a surname misspelt by one letter. Asked of a model, which is why each one comes
+       with the sentence the model wrote — a person is being asked to say that two human beings
+       are one, and "a model thought so" is not a reason anybody can weigh. Nothing here has been
+       applied, and there is no field in that answer that could have applied it. #}
+    <h2>A model thinks these are one</h2>
+    <p class="note caps">Nothing below is joined. Read what it says it matched, and agree or say no
+      to it; said no to, it moves under &ldquo;You said these are not the same&rdquo; and nothing
+      offers it again — not this page and not a model — until you ask to be asked again.</p>
+    <dl class="makers">
+      {% for group in thought %}
+      <div class="reasoned">
+        <dt>{{ group.names | join(" · ") }}</dt>
+        <dd>
+          {% if group.why %}<p class="note">{{ group.why }}</p>{% endif %}
+          <form method="post" action="/who/{{ archive }}/join" class="inline">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            {% for name in group.names %}<input type="hidden" name="names" value="{{ name }}">{% endfor %}
+            <input type="hidden" name="label" value="{{ group.label }}">
+            <button class="btn small" type="submit">Join as &ldquo;{{ group.label }}&rdquo;</button>
+          </form>
+          <form method="post" action="/who/{{ archive }}/decline" class="inline">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            {% for name in group.names %}<input type="hidden" name="names" value="{{ name }}">{% endfor %}
+            <button class="btn small quiet" type="submit">Not these</button>
+          </form>
+        </dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+
+    {% if groups %}
+    <h2>Joined by you</h2>
+    <dl class="makers">
+      {% for group in groups %}
+      <div>
+        <dt>{{ group.label }} <span class="caps muted">{{ group.names | join(" · ") }}</span></dt>
+        <dd>
+          <form method="post" action="/who/{{ archive }}/split" class="inline">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            <input type="hidden" name="label" value="{{ group.label }}">
+            <button class="btn small" type="submit">Separate them</button>
+          </form>
+        </dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+
+    {% if refused %}
+    {# A refusal is remembered now, so it has to be visible and it has to be undoable. The
+       spellings themselves are untouched and stand in the list below exactly as the forms print
+       them — there is simply nothing down there to join them by, which is why "Ask me again" is
+       here. A refusal nothing could undo is the same dead end turned round. #}
+    <h2>You said these are not the same</h2>
+    <p class="note caps">Not offered again, here or by a model. Nothing was changed about the
+      names: every spelling stands as the forms print it, in the list below.</p>
+    <dl class="makers">
+      {% for group in refused %}
+      <div class="reasoned">
+        <dt>{{ group.names | join(" · ") }}</dt>
+        <dd>
+          {% if group.why %}<p class="note">What was said of them: {{ group.why }}</p>{% endif %}
+          <form method="post" action="/who/{{ archive }}/reconsider" class="inline">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            {% for name in group.names %}<input type="hidden" name="names" value="{{ name }}">{% endfor %}
+            <button class="btn small quiet" type="submit">Ask me again</button>
+          </form>
+        </dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+
+    <h2>{{ "Doctors" if kind == "doctor" else "Institutions" }}</h2>
+    {% if not makers %}
+    {# And where the names are, when they are all on the other tab. The menu opens this page on
+       the doctors, and an archive of laboratory printouts carries the laboratory on every page
+       and the person who signed on none: the page then said "No document here names a doctor
+       yet" over nothing, with every name in the archive one tab away and no hint of it. Said
+       only when that tab really holds something, so it never stands where it is not true. #}
+    {# "No field of any document here names one" and not "no document names one", because the
+       list below this may be full of names read out of the documents' own text. The sentence said
+       the stronger thing, and the stronger thing is exactly the promise this page was caught
+       making: the owner read "no doctor" as "no doctor in the archive" once already. #}
+    <p class="empty">No field of any document here names {{ "a doctor" if kind == "doctor" else "an institution" }} yet.{% if in_the_text %}
+      {{ in_the_text | length }} {{ "name" if in_the_text | length == 1 else "names" }} stand only inside the text, below.{% endif %}{% if elsewhere %}
+      Every name on these documents is {{ "an institution" if elsewhere.kind == "institution" else "a doctor" }}:
+      {{ elsewhere.count }} of them, under <a href="/who?kind={{ elsewhere.kind }}">{{ "Institutions" if elsewhere.kind == "institution" else "Doctors" }}</a>.{% endif %}</p>
+    {% else %}
+    <p class="note caps">As printed on the documents themselves. One person or one laboratory may
+      stand here more than once where the forms write the name differently; nothing is joined for you.</p>
+    <dl class="makers">
+      {% for one in makers %}
+      <div>
+        <dt><a href="/?{{ 'provider' if one.what == 'institution' else 'doctor' }}={{ one.name | urlencode }}">{{ one.name }}</a>
+          {% if one.spellings | length > 1 %}<span class="caps muted">{{ one.spellings | length }} spellings</span>{% endif %}</dt>
+        <dd class="caps">{{ one.documents }} document{{ "" if one.documents == 1 else "s" }}{% if one.first_date %} &middot; {{ one.first_date[:4] }}{% if one.last_date[:4] != one.first_date[:4] %}&ndash;{{ one.last_date[:4] }}{% endif %}{% endif %}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+
+    {% if in_the_text %}
+    {# The doctors the documents name in their own text and no field holds. This is the list that
+       answers the owner looking here for two of his own doctors and finding neither.
+
+       Three things it must say, and the fourth and ninth entries ask for all three beside the
+       name rather than in a footer. **Where the name came from**, because the index's own
+       fallback moves a provider into the doctor field and that is a name off the form's heading,
+       while this is a name out of the form's text — a person deciding has to know which they are
+       looking at. **That nobody has confirmed it and nothing was filled in**, in those words.
+       And **the printed line**, which is not decoration: it is what makes a wrong reading
+       visible to anybody who reads it, and a name shown without it would be a claim about a
+       human being with its evidence hidden. #}
+    <h2>Named only inside the text</h2>
+    <p class="note caps">{{ where_it_came_from }}
+      The line each was read from stands under it, as the document prints it.</p>
+    <dl class="makers">
+      {% for one in in_the_text %}
+      <div>
+        {# To the search and never to /?doctor=, which filters the index's doctor field: these
+           names are in no such field, so that link would answer "no documents" about a doctor
+           the page has just said signed several — a count disagreeing with another count on the
+           same page. The search reads the text, which is where the name is. #}
+        <dt><a href="/search?q={{ one.name | urlencode }}">{{ one.name }}</a>
+          <span class="caps muted">in the text only</span></dt>
+        <dd class="caps">{{ one.documents }} document{{ "" if one.documents == 1 else "s" }}
+          &middot; under &ldquo;{{ one.labels | join("&rdquo;, &ldquo;" | safe) }}&rdquo;</dd>
+        {% for line in one.lines[:3] %}
+        <dd class="note">{{ line }}</dd>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+  </section>
+
+{% endblock %}
+
+{% block after %}
+  {# The number in the button, for a browser that runs scripts. Without one the button says "Join
+     the ones ticked", which is true of any number of them, and the page works exactly as it does
+     with one: the form posts the boxes that are ticked, the picker's own first line says what it
+     will keep, and the server refuses a spelling to keep that was not ticked. So nothing here
+     changes what a press does — it only says how many before it is pressed. No library, nothing
+     fetched, and nothing of anybody's leaves the page. #}
+  <script>
+    for (const form of document.querySelectorAll("form.family")) {
+      const ticks = form.querySelectorAll('input[name="names"]');
+      const button = form.querySelector("button.joining");
+      const said = button.textContent;
+      const count = function () {
+        let ticked = 0;
+        for (const tick of ticks) { if (tick.checked) { ticked += 1; } }
+        button.textContent = said + " (" + ticked + ")";
+      };
+      for (const tick of ticks) { tick.addEventListener("change", count); }
+      count();
+    }
+  </script>
+
+{% endblock %}

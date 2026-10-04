@@ -21,10 +21,12 @@ from epicrisis.classify.pages import page_refs
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.corrections import BY_A_PERSON, as_a_person_left_it, load_corrections, load_primary_copies, load_value_corrections
 from epicrisis.settings import trusts_read_materials
+from epicrisis.models import model_for
 from epicrisis import material_reading
 from epicrisis.material_reading import load_materials, panel_key, why_no_material as load_why_no_material
 from epicrisis.datesearch import load_search_results
 from epicrisis.document_dates import document_date, provider_key, source_day_first
+from epicrisis.suspects import provider_looks_like_a_person
 from epicrisis import indicators
 from epicrisis.extract.run import load_extracted
 from epicrisis.records import read_records
@@ -36,7 +38,14 @@ from epicrisis.state import NoSpace
 from epicrisis.invocation import CLI
 
 FILE_NAME = "index.sqlite"
-SCHEMA_VERSION = 6
+#: 7 was the apostrophe leaving printed_values.fold: no column changed and no table did, but what
+#: the folded text in `search` means changed under the same name, and of the 736 such rows across
+#: the three archives here 192 fold differently now. 8 is the column this index gained for the name
+#: it moves out of the institution's place. Half-old rows are the one outcome that must not happen
+#: — a search would answer from the rows the new fold happens to reach and say nothing about the
+#: rest — and this number is what stops it, because query.open_index refuses an index built by
+#: another version and says which file, what is safe and what puts it right.
+SCHEMA_VERSION = 8
 
 # Fields of a value a person may correct; everything else stays as the model read it.
 # What was measured, from the heading of the table or the title of the document: the same name
@@ -150,7 +159,12 @@ CREATE TABLE files (
 );
 CREATE TABLE documents (
     id INTEGER PRIMARY KEY, source_id TEXT, file_sha256 TEXT, first_page INTEGER, pages TEXT, doc_type TEXT,
-    language TEXT, title TEXT, provider TEXT, department TEXT,
+    language TEXT, title TEXT, provider TEXT, department TEXT, doctor TEXT,
+    -- The name the form printed where the institution goes, where this index read it as a person's
+    -- and not a place's. Kept because the move leaves the provider column empty and the printed
+    -- string would otherwise survive only under the doctor's heading, with nothing anywhere saying
+    -- the form printed it as the letterhead. See institution_and_doctor.
+    person_printed_as_the_institution TEXT,
     date TEXT, date_precision TEXT, date_printed TEXT, date_by_hand INTEGER, date_flags TEXT,
     study_date_printed TEXT, report_date_printed TEXT,
     transcribed INTEGER, model TEXT, prompt_version TEXT, extracted_at TEXT,
@@ -217,6 +231,49 @@ def index_state(data_dir: Path, output: Path, source_id: str | None = None) -> d
     if path.stat().st_mtime < changed:
         return {"state": "partial", "label": "Outdated", "title": f"Index: {documents} documents, data changed since"}
     return {"state": "done", "label": str(documents), "title": f"Index: {documents} documents"}
+
+
+def institution_and_doctor(item: dict | None, group: list[dict]) -> tuple[str | None, str | None, str | None]:
+    """What goes in the institution, department's neighbours: the provider, the doctor, and the move.
+
+    A transcription read before this program had a field for a doctor put the doctor where the
+    institution goes, having nowhere else: an export of a hospital's own records names who saw the
+    person and takes the hospital for granted, and 255 documents of one archive here are that. The
+    name is in the transcription, correctly copied, under the wrong heading — so it is read under
+    the right one here, where nothing is rewritten and everything is made again from what the
+    model wrote. The transcriptions are not touched: they are what a model said, once.
+
+    It holds for a scan too. Where this says the institution field carries a person, the reading
+    took the signature under the stamp for the letterhead — and that signature is the doctor. The
+    check that says so stays where it is: a letterhead that was there and was missed is still
+    worth a person's eye.
+
+    **The third answer is the move itself, written down.** Which name belongs to a person is a
+    claim about identity, and the fourth entry of the constitution says such a claim is never
+    applied in silence — a model may put it in front of somebody, the person answers. This is code
+    and not a model, and it is still the same claim: it decides that a printed string names a
+    doctor, on 283 documents of the three archives here. Taken in the index builder, nothing could
+    see it. So the string the form printed in the institution's place comes back as well as the two
+    columns, the index keeps it, and everything that has anything to say about it — the rule of
+    that name on the page of lines that look misread, the card of the document — reads what this
+    decided rather than guessing at it afterwards from a provider column the move has emptied.
+
+    It is the printed string and not a flag, for the second entry's sake: the form printed that
+    name where a letterhead would print a clinic, and the archive can still say so letter for
+    letter. Whether the name was also moved follows from the provider beside it — empty where it
+    went to the doctor, and the name itself where a doctor was already read and this is a second
+    person's name standing in the institution's place.
+    """
+    provider = (item or {}).get("provider_as_printed") or next(
+        (page.get("provider_on_page") for page in group if page.get("provider_on_page")), None
+    )  # fmt: skip
+    doctor = (item or {}).get("doctor_as_printed")
+    if provider and provider_looks_like_a_person(provider, (item or {}).get("title_as_printed")):
+        # The move, where there is nowhere else for the name to go. Where the reading already found
+        # a doctor, the institution's place holds a name this program cannot file as anybody's: it
+        # stays where it was printed, and the rule marks the document exactly the same.
+        return (None, provider, provider) if not doctor else (provider, doctor, provider)
+    return provider, doctor, None
 
 
 def build_index(data_dir: Path, sources: list[Source]) -> dict:
@@ -341,6 +398,18 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
     validation = load_validation(output) or {"documents": []}
     findings = {(item["file_sha256"], tuple(item["pages"])): item for item in validation["documents"]}
 
+    # One of the four things a copy is ranked by is "read by the model this instance uses for the
+    # expert pass". That used to be the literal string "claude-opus", written here — and it stopped
+    # meaning anything the day the settings page began offering Sonnet 5 for that pass: every
+    # document read by the chosen model would have scored False, the criterion would have died in
+    # silence, and primary_copy filters very nearly every count this program prints. The model is
+    # chosen in one place and this asks that place.
+    #
+    # What provenance keeps is the model that read a document and not the pass it was read on, so
+    # changing the chosen model does re-rank copies read by the old one. That is a real cost and it
+    # is why a person's own choice of which copy stands comes above all of this and not below it.
+    read_by_the_expert_model = model_for(data_dir, "strong")
+
     ids: dict[tuple, int] = {}
     quality: dict[int, tuple] = {}
     # The heading of the last document seen in each file, with the page it ended on: what the
@@ -368,16 +437,21 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
         ended = before.get(sha256)
         carries_on_from = ended[1] if ended and ended[0] == pages[0] - 1 else None
         before[sha256] = (pages[-1], (item or {}).get("title_as_printed"))
+        institution, doctor, printed_as_the_institution = institution_and_doctor(item, group)
         cursor = connection.execute(
-            "INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
+            "INSERT INTO documents VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)",
             (
                 source.id, sha256, pages[0], json.dumps(list(pages)), group[0].get("doc_type"),
                 (item or {}).get("language") or group[0].get("language"),
                 (item or {}).get("title_as_printed"),
-                (item or {}).get("provider_as_printed") or next((p.get("provider_on_page") for p in group if p.get("provider_on_page")), None),
+                institution,
                 (item or {}).get("department_as_printed"),
+                doctor,
+                printed_as_the_institution,
                 date["value"].isoformat() if date["value"] else None,
-                _precision(date), date["printed"], int(date["by_hand"]), json.dumps([flag["code"] for flag in date["flags"]]),
+                # Asked of the reading that settled the date, never read back out of its label:
+                # see document_dates.document_date.
+                date["precision"], date["printed"], int(date["by_hand"]), json.dumps([flag["code"] for flag in date["flags"]]),
                 (item or {}).get("date_of_study_as_printed"), (item or {}).get("date_of_report_as_printed"),
                 int(item is not None), provenance.get("model"), provenance.get("prompt_version"), provenance.get("extracted_at"),
                 len((item or {}).get("unreadable", [])), sum(found.values()),
@@ -397,7 +471,7 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
         totals["transcribed"] += 1
         quality[document_id] = (
             item["doc_type"] == "lab_panel",
-            provenance.get("model", "").startswith("claude-opus"),
+            provenance.get("model") == read_by_the_expert_model,
             -len(item["unreadable"]),
             len(item["observations"]),
         )
@@ -411,8 +485,9 @@ def _index_source(connection: sqlite3.Connection, source: Source, output: Path, 
     where = {document_id: key for key, document_id in ids.items()}
     for group_number, members in enumerate(copy_groups, totals["copy_groups"] + 1):
         # The better transcription stands for the group: a lab report before a letter citing it,
-        # then Opus, fewer unreadable parts, more values. A person's own choice comes before all
-        # of it — they have seen both scans, and the rule has not.
+        # then the model chosen for the expert pass, fewer unreadable parts, more values. A
+        # person's own choice comes before all of it — they have seen both scans, and the rule
+        # has not.
         primary = max(members, key=lambda document_id: (
             where.get(document_id) in chosen, quality.get(document_id, ()), -document_id,
         ))  # fmt: skip
@@ -443,9 +518,9 @@ def _index_transcription(
                 observation.get("reference_column_as_printed"), observation["provenance"].get("snippet"),
                 int(is_derived(observation)),
                 _indicator_of(observation, indicator_names, sideways),
-                *_material(observation, item, carries_on_from, read_materials, file_sha256, pages,
-                           observation.get(BY_A_PERSON), (observation.get("table_as_printed") or "").strip() in sideways,
-                           why_no_material),  # fmt: skip
+                *settled_material(observation, item, carries_on_from, read_materials, file_sha256, pages,
+                                  observation.get(BY_A_PERSON), (observation.get("table_as_printed") or "").strip() in sideways,
+                                  why_no_material),  # fmt: skip
                 int(bool(observation.get(BY_A_PERSON))),
             ),
         )  # fmt: skip
@@ -531,16 +606,25 @@ def _indicator_of(observation: dict, indicator_names: dict[str, str], sideways: 
     return indicator_names.get(fold(observation["name_as_printed"]))
 
 
-def _material(observation: dict, document: dict, carries_on_from: str | None,
-              read_materials: dict[str, dict] | None, file_sha256: str, pages: tuple[int, ...],
-              correction: dict | None = None, sideways: bool = False,
-              why_no_material: dict[str, str] | None = None) -> tuple[str | None, str | None]:  # fmt: skip
+def settled_material(observation: dict, document: dict, carries_on_from: str | None,
+                     read_materials: dict[str, dict] | None, file_sha256: str, pages: tuple[int, ...],
+                     correction: dict | None = None, sideways: bool = False,
+                     why_no_material: dict[str, str] | None = None) -> tuple[str | None, str | None]:  # fmt: skip
     """(what was measured, how that is known). A person first, then the form, then a model.
 
     A person who has looked at the scan knows what no rule can work out, so their word wins and
     is marked as theirs. Then the form's own word. Where the form printed nothing, a model may
     have read the panel — see material_reading — and the value carries "model" rather than
     "printed", so a page never shows a reading and a printed word as the same kind of fact.
+
+    Public, and not only because the index writes its answer into a column. material_of above is
+    one of the four steps of this order — the form's own word — and a caller that needs to know
+    what a value was measured in and asks that one instead gets the printed word and nothing
+    else: not the heading a model read, not the row of a sideways table, and not what the person
+    whose archive it is corrected by hand. validate.py asked material_of, and a range check that
+    groups values of one test by what they were measured in reported a urine protein against a
+    serum protein's range — a false finding on exactly the test the comment in that check warns
+    about, and under the line twenty lines below this one saying that their word wins.
     """
     by_hand = ((correction or {}).get("changes") or {}).get("material")
     if by_hand:
@@ -598,8 +682,3 @@ def _copy_groups(validation: dict, ids: dict[tuple, int]) -> list[set[int]]:
     return sorted((members for members in groups.values() if len(members) > 1), key=min)
 
 
-def _precision(date: dict) -> str | None:
-    if date["value"] is None:
-        return None
-    label = date["label"] or ""
-    return "day" if label.count(".") == 2 else "month" if label.count(".") == 1 else "year"

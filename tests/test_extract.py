@@ -13,13 +13,14 @@ from epicrisis.classify.report import latest_pages
 from epicrisis.cli import app
 from epicrisis.consent import record_consent
 from epicrisis.extract import backend as extract_backend
-from epicrisis.extract.backend import PROMPT_VERSION, Extraction, build_request
+from epicrisis.extract.backend import PROMPT_VERSION, Extraction, ExtractLadder, build_request
 from epicrisis.extract.run import call_chunks, document_refs, extract_source, load_extracted, sample_documents, write_document
 from epicrisis.index.build import index_path
 from epicrisis.inventory.run import write_inventory
 from epicrisis.records import read_records
 from epicrisis.sources import SourceRegistry, source_output_dir
 from epicrisis.web.app import create_app
+from conftest import A_DAY_FOR_AN_ILLUSTRATION
 from test_inventory import SYNTHETIC_TEXT, make_scan_pdf, make_text_pdf
 
 PRIVATE_NAME = "Clinic Ivanova oncology"
@@ -326,7 +327,10 @@ def test_card_page_shows_transcription_and_originals(setup):
     assert "Synthetic &lt;b&gt;panel&lt;/b&gt;" in card.text and "<b>panel" not in card.text
     assert "not yet checked by a person" in card.text
     assert f"/sources/{source.id}/files/{labs}/pages/2" in card.text
-    assert "Synthetic diagnosis" in card.text and "text of call page 1" in card.text
+    # The text of a page that went as text is the file's own, not the model's copy of it: the
+    # fake backend writes "text of call page 1" and the card shows what was actually sent.
+    assert "Synthetic diagnosis" in card.text and "text of call page 1" not in card.text
+    assert "Synthetic hemoglobin 140 g/L" in card.text
     assert pending.status_code == 200 and "Not transcribed yet" in pending.text
     assert card.text.index("Results as printed") < card.text.index("Text by section")
     report = client.get(f"/documents/{source.id}/{records['long_scan.pdf']['sha256']}/1").text
@@ -421,6 +425,47 @@ def test_ladder_moves_to_the_stronger_model_only_when_a_check_fails(setup):
     assert extract_source(data_dir, source, again).already_done == 2
 
 
+def test_a_document_is_read_once_by_the_expert_model(setup):
+    """The quick first reading was accepted 5 times in 457 documents; the other 99% were read twice.
+
+    What the checks caught was mostly what a small model cannot do with a scan, so the quick pass
+    stays where it holds up — classifying pages — and the document is read once, by the expert
+    model. Where a check fails there is nobody stronger to ask: the complaint is kept beside the
+    transcription and the document waits for a person on the Review page.
+    """
+    from epicrisis import engines
+    from epicrisis.settings import set_chosen_models
+
+    data_dir, source, output, records = setup
+    set_chosen_models(data_dir, {"first": "claude-haiku-4-5-20251001", "strong": "claude-opus-5"})
+
+    assert [stage.model for stage in engines.extractor(data_dir).stages] == ["claude-opus-5"]
+
+    sloppy = SloppyBackend(model="fake-opus")
+    stats = extract_source(data_dir, source, ExtractLadder(sloppy), years={2019})
+
+    assert (stats.extracted, stats.escalated, len(sloppy.calls)) == (1, 0, 1)
+    document = load_extracted(output / "extracted", records["labs.pdf"]["sha256"])["documents"][0]
+    assert "escalations" not in document["provenance"]
+    assert document["provenance"]["check_problems"]["value_not_in_page_text"] == 2  # kept, and said
+
+
+def test_a_document_read_by_the_two_model_ladder_is_not_read_again_by_the_expert_alone(setup):
+    """Every document in every archive here was read by a ladder named "small>expert".
+
+    The ledger names the reader, so dropping the small pass renamed the reader — and nothing in
+    the archives would have counted as read. Four hundred documents would have gone to the
+    costliest model a second time, for nothing.
+    """
+    data_dir, source, _, _ = setup
+    both = ExtractLadder(FakeExtractBackend(model="fake-haiku"), FakeExtractBackend(model="fake-opus"))
+    assert extract_source(data_dir, source, both).extracted == 2
+
+    expert = FakeExtractBackend(model="fake-opus")
+    assert extract_source(data_dir, source, ExtractLadder(expert)).already_done == 2
+    assert expert.calls == []
+
+
 def test_documents_done_by_the_strong_model_alone_count_as_done_for_the_ladder(setup):
     from epicrisis.extract.backend import ExtractLadder
 
@@ -430,6 +475,88 @@ def test_documents_done_by_the_strong_model_alone_count_as_done_for_the_ladder(s
 
     assert extract_source(data_dir, source, ExtractLadder(small, FakeExtractBackend(model="fake-opus"))).already_done == 2
     assert small.calls == []
+
+
+class TidyingBackend(FakeExtractBackend):
+    """A model that writes the page back with a letter put right. Four of these came out of a real
+    reading: Russian spellings tidied into Ukrainian ones, in a hundred thousand letters."""
+
+    def extract(self, payloads, workdir: Path) -> Extraction:
+        extraction = super().extract(payloads, workdir)
+        for item in extraction.fields["page_texts"]:
+            item["text"] = item["text"].replace("hemoglobin", "haemoglobin")
+        return extraction
+
+
+def test_the_text_of_a_page_we_sent_is_kept_as_it_stands(setup):
+    """A page that went as text came from a file this program holds. The copy is not the thing.
+
+    The model was asked to write those twenty thousand characters back, which is most of its
+    answer and most of the waiting, and it is where the one promise of this program was quietly
+    broken: letters came back changed. What we sent is what is stored.
+    """
+    data_dir, source, output, records = setup
+    extract_source(data_dir, source, TidyingBackend(model="fake-opus"))
+
+    document = load_extracted(output / "extracted", records["labs.pdf"]["sha256"])["documents"][0]
+    text = "\n".join(item["text"] for item in document["page_texts"])
+
+    assert "Synthetic hemoglobin 140 g/L" in text  # the page, as the file has it
+    assert "haemoglobin" not in text  # not as the model would rather have written it
+    assert document["full_text"].startswith("Synthetic hemoglobin")
+
+
+def test_the_model_is_not_asked_to_copy_back_a_page_it_was_given_as_text():
+    from epicrisis.classify.pages import Payload
+    from epicrisis.extract.backend import SYSTEM_PROMPT, build_request
+
+    request = build_request([Payload(text="Analyte 6,8 g/L"), Payload(image_path=Path("page-02.png"))])
+    first, second = request.split("Page 2:")
+
+    assert "leave it out of page_texts" in first
+    assert "leave it out of page_texts" not in second  # a scan has no text anywhere but in the model
+    assert "leave out any page given to you as text" in SYSTEM_PROMPT
+
+
+def test_a_call_carries_the_text_of_a_few_printed_pages_and_no_more():
+    """Eight pages to a call was settled when a page meant a photograph of a form.
+
+    A page of a text file is cut to a size of this program's own choosing, so the same eight could
+    carry a hundred and sixty thousand characters. Two documents of the first text archive read
+    here never finished inside the fifteen minutes a call is given.
+    """
+    from epicrisis.classify.pages import PageRef
+    from epicrisis.extract.run import TEXT_CHARS_PER_CALL, call_chunks, pages_per_call
+    from epicrisis.readers.text import TEXT_PAGE_CHARS
+
+    def ref(page: int, part: str) -> PageRef:
+        return PageRef("0" * 64, page, "text" if part != "image" else "vision", part, page - 1, {})
+
+    scanned = [ref(number, "pdf") for number in range(1, 10)]
+    text = [ref(number, "text") for number in range(1, 10)]
+
+    assert pages_per_call(scanned) == 8
+    assert pages_per_call(text) == TEXT_CHARS_PER_CALL // TEXT_PAGE_CHARS <= 8
+    assert pages_per_call(text) >= 2  # a call of one page would repeat that page as its own context
+    assert pages_per_call(text) * TEXT_PAGE_CHARS <= TEXT_CHARS_PER_CALL
+
+    # Four pages of a text file are two calls, each carrying the first page for context.
+    chunks = call_chunks(text[:4], pages_per_call(text[:4]))
+    assert [[one.page for one in chunk] for chunk in chunks] == [[1, 2, 3, 4]]
+    assert [[one.page for one in chunk] for chunk in call_chunks(text[:6], pages_per_call(text))] == [[1, 2, 3, 4], [1, 5, 6]]
+
+
+def test_the_prompt_version_is_the_one_the_archives_were_read_with():
+    """What decides whether four hundred documents are read again, with the costliest model.
+
+    Asking for *less* than before does not make an earlier transcription wrong, so it is left out
+    of this version, as the close-up pass and the range as numbers already are. If this test fails
+    because the prompt now asks for something new, that is a decision about hours and money and
+    belongs to the owner of the archive: say so, and change the number here with their word.
+    """
+    from epicrisis.extract.backend import PROMPT_VERSION
+
+    assert PROMPT_VERSION == "8d4f5af303d0"
 
 
 def test_text_pages_are_checked_against_the_text_that_was_sent():
@@ -447,6 +574,17 @@ def test_text_pages_are_checked_against_the_text_that_was_sent():
     assert transcription_problems(single, {1: "Analyte 6,8 g/L 4,0-9,0"}) == {}
     same_row = dict(document, observations=[dict(item, name_as_printed="Analyte"), dict(item, name_as_printed="Analyte", value_role="other")])
     assert transcription_problems(same_row, {1: "Analyte 6,8 g/L 4,0-9,0"}) == {"no_column_headings_in_multi_value_rows": 1}
+
+    # The same name in two rows of the page is not a row with several values in it: a long report
+    # prints a measurement in two places, and that is not a table with headings missing. Counting
+    # it by the page sent four documents of one archive to the costliest model to answer a
+    # complaint about a table that was not there.
+    twice_on_the_page = dict(document, observations=[
+        dict(item, name_as_printed="Analyte", provenance={"page": 1, "snippet": "Analyte 6,8 at eight"}),
+        dict(item, name_as_printed="Analyte", provenance={"page": 1, "snippet": "Analyte 6,8 at noon"}),
+    ])  # fmt: skip
+    both_lines = "Analyte 6,8 4,0-9,0 at eight ... Analyte 6,8 4,0-9,0 at noon"
+    assert transcription_problems(twice_on_the_page, {1: both_lines}) == {}
 
 
 def test_a_birth_date_given_as_the_study_date_fails_the_check():
@@ -544,6 +682,64 @@ def test_printed_forms_that_are_not_mismatches():
     assert transcription_problems(document, {}) == {"comparator_not_printed": 1}
 
 
+def test_one_printed_fact_makes_one_finding_and_not_two(setup):
+    """A sign stored and none printed was `comparator_missing` and `checks_still_failing` at once.
+
+    The rule `comparator_missing` checks both directions; the extract step's own
+    `comparator_not_printed` is one of the two, and it was in none of the three sets that say
+    where an extract code lands — so it fell into "the checks still fail after the strong model"
+    on the very document the rule had already flagged. Two findings of one printed fact, and the
+    second answers to no switch: turning the rule off on the Settings page left it standing with
+    nothing on the page to say why.
+
+    The shape is invented because it has to be: not one value of the three archives read on
+    4 October 2026 carries a comparator that is stored and not printed, so the ruler over them is
+    identical to the byte either way — 1333 findings, line for line.
+    """
+    from epicrisis.validate import validate_source
+
+    data_dir, source, output, records = setup
+    extract_source(data_dir, source, FakeExtractBackend())
+    labs = records["labs.pdf"]["sha256"]
+    stored = load_extracted(output / "extracted", labs)
+    document = stored["documents"][0]
+    # One value, printed exactly as its page prints it, carrying a sign the page does not: the
+    # number and the range are in the page's own text, so nothing else here has anything to say.
+    document["observations"] = [dict(document["observations"][0], value_as_printed="140",
+                                     value_numeric=140, reference_as_printed="120-160",
+                                     comparator=">", value_role="result")]  # fmt: skip
+    write_document(output / "extracted", labs, document)
+
+    result = validate_source(output)
+
+    finding = next(item for item in result["documents"] if item["file_sha256"] == labs)["findings"]
+    assert finding == {"comparator_missing": 1}, "one printed fact, one finding"
+
+
+def test_every_code_the_checks_can_land_under_is_a_code_they_can_say(setup):
+    """A name in one of the three sets that nothing produces is a line nobody can check.
+
+    `no_column_headings` sat in COVERED_CHECK_PROBLEMS long after the check became
+    `no_column_headings_in_multi_value_rows`, so the next reader of that set had to go and find
+    out that one of its four names meant nothing. Read off the extract checks themselves, so the
+    answer cannot go stale while the code moves under it.
+    """
+    import ast
+    import inspect
+
+    from epicrisis.extract.run import transcription_problems
+    from epicrisis.validate import COVERED_CHECK_PROBLEMS, INCOMPLETE_CHECK_PROBLEMS, OWN_FINDING_PROBLEMS
+
+    tree = ast.parse(inspect.getsource(transcription_problems))
+    said = {node.args[0].value for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "add"
+            and node.args and isinstance(node.args[0], ast.Constant)}  # fmt: skip
+    assert len(said) > 8, "the codes are not being read off the checks any more"
+
+    accounted = COVERED_CHECK_PROBLEMS | INCOMPLETE_CHECK_PROBLEMS | OWN_FINDING_PROBLEMS
+    assert accounted <= said, f"named in a set and said by nothing: {sorted(accounted - said)}"
+
+
 def test_index_holds_documents_values_dates_and_folded_search(setup):
     import sqlite3
     from datetime import date
@@ -624,6 +820,58 @@ def test_copies_include_short_documents_and_excerpts_and_derived_values_are_mark
     connection.close()
 
 
+def test_the_copy_that_stands_was_read_by_the_model_this_instance_chose(setup):
+    """Which copy of a group answers was ranked by the literal string "claude-opus", written down.
+
+    The settings page offers four models for the expert pass. The day somebody chose any of the
+    other three, every document read by their chosen model would have scored False on this
+    criterion, it would have died in silence, and primary_copy filters very nearly every count
+    this program prints. The model is chosen in one place, and the ranking asks that place.
+
+    Measured on the three archives here when it was changed: the verdict is the same on all 706
+    documents, because the model chosen for that pass is still the one the string named. So this
+    cannot be shown on a live archive at all — it is shown by choosing another one, which is the
+    whole of what the defect was about.
+    """
+    import sqlite3
+    from datetime import date
+
+    from epicrisis.corrections import set_document_date
+    from epicrisis.index.build import build_index
+    from epicrisis.settings import set_chosen_models
+    from epicrisis.validate import validate_source
+
+    data_dir, source, output, records = setup
+    extract_source(data_dir, source, FakeExtractBackend())
+    labs, scan = records["labs.pdf"]["sha256"], records["long_scan.pdf"]["sha256"]
+    # One printed result on both, so the two are one group of copies; the long scan is the one
+    # that would win on every other part of the ranking, so only the model can decide it.
+    for sha, pages, read_by in ((labs, [1, 2], "claude-sonnet-5"), (scan, list(range(1, 11)), "claude-opus-5")):
+        document = load_extracted(output / "extracted", sha)["documents"][0]
+        template = document["observations"][0]
+        document["observations"] = [dict(template, name_as_printed="Цистатин С", value_as_printed="0,95",
+                                         unit_as_printed="мг/л", table_as_printed=None)]  # fmt: skip
+        document["doc_type"] = "lab_panel"
+        document["provenance"] = {**document.get("provenance", {}), "model": read_by}
+        write_document(output / "extracted", sha, document)
+        set_document_date(output, sha, pages, date(2024, 6, 17))
+    validate_source(output)
+
+    def which_copy_stands():
+        build_index(data_dir, [source])
+        with sqlite3.connect(index_path(data_dir, source.id)) as connection:
+            return connection.execute(
+                "SELECT file_sha256 FROM documents WHERE primary_copy = 1 AND copy_group IS NOT NULL"
+            ).fetchall()  # fmt: skip
+
+    set_chosen_models(data_dir, {"strong": "claude-opus-5"})
+    assert which_copy_stands() == [(scan,)], "the long scan is read by the chosen model and stands"
+
+    set_chosen_models(data_dir, {"strong": "claude-sonnet-5"})
+    assert which_copy_stands() == [(labs,)], (
+        "the expert pass is Sonnet now, so the copy Sonnet read is the one that stands")
+
+
 def test_update_runs_every_step_and_skips_what_is_done(setup, monkeypatch):
     from epicrisis import update as update_module
     from epicrisis.consent import record_consent
@@ -677,6 +925,45 @@ def test_update_runs_every_step_and_skips_what_is_done(setup, monkeypatch):
     assert index_path(data_dir, source.id).exists() and not (data_dir / "update.lock").exists()
 
 
+def test_the_cuts_in_a_text_file_are_read_by_the_model_the_person_chose(setup, monkeypatch):
+    """Every step of `update` asks engines.py which model reads for it; this one built its own.
+
+    `BoundaryBackend()` with no model named falls back to the constant in classify/backend.py,
+    which is the shipped default for the first reading and not the person's answer to it. So an
+    instance set to read first with another model read every page with it and cut text files with
+    Haiku, and nothing on any page said which of the two had done the cutting.
+    """
+    from epicrisis import boundaries as boundaries_module
+    from epicrisis import update as update_module
+    from epicrisis.consent import record_consent
+    from epicrisis.settings import set_chosen_models
+
+    data_dir, _source, _output, _records = setup
+    record_consent(data_dir, "fake")
+    set_chosen_models(data_dir, {"first": "claude-sonnet-5"})
+
+    class FarEnough(Exception):
+        """The run has told us what we asked it; nothing after the cuts is this test's business."""
+
+    asked: list[str] = []
+
+    def record(data, source, backend, say=None):
+        asked.append(backend.model)
+        raise FarEnough
+
+    monkeypatch.setattr(boundaries_module, "read_boundaries", record)
+
+    class Nothing:
+        name, model, accepted_models = "fake", "fake-ladder", {"fake-ladder"}
+
+    monkeypatch.setattr(update_module.engines, "classifier", lambda *args: Nothing())
+
+    with pytest.raises(FarEnough):
+        update_module.run_update(data_dir, say=lambda line: None)
+
+    assert asked == ["claude-sonnet-5"]
+
+
 def test_a_person_corrects_a_value_and_marks_a_line_as_not_a_value(setup):
     import sqlite3
 
@@ -701,7 +988,11 @@ def test_a_person_corrects_a_value_and_marks_a_line_as_not_a_value(setup):
 
     client.post(f"{url}/value", data={"key": key, "name": "Креатинін", "value": "71", "unit": "мкмоль/л", "reference": "", "flag": ""})
     corrected = client.get(url).text
-    assert ">71<" in corrected and "corrected" in corrected and "As the model read it: Креатинін &middot; 7I" in corrected
+    # What the model had read is on the row now, not folded into the form, and it names the one
+    # field that differs: the form posts all five whichever one was retyped, and this used to read
+    # "Креатинін · 7I · мкмоль/л · — · —" over four fields nobody had touched.
+    assert ">71<" in corrected and "corrected" in corrected
+    assert "As the model read it: value <b>7I</b>" in corrected and "name <b>" not in corrected
 
     junk_key = corrected.split('name="key" value="')[2].split('"')[0]
     client.post(f"{url}/value", data={"key": junk_key, "action": "remove"})
@@ -934,7 +1225,7 @@ def test_the_rules_of_the_whole_archive_are_given_what_a_person_corrected(setup)
     data_dir, source, output, records = setup
     extract_source(data_dir, source, FakeExtractBackend())
     labs, scan = records["labs.pdf"]["sha256"], records["long_scan.pdf"]["sha256"]
-    one_day, printed = date(2019, 7, 8), (("Haemoglobin", "125"), ("Glucose", "5,4"), ("Creatinine", "71"))
+    one_day, printed = A_DAY_FOR_AN_ILLUSTRATION, (("Haemoglobin", "125"), ("Glucose", "5,4"), ("Creatinine", "71"))
     pages = {}
     template = load_extracted(output / "extracted", labs)["documents"][0]["observations"][0]
     for sha in (labs, scan):
@@ -983,3 +1274,36 @@ def test_asking_for_the_range_as_numbers_does_not_send_the_archive_through_a_mod
     assert {"reference_low", "reference_high"} <= set(printed_value["properties"])
     assert {"reference_low", "reference_high"} <= set(printed_value["required"])
     assert THE_RANGE_AS_NUMBERS in SYSTEM_PROMPT
+
+
+def test_the_doctor_has_a_field_of_their_own(setup):
+    """An export of a hospital's own records names the doctor and no institution at all.
+
+    With nowhere to put a person, every one of 256 documents of one archive put the doctor where
+    the institution goes, and every one was then flagged — rightly — as an institution field
+    holding a person's name. The field is asked for beside what was already transcribed, so the
+    prompt version does not move and nothing already read is marked out of date.
+    """
+    from epicrisis.extract.backend import DOCUMENT_SCHEMA, SYSTEM_PROMPT
+
+    assert "doctor_as_printed" in DOCUMENT_SCHEMA["properties"]
+    assert "A person's name is never an institution" in SYSTEM_PROMPT
+
+    data_dir, source, output, records = setup
+
+    class WithADoctor(FakeExtractBackend):
+        def extract(self, payloads, workdir: Path) -> Extraction:
+            extraction = super().extract(payloads, workdir)
+            extraction.fields["doctor_as_printed"] = "Нетудихата І.В"
+            extraction.fields["provider_as_printed"] = None
+            return extraction
+
+    extract_source(data_dir, source, WithADoctor(model="fake-opus"))
+    document = load_extracted(output / "extracted", records["labs.pdf"]["sha256"])["documents"][0]
+
+    assert document["doctor_as_printed"] == "Нетудихата І.В"
+    assert document["provider_as_printed"] is None
+
+    client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
+    card = client.get(f"/documents/{source.id}/{records['labs.pdf']['sha256']}/1")
+    assert "Doctor as printed" in card.text and "Нетудихата І.В" in card.text

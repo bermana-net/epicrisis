@@ -20,7 +20,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -58,6 +58,17 @@ Working with it:
 Every answer says whose archive it came from, in "archive_of". This server may hold the archives of several people, one open at a time, and a value of one person must never be read as another's.
 
 This archive may be locked. When a tool answers that it is, that is not a failure and not a reason to stop or to answer from memory: the person you are talking to holds a six-digit code in their authenticator. Ask them for it, call unlock with it, and pass the string it returns as `ticket` on every call after that; it stays good for four hours. When the conversation is over, call lock_archive, because the pass stays written in the conversation."""
+
+
+class TheArchiveServed(NamedTuple):
+    """The archive one tool call is about: its id, and whose it is, for `archive_of`.
+
+    One value rather than two readings, because the two have to be of the same person. Read
+    apart, they were not: see `answering`.
+    """
+
+    id: str | None
+    whose: str
 
 
 def _page(rows: list, name: str, total: int | None, offset: int) -> dict[str, Any]:
@@ -101,6 +112,30 @@ def _found_nothing(connection, words: str | None) -> dict[str, Any]:
     }
 
 
+def _about_comparing(data_dir: Path) -> str:
+    """What flagged_values says about comparing a value with its range, on this instance.
+
+    "Where the instance allows it" is true of the program and useless to the caller: on an instance
+    that does not allow it, a model reads that sentence, asks for the comparison, is refused, and
+    asks again without it — one round of its own thinking and one of the person's waiting for a
+    parameter that was never going to answer. One of the two repeated calls in a measured run of
+    ten was this one. The refusal inside the tool stays where it is and remains the authority; this
+    only stops the question being asked.
+
+    Read once, where the server is built. The Ask page builds one per question, so it is read for
+    every conversation; a server left running while the setting is changed says the older of the
+    two until it is restarted, and the call is refused with the reason either way.
+    """
+    from epicrisis.settings import answer_mode
+
+    if answer_mode(data_dir) == "direct":
+        return ("compare_with_printed_range instead compares each value with the range printed beside it "
+                "on that same form, and says how many could not be compared at all.")
+    return ("compare_with_printed_range is refused on this instance and asking for it answers nothing: "
+            "this instance shows what the forms printed and does not compare values with their ranges "
+            "itself. The range printed beside each value comes back with the value, so read both.")
+
+
 def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str | None = None) -> MCPServer:
     """The tools of one archive. The lock is asked for only where this server is reachable.
 
@@ -135,8 +170,28 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
     lock = mcp_lock.Lock(secret=mcp_lock.read_secret(),
                          remembers=Path(data_dir) / mcp_lock.WRONG_CODES_FILE)  # fmt: skip
 
-    def guard(ticket: str | None) -> dict[str, Any] | None:
-        """Every tool asks this first. With the lock off it returns nothing and nothing changes.
+    def answering(ticket: str | None) -> tuple[dict[str, Any] | None, TheArchiveServed]:
+        """What one tool call is about: the archive, decided once, and the notice that stops it.
+
+        Every tool begins here and then carries that archive through its own answer instead of
+        asking again. `showing()` reads the list of archives afresh, which is right — the archive
+        can be switched while a client is connected — but one call used to read it three times:
+        the pass was checked against the first reading, the index opened on the second, and the
+        name put into `archive_of` on the third. A switch landing between them served one
+        archive's counts under another archive's owner, and these instructions tell the model that
+        `archive_of` is the field to trust and to quote.
+
+        The lock is the worse half of it. `mcp_lock.require(archive=…)` exists so that nothing of
+        one person is read as another's, and it was given the first reading while the data came
+        from the second: a pass granted over one archive served a read of the other, which is the
+        one thing that lock is there to prevent. Three readings of one question inside one call
+        were a repeated chain of calls; this is the name they wanted.
+        """
+        archive = showing()
+        return guard(ticket, archive), archive
+
+    def guard(ticket: str | None, archive: TheArchiveServed) -> dict[str, Any] | None:
+        """Whether this call may be answered at all. With the lock off it returns nothing.
 
         Locked, it gives back a notice rather than an error. An error is drawn as a failure and
         read as one; a notice is read as what it is — a step to take before the question can be
@@ -146,10 +201,11 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         from epicrisis.settings import mcp_lock_on, mcp_lock_scope
 
         try:
-            # The archive that is open right now, so that a pass given for another one closes
-            # the moment the dashboard is switched to somebody else.
+            # The archive this call is being answered out of, so that a pass given for another
+            # one closes the moment the dashboard is switched to somebody else — and so that the
+            # pass is checked against the archive the answer will actually come from.
             lock.require(ticket, enabled=over_the_network and mcp_lock_on(data_dir),
-                         scope=mcp_lock_scope(data_dir), archive=showing()[0] or "")  # fmt: skip
+                         scope=mcp_lock_scope(data_dir), archive=archive.id or "")  # fmt: skip
         except mcp_lock.Locked as refusal:
             # Whose archive this is is not said here. Someone holding the address and no code
             # would otherwise learn that it belongs to a named person, which is the one fact the
@@ -172,12 +228,14 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
 
         try:
             scope = mcp_lock_scope(data_dir)
+            # One reading: the archive the pass is written over is the archive the answer names.
+            archive = showing()
             opened = lock.unlock(code, minutes=mcp_lock_minutes(data_dir), scope=scope,
-                                 archive=showing()[0] or "")  # fmt: skip
-            return {**opened, "opens": scope, "archive_of": whose(),
+                                 archive=archive.id or "")  # fmt: skip
+            return {**opened, "opens": scope, "archive_of": archive.whose,
                     "until_the_archive_is_switched": "This pass opens the archive of "
-                    f"{whose()}. If the person switches this server to another archive, the pass "
-                    "closes and a new code is needed."}  # fmt: skip
+                    f"{archive.whose}. If the person switches this server to another archive, the "
+                    "pass closes and a new code is needed."}  # fmt: skip
         except mcp_lock.Locked as refusal:
             raise ToolError(str(refusal)) from refusal
 
@@ -189,16 +247,12 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         if everywhere:
             # Shutting everyone out is something only someone already let in may do; otherwise a
             # stranger who reached this address could keep the archive closed to its owner.
-            notice = guard(ticket)
+            notice, _archive = answering(ticket)
             if notice is not None:
                 return notice
         return lock.lock(ticket, everywhere=everywhere)
 
-    def whose() -> str:
-        """Whose archive is open. It rides on every answer: this server holds more than one."""
-        return showing()[1]
-
-    def showing() -> tuple[str | None, str]:
+    def showing() -> TheArchiveServed:
         """The archive being served and whose it is. Every answer says the name, so that one
         person's records can never be read as another's.
 
@@ -214,13 +268,16 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
 
         if pinned_to:
             held = SourceRegistry(Path(data_dir)).get(pinned_to)
-            return (held.id, held.whose) if held else (pinned_to, "")
+            return TheArchiveServed(held.id, held.whose) if held else TheArchiveServed(pinned_to, "")
         active = the_archive(data_dir)
-        return (active.id, active.whose) if active else (None, "")
+        return TheArchiveServed(active.id, active.whose) if active else TheArchiveServed(None, "")
 
     @contextmanager
-    def index():
+    def index(archive: TheArchiveServed):
         """The index of the archive being served, for the length of one tool call.
+
+        The archive comes in rather than being looked up here, because looking it up here was a
+        second reading of a question the call had already answered. See `answering`.
 
         A tool that cannot open the index says so in words. It used to raise whatever SQLite
         raised, which reached the person as "Error executing tool search_documents" and nothing
@@ -229,7 +286,7 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         """
         # Tools run in worker threads and an SQLite connection belongs to one thread.
         try:
-            connection = query.open_index(data_dir, showing()[0])
+            connection = query.open_index(data_dir, archive.id)
         except (sqlite3.Error, query.IndexMissing, OSError) as trouble:
             raise ToolError(cannot_be_read(trouble)) from trouble
         try:
@@ -250,11 +307,11 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
 
     @server.tool(description="What the archive holds: counts of documents and values, the span of dates, types and languages. Counts only: nothing here says whether anything in it is normal.")
     def archive_overview(ticket: TICKET = None) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
-            return {"archive_of": whose(), **query.overview(connection)}
+        with index(archive) as connection:
+            return {"archive_of": archive.whose, **query.overview(connection)}
 
     @server.tool(description="Documents whose text, title, institution or value names match the words. Returns a piece of the original text around the match, as printed. Matching is literal: it does not rank documents by importance and an empty answer is not evidence the archive lacks the subject.")
     def search_documents(
@@ -266,21 +323,21 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None,
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
+        with index(archive) as connection:
             rows = query.search(connection, query_text, limit=limit, since=since, until=until,
                                 doc_type=doc_type, offset=offset)  # fmt: skip
             if not rows and not offset:
-                return {"archive_of": whose(), **_found_nothing(connection, query_text)}
+                return {"archive_of": archive.whose, **_found_nothing(connection, query_text)}
             # Through _page, whose own words are "nothing is cut without the caller being told" —
             # which this tool did not do. "found" was the length of the page: twenty-two matches
             # answered as twenty, in an answer shaped exactly like the answer to "that is all there
             # is", and a model then wrote about the archive from part of it. The count was already
             # in this file's reach, and the page of the dashboard has been showing it all along.
             total = query.count_search(connection, query_text, since=since, until=until, doc_type=doc_type)
-            return {"archive_of": whose(), **_page(rows, "documents", total, offset)}
+            return {"archive_of": archive.whose, **_page(rows, "documents", total, offset)}
 
     @server.tool(description="Documents by their own printed date, newest first. Returns a page and says how many there are in all. The dates are the ones printed on the documents; nothing here groups them into episodes or decides which of them matter.")
     def list_documents(
@@ -291,13 +348,13 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
+        with index(archive) as connection:
             rows = query.timeline(connection, since=since, until=until, doc_type=doc_type, limit=limit, offset=offset)
             total = query.count_documents(connection, since=since, until=until, doc_type=doc_type)
-            return {"archive_of": whose(), **_page(rows, "documents", total, offset)}
+            return {"archive_of": archive.whose, **_page(rows, "documents", total, offset)}
 
     @server.tool(description="How a test is printed across the archive: every printed name matching the words, with how often it appears and over which years. Spellings, not meanings: it does not say that two printed names are the same test unless a person has said so.")
     def value_names(
@@ -307,17 +364,17 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
+        with index(archive) as connection:
             rows = query.value_names(connection, query_text, limit=limit,
                                      include_derived=include_derived, offset=offset)  # fmt: skip
             indicators = query.indicators_matching(connection, query_text)
             if not rows and not indicators and not offset:
-                return {"archive_of": whose(), **_found_nothing(connection, query_text)}
+                return {"archive_of": archive.whose, **_found_nothing(connection, query_text)}
             total = query.count_value_names(connection, query_text, include_derived=include_derived)
-            answer: dict[str, Any] = {"archive_of": whose(), **_page(rows, "printed_names", total, offset)}
+            answer: dict[str, Any] = {"archive_of": archive.whose, **_page(rows, "printed_names", total, offset)}
             if indicators:
                 # The names printed in other languages sit under the same indicator as these ones.
                 answer["indicators_holding_these_words"] = [
@@ -333,12 +390,12 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         with_spellings: Annotated[bool, Field(description="Include every printed spelling of each indicator. Off by default: the whole list with spellings does not fit in one answer.")] = False,
         ticket: TICKET = None
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
+        with index(archive) as connection:
             rows = query.indicator_list(connection, status=status, brief=not with_spellings, limit=limit, offset=offset)
-            return {"archive_of": whose(), **_page(rows, "indicators", query.count_indicators(connection, status=status), offset)}
+            return {"archive_of": archive.whose, **_page(rows, "indicators", query.count_indicators(connection, status=status), offset)}
 
     @server.tool(description="Every value of one indicator, or whose printed name contains the words, as printed, oldest first, with unit, reference range, flag and the document it comes from. Nothing is converted, averaged or compared: values in different units stay in the units their forms printed, and none of them is marked high or low here.")
     def value_history(
@@ -352,10 +409,10 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         limit: Annotated[int, Field(description="How many values", ge=1, le=200)] = 200,
         ticket: TICKET = None
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
+        with index(archive) as connection:
             rows = query.values(connection, name, since=since, until=until, include_derived=include_derived,
                                 all_copies=all_copies, limit=limit, indicator=indicator, material=material)  # fmt: skip
             searched: dict[str, Any] = {}
@@ -379,14 +436,14 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
                         {"id": item["id"], "label": item["label"], "spellings": item["names"]} for item in held
                     ]}  # fmt: skip
             if not rows:
-                return {"archive_of": whose(), **_found_nothing(connection, name)}
+                return {"archive_of": archive.whose, **_found_nothing(connection, name)}
             # How many there are under the same question, not how many fitted. The rows come back
             # oldest first and the cap takes them from the top, so a test with more values than
             # the cap answered with its oldest and said nothing about the rest — and a history
             # that stops years ago reads like a history that stops years ago, not like a page of
             # one. Counted with the same period as the list, or the note would fire on a question
             # that was narrowed on purpose and tell the model to narrow it again.
-            answer = {"archive_of": whose(), "result": rows, "found": len(rows), **searched}
+            answer = {"archive_of": archive.whose, "result": rows, "found": len(rows), **searched}
             # The same set the rows were gathered from, counted once. Summing a count per indicator
             # answered a different question twice over: a value printed under a name this question
             # matched, but under no indicator, was not counted at all, and a value under two of them
@@ -410,7 +467,7 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
                                   "period with since and until to reach the later ones.")  # fmt: skip
             return answer
 
-    @server.tool(description="Values a laboratory itself marked on the form (H, L, an asterisk, an arrow), over a period. The archive never adds a mark of its own. Where the instance allows it, compare_with_printed_range instead compares each value with the range printed beside it on that same form, and says how many could not be compared at all.")
+    @server.tool(description="Values a laboratory itself marked on the form (H, L, an asterisk, an arrow), over a period. The archive never adds a mark of its own. " + _about_comparing(data_dir))
     def flagged_values(
         since: Annotated[str | None, Field(description="Earliest document date, YYYY-MM-DD")] = None,
         until: Annotated[str | None, Field(description="Latest document date, YYYY-MM-DD")] = None,
@@ -422,7 +479,7 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
         from epicrisis.settings import answer_mode, rules_on
@@ -432,7 +489,7 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         # compare — it has the reference beside every value — but the application does not.
         if compare_with_printed_range and answer_mode(data_dir) != "direct":
             return {
-                "archive_of": whose(),
+                "archive_of": archive.whose,
                 # Not "you may have this if you take every limit off". That sentence sent people
                 # to switch off the last of their own limits for something they did not need it
                 # for: the range is printed beside every value in the answer, and reading it is
@@ -442,8 +499,8 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
                 "instead": "Ask without compare_with_printed_range: every value comes back with the range printed beside it on its own form, and you can compare them yourself. Or ask for the marks the laboratories themselves printed.",
                 "how_to_allow": "Only an instance with every limit taken off on the Settings page has the application compare them. That setting is about more than this, and it is not needed to read a printed range.",
             }
-        with index() as connection:
-            rows, counts = query.flagged_values(
+        with index(archive) as connection:
+            rows, counts, how_many = query.flagged_values(
                 connection, since=since, until=until, flag=flag, indicator=indicator,
                 include_derived=include_derived, compare_with_printed_range=compare_with_printed_range,
                 limit=limit, offset=offset,
@@ -451,7 +508,11 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
                 # range printed at another scale would report the scale as an excursion.
                 placing=rules_on(data_dir, rules.load(data_dir), kinds.CHARTS),
             )  # fmt: skip
-            answer = {"archive_of": whose(), **_page(rows, "values", None, offset)}
+            # With the count, so that a page says whether it is the whole of it. Without one, _page
+            # offers a next_offset on any page that has rows at all, and six values returned out of
+            # six read as six out of many: the three tools that cut in silence were given their
+            # counts a release ago and this was the fourth, cutting nothing and saying so anyway.
+            answer = {"archive_of": archive.whose, **_page(rows, "values", how_many, offset)}
             answer["compared_with_printed_range"] = bool(compare_with_printed_range)
             if not rows:
                 # The emptiest answer in this program and the most easily misread: asked whether
@@ -481,7 +542,7 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
                 )
             return answer
 
-    @server.tool(description="One document: header and counts of every part, then the parts asked for, a page at a time. A long document does not fit in one answer, so 'counts' says what the document holds and 'more' says what is left; ask again with offset, or with parts=['sections','text'] for the words rather than the table. Parts of a document as it was transcribed; it neither summarises the document nor says what it means.")
+    @server.tool(description="One document: header and counts of every part, then the parts asked for, a page at a time. A long document does not fit in one answer, so 'counts' says what the document holds and 'more' says what is left; offset and limit are the same for every part asked for, so a part that has more is asked for on its own, with its own next_offset. Ask with parts=['sections','text'] for the words rather than the table. Parts of a document as it was transcribed; it neither summarises the document nor says what it means.")
     def get_document(
         file_id: Annotated[str | None, Field(description="Short file id, eight characters")] = None,
         first_page: Annotated[int | None, Field(description="First page of the document within the file")] = None,
@@ -493,17 +554,32 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         with_text: Annotated[bool, Field(description="Include the transcribed page text. Ask for it when the words matter: a report's findings live in the text, not in the values.")] = False,
         ticket: TICKET = None
     ) -> dict[str, Any] | None:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
         chosen = tuple(parts) if parts else tuple(part for part in query.PARTS if part != "text" or with_text)
-        with index() as connection:
+        with index(archive) as connection:
             found = query.document(
                 connection, document_id=document_id, file_id=file_id, first_page=first_page,
                 with_text=with_text or bool(parts and "text" in parts), parts=chosen,
                 offset=offset, limit=limit, text_offset=text_offset,
             )  # fmt: skip
-            return {"archive_of": whose(), **found} if found else None
+            if not found:
+                return None
+            answer = {"archive_of": archive.whose, **found}
+            if "more" in answer:
+                # One offset for every part asked for, and a next_offset of its own under each part
+                # that was cut: a caller that asks for the cut part by itself and leaves the offset
+                # behind gets the first page over again. That was one of two repeated calls in a
+                # measured run of ten — the same document, the same part, the same page of it —
+                # and neither the answer nor the description said how the two fit together.
+                answer["how_to_ask_for_the_rest"] = (
+                    "Each part under 'more' was cut. offset and limit apply to every part asked for at"
+                    " once, so ask for one part at a time with that part's own next_offset:"
+                    " parts=['sections'], offset=<its next_offset>. Asking again without the offset"
+                    " returns the page you already have."
+                )
+            return answer
 
     @server.tool(description="Documents the validation flagged for a person to check: incomplete transcriptions, dates, copies, parts that could not be read. Every one of these is about the reading of a page, never about the health of the person the page is about.")
     def documents_to_check(
@@ -512,13 +588,13 @@ def build_server(data_dir: Path, over_the_network: bool = False, pinned_to: str 
         offset: Annotated[int, Field(description="Skip this many, to read the next page", ge=0)] = 0,
         ticket: TICKET = None,
     ) -> dict[str, Any]:
-        notice = guard(ticket)
+        notice, archive = answering(ticket)
         if notice is not None:
             return notice
-        with index() as connection:
+        with index(archive) as connection:
             rows = query.to_check(connection, code=code, limit=limit, offset=offset)
             total = query.count_to_check(connection, code=code)
-            return {"archive_of": whose(), **_page(rows, "documents_to_check", total, offset)}
+            return {"archive_of": archive.whose, **_page(rows, "documents_to_check", total, offset)}
 
     return server
 

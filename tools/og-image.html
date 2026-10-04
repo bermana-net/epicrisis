@@ -1,0 +1,69 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<!-- The source of docs/og.png, the picture a link to this site shows when it is shared. It is not
+     published itself: the picture is, and this is what prints it. Same paper, ink and red as the
+     program, the site and the one-pagers, so a link looks like the thing behind it. Rebuild with:
+       uv run --with playwright python tools/make-og-image.py
+     The chart is drawn here rather than screenshotted: at this size a rescaled screenshot blurs,
+     and numbers invented for a picture cannot be anybody's. -->
+<title>Epicrisis Companion — the picture a shared link shows</title><style>:root { --paper:#f3f2ee; --ink:#0e0e0e; --signal:#d9502a; --muted:#55544f; --line:#dcdad3; --faint:#e9e7e1;
+  --sans:"Liberation Sans",Helvetica,Arial,sans-serif; --mono:"Liberation Mono",Menlo,Consolas,monospace; }
+* { box-sizing:border-box; margin:0; }
+html,body { width:1200px; height:630px; }
+body { background:var(--paper); color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased; }
+.mark { display:block; }
+.caps { font-family:var(--mono); text-transform:uppercase; letter-spacing:.14em; color:var(--muted); }
+
+body { padding:62px 76px 54px; display:flex; flex-direction:column; }
+.top { display:flex; align-items:center; justify-content:space-between; }
+.brand { display:flex; align-items:center; gap:14px; }
+.brand .mark { width:46px; height:46px; }
+.brand b { font-size:24px; }
+.brand small { display:block; font:11px/1.5 var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--muted); }
+.site { font:13px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+h1 { font-size:50px; line-height:1.04; letter-spacing:-.03em; margin:46px 0 0; max-width:900px; }
+h1 span { color:var(--muted); }
+.facts { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line);
+  border:1px solid var(--line); margin-top:34px; }
+.facts div { background:var(--paper); padding:16px 18px; }
+.facts b { font-size:22px; letter-spacing:-.01em; }
+.facts span { display:block; font:11px/1.5 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin-top:4px; }
+.strip { margin-top:auto; border-top:3px solid var(--ink); padding-top:16px; display:flex; align-items:flex-end; gap:26px; }
+.plot { width:760px; height:120px; }
+.note { font:11px/1.6 var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--muted); max-width:280px; }
+</style></head><body>
+<div class="top">
+  <div class="brand"><svg viewBox="0 0 64 64" class="mark">
+  <rect width="64" height="64" fill="#0e0e0e"/>
+  <g fill="#f3f2ee">
+    <rect x="13" y="12" width="10" height="40"/><rect x="13" y="12" width="30" height="9"/>
+    <rect x="13" y="27" width="25" height="9"/><rect x="13" y="43" width="30" height="9"/>
+  </g>
+  <rect x="46" y="42" width="10" height="10" fill="#d9502a"/>
+</svg>
+<span><b>Epicrisis Companion</b><small>Not a medical device</small></span></div>
+  <div class="site">epicrisis.bermana.net</div>
+</div>
+<h1>The box of paper in the cupboard, or wherever your archive lives,<br><span>turned into something you can read and work with.</span></h1>
+<div class="facts">
+  <div><b>Five languages</b><span>Russian · Ukrainian · English · Spanish · Greek</span></div>
+  <div><b>Every value as printed</b><span>With the range its own form printed</span></div>
+  <div><b>On your own server</b><span>No account, no vendor cloud</span></div>
+</div>
+<div class="strip"><svg viewBox="0 0 520 240" preserveAspectRatio="none" class="plot">
+  <rect x="48" y="58" width="462" height="120" fill="#d9502a" opacity="0.13"/>
+  <g stroke="#dcdad3" stroke-width="1">
+    <line x1="48" y1="38" x2="510" y2="38"/><line x1="48" y1="98" x2="510" y2="98"/>
+    <line x1="48" y1="158" x2="510" y2="158"/><line x1="48" y1="208" x2="510" y2="208"/>
+  </g>
+  <polyline fill="none" stroke="#0e0e0e" stroke-width="2.4"
+    points="62,132 98,120 134,146 170,112 206,124 242,100 278,136 314,118 350,92 386,126 422,108 458,140 494,122"/>
+  <g fill="#f3f2ee" stroke="#0e0e0e" stroke-width="2.4">
+    <circle cx="62" cy="132" r="5"/><circle cx="98" cy="120" r="5"/><circle cx="134" cy="146" r="5"/>
+    <circle cx="170" cy="112" r="5"/><circle cx="206" cy="124" r="5"/><circle cx="242" cy="100" r="5"/>
+    <circle cx="278" cy="136" r="5"/><circle cx="314" cy="118" r="5"/><circle cx="350" cy="92" r="5"/>
+    <circle cx="386" cy="126" r="5"/><circle cx="422" cy="108" r="5"/><circle cx="458" cy="140" r="5"/>
+    <circle cx="494" cy="122" r="5"/>
+  </g>
+</svg>
+<div class="note">One test over thirteen years.<br>The band is what each laboratory printed.</div></div>
+</body></html>

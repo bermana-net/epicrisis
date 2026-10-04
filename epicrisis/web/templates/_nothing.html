@@ -1,7 +1,11 @@
 {# One answer for every page that has nothing to show yet: what state this instance is in, and
    the one thing to do next. A tool with no data should read as new, not as broken. #}
-{% macro nothing(what) %}
-{% set here = stage() %}
+{# How far this instance has got is handed in and not reached for: a macro imported with
+   `{% from %}` sees the environment and not the page's own context, so a global was the only way
+   this could ask — and a global is a question with no request to ask it of. The page knows whose
+   archive it is drawing nothing of; it says so here. #}
+{% macro nothing(what, stage) %}
+{% set here = stage %}
 <section class="rule" style="padding-top: 18px;">
   <h1>{{ what }}</h1>
   {% if here.state == "no_archive" %}
@@ -18,7 +22,7 @@
      used to say "the documents have not been read yet" here and offer the step that sends pages to
      a model — for nought pages, with nothing anywhere saying that the folder was the trouble. #}
   <p class="empty">The folder of {{ here.whose }} was looked through to the end, and nothing in it is a document this program can read.</p>
-  <p class="caps muted">It looks for PDFs, photographs and scans, Word documents and spreadsheets, in the folder and in every folder under it. A folder of something else &mdash; or one level too high or too low &mdash; looks exactly like this. Nothing was changed in it, and nothing has been sent anywhere.</p>
+  <p class="caps muted">It looks for PDFs, photographs and scans, Word documents, spreadsheets and plain text files, in the folder and in every folder under it. A folder of something else &mdash; or one level too high or too low &mdash; looks exactly like this. Nothing was changed in it, and nothing has been sent anywhere.</p>
   <p><a class="btn" href="/status">The folder of this archive</a></p>
   {% elif here.state == "scanning" %}
   <p class="empty">The archive of {{ here.whose }} is being looked through right now. This page appears once its documents have been read.</p>

@@ -4,9 +4,11 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+from epicrisis import layout
 from epicrisis.inventory.report import Summary
 from epicrisis.inventory.scan import iter_files, scan
-from epicrisis.runs import put_in_place, temporary_name
+from epicrisis.records import now
+from epicrisis.runs import put_in_place, temporary_name, write_whole
 
 
 class OutputInsideArchive(ValueError):
@@ -33,6 +35,7 @@ def write_inventory(
         raise OutputInsideArchive("the output would be written inside the archive, which is read-only")
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    started_at = now()
     total = sum(1 for _ in iter_files(archive)) if progress else 0
     summary = Summary()
     partial = temporary_name(out).with_suffix(".partial")
@@ -58,5 +61,19 @@ def write_inventory(
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
+    # How far the walk got, beside what it found. The dashboard writes this while its own scan
+    # runs, and read it to draw the first step of an archive; a walk from anywhere else — the
+    # reading's own first step, the command line — left no such line, so an archive read from end
+    # to end by `epicrisis update` showed "Queued" on that step for ever. It was seen on an
+    # archive of 257 documents, every one of them read, with the first step saying it had not
+    # begun. Written by the walk itself now, whoever asked for it.
+    _write_status(out, {"state": "done", "scanned": summary.files + summary.skipped,
+                        "started_at": started_at, "finished_at": now()})  # fmt: skip
     return summary
+
+
+def _write_status(inventory: Path, status: dict) -> None:
+    beside = inventory.parent / layout.INVENTORY_STATUS
+    beside.parent.mkdir(parents=True, exist_ok=True)
+    write_whole(beside, json.dumps(status))
 
