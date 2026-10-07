@@ -118,7 +118,7 @@ def who_view(data_dir: Path, the_archive: str | None, *, kind: str = "doctor",
     # to be.
     showing = the_archive
     empty = {"current": "who", "makers": [], "kind": kind, "proposals": [], "groups": [],
-             "thought": [], "refused": [], "trouble": trouble, "elsewhere": None,
+             "thought": [], "carried": [], "refused": [], "trouble": trouble, "elsewhere": None,
              "archive": showing or "", "holds": "", "in_the_text": [],
              "where_it_came_from": doctors_in_text.WHERE_IT_CAME_FROM}  # fmt: skip
     try:
@@ -163,11 +163,20 @@ def who_view(data_dir: Path, the_archive: str | None, *, kind: str = "doctor",
                         if one["name"] not in standing_already]
                        if kind == "doctor" else [])  # fmt: skip
         settled = people.settled(groups, kind)
-        # What a model offered and nobody has answered. Shown with the sentence it wrote: a
-        # person is being asked to say that two human beings are one, and "a model thought so"
-        # is not a reason anybody can weigh.
-        thought = people.waiting(groups, kind)
-        asked = {frozenset(one.names) for one in thought}
+        # What has been offered and nobody has answered. Shown with the sentence that was written
+        # about it: a person is being asked to say that two human beings are one, and "a model
+        # thought so" is not a reason anybody can weigh.
+        offered = people.waiting(groups, kind)
+        asked = {frozenset(one.names) for one in offered}
+        # Under two headings, because they are two voices and the heading is where this page says
+        # whose a sentence is. A model's proposals are the ones that read "a model thinks these
+        # are one"; the groups the migration out of the instance-wide people.json could not place
+        # were joined by this person's own hand, on an instance that did not write down which
+        # archive they were looking at — so "a model thinks" is false about every one of them,
+        # and a heading saying it of a decision somebody made themselves is the third entry's
+        # defect of the first order, in the one place where it is also the first entry's.
+        thought = [one for one in offered if not one.carried]
+        carried = [one for one in offered if one.carried]
         # And what he has already said is not one. Shown under a heading of its own with a way
         # to take it back: a refusal nothing could undo is the same dead end turned round.
         said_no = people.refused(groups, kind)
@@ -182,6 +191,7 @@ def who_view(data_dir: Path, the_archive: str | None, *, kind: str = "doctor",
             "in_the_text": in_the_text,
             "groups": settled,
             "thought": thought,
+            "carried": carried,
             "refused": said_no,
             # A family at a time, not a pair. One laboratory on a real archive writes itself
             # five ways — its own name, the name with its software, the software with a

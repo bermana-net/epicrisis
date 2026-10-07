@@ -339,6 +339,22 @@ def _say_what_was_lost(cover: dict) -> None:
                err=True)  # fmt: skip
 
 
+def _say_what_rule_was_refused(data_dir: Path) -> None:
+    """Rule files this instance could not read, said out loud wherever rules are run.
+
+    One page of the dashboard printed these and nothing else did. A rule file edited by hand with
+    one mistyped threshold is refused whole, so sixteen checks become fifteen — and from a
+    terminal, which is where somebody editing a file by hand is standing, every number agreed with
+    every other and nothing said a check had stopped running. Measured: one typo took
+    `page_text_missing` out, and the document that would have gone to a stronger model did not.
+    """
+    from epicrisis.rules import load as load_rules
+
+    for problem in load_rules(data_dir).problems:
+        typer.echo(f"  {problem} — that rule is not running at all, and the checks ran without it.",
+                   err=True)  # fmt: skip
+
+
 def _read_index(data_dir: Path, source):
     """Open an archive's index, or say what to run first. A traceback is not an answer."""
     from epicrisis.query import IndexMissing, open_index
@@ -592,7 +608,8 @@ def suspects(
 
     showing = sources_showing(data_dir)
     connection = _read_index(data_dir, showing)
-    found_by = rules_on(data_dir, rules.load(data_dir), kinds.SUSPECTS)
+    found_by = rules_on(data_dir, rules.load(data_dir), kinds.SUSPECTS,
+                        in_archive=showing.id if showing else "")
     if not found_by:
         typer.echo("Every rule that finds these is turned off for this archive. See the settings page.")
         return
@@ -612,15 +629,15 @@ def suspects(
 
 
 def _let_the_server_read(file: Path) -> None:
-    """The service runs as its own user, so the secret it checks codes against is theirs to read."""
-    import grp
-    import os
-    import pwd
+    """The service runs as its own user, so the secret it checks codes against is theirs to read.
 
-    try:
-        os.chown(file, pwd.getpwnam("root").pw_uid, grp.getgrnam("ubuntu").gr_gid)
-    except (KeyError, PermissionError, OSError):
-        pass
+    The doing lives in `mcp_lock`, beside the one function that creates a secret file: the
+    registry of connectors creates one per link, and two copies of this would be two answers to
+    "who may read a secret of this program".
+    """
+    from epicrisis.mcp_lock import let_the_server_read
+
+    let_the_server_read(file)
 
 
 @app.command(name="mcp-secret")
@@ -689,15 +706,34 @@ def mcp_lock_command(
         typer.echo(f"\nKept in {written}. Turn the lock on with: {CLI} mcp-lock on")
         return
     if action == "clear":
-        from epicrisis.mcp_lock import WRONG_CODES_FILE
+        from epicrisis.mcp_lock import every_wait_kept, whoever_is_waiting
 
         data_dir = _an_instance(data_dir)
-        kept = data_dir / WRONG_CODES_FILE
-        existed = kept.exists()
-        kept.unlink(missing_ok=True)
-        typer.echo(f"The run of wrong codes is cleared in {data_dir}." if existed
-                   else f"There was no wait to clear in {data_dir}.")  # fmt: skip
-        typer.echo("The server reads this file on the next code; no restart needed.")
+        # Every wait there is, and not only the instance's. Each link counts wrong codes on its
+        # own — one person guessing badly must not hold the others out — so there is a file per
+        # link, and this command knew about none of them: somebody locked out of their own link
+        # ran the way out that is written down and nothing happened.
+        #
+        # It takes every file, and it says how many of them were holding anybody out. A file whose
+        # run of wrong codes was answered correctly, or has aged out of the window, is litter and
+        # not a wait — and "1 wait cleared" over such a file told somebody their way out had done
+        # something when there had been nothing to do.
+        kept, held = every_wait_kept(data_dir), whoever_is_waiting(data_dir)
+        for file in kept:
+            file.unlink(missing_ok=True)
+        if held:
+            typer.echo(f"{len(held)} wait{'s' if len(held) != 1 else ''} cleared in {data_dir}: "
+                       "whoever was being kept out can try a code again now.")  # fmt: skip
+        elif kept:
+            # Not "past its wait": a run that never reached the count has no wait either. What
+            # both have in common is the thing a person cares about — nobody was being held out.
+            typer.echo(f"There was no wait to clear in {data_dir}. {len(kept)} file"
+                       f"{'s' if len(kept) != 1 else ''} of wrong codes that "
+                       f"{'were' if len(kept) != 1 else 'was'} holding nobody out "
+                       f"{'were' if len(kept) != 1 else 'was'} taken away.")  # fmt: skip
+        else:
+            typer.echo(f"There was no wait to clear in {data_dir}.")
+        typer.echo("The server reads these on the next code; no restart needed.")
         return
     if action in ("on", "off"):
         if action == "on" and not read_secret():
@@ -822,6 +858,7 @@ def validate(source_id: str | None = SOURCE_OPTION, data_dir: Path = DATA_DIR_OP
     if not (output / layout.CLASSIFY).exists():
         typer.echo("Run classify for this source first.", err=True)
         raise typer.Exit(code=2)
+    _say_what_rule_was_refused(registry.data_dir)
     result = validate_source(output, Path(source.path))
     cover = result["coverage"]
     typer.echo(
@@ -965,10 +1002,10 @@ def people(
 def mcp(
     data_dir: Path = DATA_DIR_OPTION,
     http: bool = typer.Option(False, "--http", help="Serve over HTTP instead of stdio, for a Claude connector."),
-    secret_file: Path = typer.Option(None, help="File holding the secret that stands in the served path. Required with --http."),
+    secret_file: Path = typer.Option(None, help="File holding a link's path secret, checked against the registry and nothing more. Not needed: every live link the registry holds is served."),
     host: str = typer.Option("127.0.0.1", help="Address to listen on. Keep it local and put a tunnel in front."),
     port: int = typer.Option(8051, help="Port to listen on with --http."),
-    public_host: str = typer.Option(None, help="The name the tunnel answers on, for instance epicrisis.example.ts.net."),
+    public_host: str = typer.Option(None, help="The name the tunnel answers on, for instance epicrisis.example.ts.net. Taken from the settings page when it is not given here."),
     allow_from: str = typer.Option(
         "160.79.104.0/21",
         help="Networks allowed to reach it through the tunnel, comma separated. The default is the range Anthropic publishes for its connectors; this machine and private networks are always allowed. An empty value lets anyone in.",
@@ -984,18 +1021,305 @@ def mcp(
     if not http:
         run(data_dir, pinned_to=source_id)
         return
-    if secret_file is None:
-        typer.echo("--http needs --secret-file: the secret is what keeps the archive closed.", err=True)
+    # The secret is no longer something the server is started with: every live link in the
+    # registry is served, so one issued on the page works without a restart and a revoked one
+    # stops the same way. The flag is kept because it is in the README and in whatever anybody has
+    # in a service file, and it now does one useful thing — it checks that the secret in that
+    # file is a link the registry holds, and says what to do when it is not. Starting the server
+    # on a secret nothing has carried in would have served nothing and said nothing.
+    from epicrisis import connectors
+    from epicrisis import mcp_lock as mcp_lock_module
+
+    if secret_file is not None:
+        try:
+            secret = read_path_secret(secret_file)
+        except (OSError, ValueError) as problem:
+            typer.echo(str(problem), err=True)
+            raise typer.Exit(code=2) from problem
+        if not any(one.live and one.path == secret for one in connectors.load(data_dir)):
+            typer.echo(f"The secret in {secret_file} is not a link this instance has issued, so "
+                       f"nothing would answer on it. Carry it in with "
+                       + invocation.run("connector carry-in", data_dir)
+                       + ", or drop --secret-file: every link on the registry is served.", err=True)  # fmt: skip
+            raise typer.Exit(code=2)
+    issued = connectors.load(data_dir)
+    # Made here as well as where a link is issued: this server cannot make it — it runs with the
+    # data directory read-only and this one folder mounted in — so a fresh machine would serve
+    # with its waits living in memory alone. Tried before the warning below, so the warning is
+    # about a folder that could not be made rather than one nobody had made yet.
+    mcp_lock_folder = mcp_lock_module.make_the_place_for_waits(data_dir)
+    live = [one for one in issued if one.live]
+    if not live:
+        # Said apart from "none has been issued", because the two are different situations and
+        # the second one is a server that worked yesterday. A person reading "no link has been
+        # issued" on a machine holding four of them goes looking for a lost file.
+        ended = [one for one in issued if one.expired()]
+        typer.echo(
+            (f"Every link here has stopped answering: {len(ended)} past its last day. Give one a "
+             f"later day — " + invocation.run("connector until <id> <day>", data_dir) + " — or "
+             "make a new one." if ended else
+             "No link has been issued, so nothing can reach this server. Make one on the settings "
+             "page, or with " + invocation.run("connector add", data_dir)),
+            err=True)  # fmt: skip
         raise typer.Exit(code=2)
-    try:
-        secret = read_path_secret(secret_file)
-    except (OSError, ValueError) as problem:
-        typer.echo(str(problem), err=True)
-        raise typer.Exit(code=2) from problem
-    typer.echo(f"Epicrisis MCP on http://{host}:{port}/mcp/<secret>")
+    # The flag wins where it is given, and the setting answers where it is not: the instance now
+    # knows its own public name, and a request arriving through a tunnel under a name nothing
+    # allows is refused before it reaches the archive. Two answers to one question is what
+    # ARCHITECTURE forbids, so the flag is read as "this once, instead" and nothing is written.
+    if public_host is None:
+        from epicrisis.settings import the_name_the_tunnel_answers_on
+
+        public_host = the_name_the_tunnel_answers_on(data_dir) or None
+        if public_host:
+            typer.echo(f"Answering as {public_host}, as the settings page says.")
+    # The nearest end, out loud at the start: a link stops answering on its own here, and nothing
+    # anywhere warns the person holding it. The log of calls shows a connector going quiet and
+    # says nothing about why, so the one place this can be said is where the server says what it
+    # is serving. §7.
+    ending = sorted(one.until for one in live if one.until)
+    typer.echo(f"Epicrisis MCP on http://{host}:{port}/mcp/<secret>, "
+               f"{len(live)} link{'s' if len(live) != 1 else ''} answering"
+               + (f", the first of them until {ending[0]}" if ending else ", none with an end"))  # fmt: skip
     if not allow_from.strip():
         typer.echo("Warning: no source filter. Anyone who learns the address may try the secret.", err=True)
-    run_http(data_dir, secret, host=host, port=port, public_host=public_host, allow_from=allow_from)
+    # The lock is a setting, and a setting is a thing somebody turned off nine days ago and does
+    # not remember. This server started in silence all that time, and its owner learnt that his
+    # archive was answering without a code by watching an assistant answer without asking for one.
+    # The seventh entry of the constitution is about exactly this: the program says what it does.
+    from epicrisis.settings import mcp_lock_on
+
+    # What the lock can and cannot keep, said where the server says what it is serving. A wait
+    # that does not outlive a restart is a wait somebody patient simply waits out, and the only
+    # sign of it was a silent `writes = False` inside one object.
+    if mcp_lock_folder is None and not mcp_lock_module.the_waits_can_be_kept(data_dir):
+        typer.echo(f"The runs of wrong codes cannot be written to "
+                   f"{data_dir}/{mcp_lock_module.WRONG_CODES_FOLDER}, so the growing wait after "
+                   "wrong codes lasts only until this server is restarted. Make that folder "
+                   "writable by whoever this service runs as. The unit names it in "
+                   "ReadWritePaths, with a leading dash so that its absence cannot stop the "
+                   "server — which is also why nothing said this until now.", err=True)  # fmt: skip
+    if not mcp_lock_on(data_dir):
+        typer.echo("The six-digit code is OFF for this instance: whoever has a link's address "
+                   "reads that archive without one. The address and the tunnel say where a "
+                   "request came from and nothing about who sent it. Turn it on under Settings "
+                   "-> Over the network.", err=True)  # fmt: skip
+    run_http(data_dir, host=host, port=port, public_host=public_host, allow_from=allow_from)
+
+
+connector = typer.Typer(help="The MCP links this instance has issued, and which archives each may open.")
+app.add_typer(connector, name="connector")
+
+
+@connector.command("list")
+def connector_list(data_dir: Path = DATA_DIR_OPTION) -> None:
+    """Every link issued, what it may open, and which of them have been revoked.
+
+    No secret is printed, here or anywhere else after the moment a link is issued: the path is the
+    address, and a terminal keeps scrollback.
+    """
+    from epicrisis import connectors
+    from epicrisis.sources import SourceRegistry
+
+    data_dir = _an_instance(data_dir)
+    issued = connectors.load(data_dir)
+    if not issued:
+        typer.echo("No link has been issued. Make one: "
+                   + invocation.run("connector add --name <what to call it>", data_dir))
+        return
+    archives = SourceRegistry(data_dir).list()
+    for one in issued:
+        may_open = connectors.the_archives_it_may_open(one, archives)
+        # By owner and never by id: a list of random ids is a list nobody can act on, and the
+        # owners of these archives are the words the person who issued the link was thinking in.
+        whose = ", ".join(each.owner or "nobody named" for each in may_open) or "nothing"
+        # Three states and not two, and the middle one said as what it is: a link past its last
+        # day answers nothing, exactly as a revoked one does, and is the only one of the three
+        # that comes back when somebody types a later date.
+        if one.revoked_at:
+            when = f"revoked {one.revoked_at}"
+        elif one.expired():
+            when = f"ended {one.until}"
+        else:
+            when = f"issued {one.issued_at}" + (f", until {one.until}" if one.until else "")
+        typer.echo(f"{one.id}  {one.name or 'unnamed':24}  {when}  may open: {whose}")
+    # And the other direction: ids the log of calls names that this registry does not hold. A line
+    # here stays when a link is taken back, precisely so that the journal and the access log go on
+    # naming something — and the file was edited by hand during the registry's own building, which
+    # left thirteen calls pointing at five ids that name nothing. Nothing said so; the log simply
+    # had strangers in it. This is the only place both lists are in one hand.
+    stray = connectors.ids_the_log_names_that_are_not_here(data_dir)
+    if stray:
+        typer.echo(f"\n{len(stray)} id{'s' if len(stray) != 1 else ''} in the log of calls "
+                   f"{'name' if len(stray) != 1 else 'names'} no link here: {', '.join(sorted(stray))}.\n"
+                   "A revoked link keeps its line on purpose, so this means a line was removed "
+                   "rather than revoked. Nothing is broken by it; the log is simply unreadable "
+                   "where those ids appear.")  # fmt: skip
+
+
+@connector.command("add")
+def connector_add(
+    name: str = typer.Option("", "--name", help="What to call it on the page. Your own words; it is the only thing you type."),
+    archive: list[str] = typer.Option([], "--archive", help="The id of an archive this link may open. Repeat it for several."),
+    until: str = typer.Option("", "--until", help="The last day it answers, as 2027-03-31, that day included. Left out, the link has no end."),
+    data_dir: Path = DATA_DIR_OPTION,
+    secrets_folder: Path = typer.Option(None, help="Where to keep its code secret. The default is /etc/epicrisis/connectors."),
+) -> None:  # fmt: skip
+    """Issue a link: its address, and the code secret to read into an authenticator once.
+
+    Both are printed once and never again. The code secret cannot be fetched a second time by any
+    command here — that is deliberate, and losing it before the phone is set up costs one
+    `connector revoke` and one `connector add`.
+    """
+    from epicrisis import connectors
+    from epicrisis.mcp_lock import uri
+    from epicrisis.sources import SourceRegistry
+
+    data_dir = _an_instance(data_dir)
+    known = {one.id for one in SourceRegistry(data_dir).list()}
+    unknown = [one for one in archive if one not in known]
+    if unknown:
+        # Refused rather than written: an id that is on no archive opens nothing, so a link made
+        # with a typo would look issued and reach nothing, and nothing on the page would say why.
+        typer.echo(f"No archive here has the id {', '.join(unknown)}. "
+                   + invocation.run("connector list", data_dir) + " shows the ids.", err=True)  # fmt: skip
+        raise typer.Exit(code=2)
+    if until.strip():
+        # Read before anything is written, as the page reads it: a link issued and then refused
+        # its date would be a credential handed over that this command had not meant to make.
+        try:
+            connectors.a_day(until)
+        except ValueError as not_a_day:
+            typer.echo(f"{not_a_day}. Nothing was issued.", err=True)
+            raise typer.Exit(code=2) from not_a_day
+    try:
+        made, code_secret = connectors.issue(data_dir, name=name, archives=tuple(archive),
+                                             until=until, secrets_folder=secrets_folder)  # fmt: skip
+    except OSError as problem:
+        typer.echo(f"Cannot write the code secret: {problem}. Run this as root.", err=True)
+        raise typer.Exit(code=2) from problem
+    typer.echo(f"Link {made.id} issued"
+               + (f", and it answers until {made.until} inclusive." if made.until else ", with no end.")
+               + ("" if archive else " It may open nothing yet: give it archives with --archive, "
+                  "or on the settings page."))  # fmt: skip
+    typer.echo("")
+    typer.echo(f"  The address:  /mcp/{made.path}")
+    typer.echo(f"  The code:     {uri(code_secret, account=made.name or made.id)}")
+    typer.echo("")
+    typer.echo("Read that second line into an authenticator now. Neither line is printed again by "
+               "any command, and the code secret is in no file this program will show you.")  # fmt: skip
+
+
+@connector.command("carry-in")
+def connector_carry_in(
+    data_dir: Path = DATA_DIR_OPTION,
+    secrets_folder: Path = typer.Option(None, help="Where to keep its code secret."),
+) -> None:  # fmt: skip
+    """Write the pair of secrets this machine already has down as its first link.
+
+    Before the registry there was one path secret and one code secret, and together they opened
+    the whole instance. That pair is still on the machine and still in somebody's phone, so it is
+    carried in rather than replaced: the address they use goes on working and their authenticator
+    goes on being accepted, until they revoke it themselves.
+
+    It is given every archive, because that is what it opens today. Narrowing it here would be
+    this program deciding what somebody may see.
+    """
+    from epicrisis import connectors
+    from epicrisis.sources import SourceRegistry
+
+    data_dir = _an_instance(data_dir)
+    archives = tuple(one.id for one in SourceRegistry(data_dir).list())
+    try:
+        made = connectors.carry_the_one_secret_in(data_dir, archives, secrets_folder=secrets_folder)
+    except OSError as problem:
+        typer.echo(f"Cannot write the code secret: {problem}. Run this as root.", err=True)
+        raise typer.Exit(code=2) from problem
+    if made is None:
+        typer.echo("Nothing to carry in: either this machine has no such pair of secrets, or the "
+                   "pair it has is already on the list. Nothing was written.")  # fmt: skip
+        return
+    typer.echo(f"Carried in as {made.id}, with every archive here ({len(made.archives)}). The "
+               "address and the code that were already in use go on working unchanged.")  # fmt: skip
+
+
+@connector.command("rename")
+def connector_rename(
+    connector_id: str = typer.Argument(..., help="The id of the link, as `connector list` prints it."),
+    name: str = typer.Argument(..., help="What to call it."),
+    data_dir: Path = DATA_DIR_OPTION,
+) -> None:  # fmt: skip
+    """Change what a link is called. Nothing else about it moves."""
+    from epicrisis import connectors
+
+    data_dir = _an_instance(data_dir)
+    if connectors.rename(data_dir, connector_id, name) is None:
+        typer.echo(f"No link here has the id {connector_id}.", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"{connector_id} is now called {name!r}.")
+
+
+@connector.command("until")
+def connector_until(
+    connector_id: str = typer.Argument(..., help="The id of the link, as `connector list` prints it."),
+    day: str = typer.Argument(..., help="The last day it answers, as 2027-03-31, that day included. The word `forever` takes the end off."),
+    data_dir: Path = DATA_DIR_OPTION,
+) -> None:  # fmt: skip
+    """Set, move or take off the last day a link answers. Nothing else about it moves.
+
+    One command for all three, because they are one fact being written: a later day is an
+    extension, an earlier one brings the end forward, and `forever` is a link with no end. The
+    address and the authenticator are untouched by every one of them, which is the whole point of
+    a date rather than a revoke — a link stopped this way can be started again, and a revoked one
+    cannot.
+
+    A day in the past is allowed: it is how somebody stops a link today and keeps the phone it was
+    set up on. What stops answering stops silently, as a revoked link does and for the same
+    reason — whoever holds it must not be able to tell an address that has ended from one that
+    never existed.
+    """
+    from epicrisis import connectors
+
+    data_dir = _an_instance(data_dir)
+    # One word rather than an empty argument, because an empty one is what a shell sends by
+    # accident: `connector until <id> ""` would be a slip that takes the end off a link.
+    wanted = "" if day.strip().lower() in ("forever", "never", "none") else day
+    try:
+        moved = connectors.set_until(data_dir, connector_id, wanted)
+    except ValueError as not_a_day:
+        typer.echo(f"{not_a_day}. Nothing was changed; `forever` takes the end off.", err=True)
+        raise typer.Exit(code=2) from not_a_day
+    if moved is None:
+        typer.echo(f"No link here has the id {connector_id}.", err=True)
+        raise typer.Exit(code=2)
+    if not moved.until:
+        typer.echo(f"{connector_id} has no end: it answers until it is revoked.")
+        return
+    typer.echo(f"{connector_id} answers until {moved.until} inclusive"
+               + (", which has gone by, so it answers nothing now. Its code secret is still on "
+                  "this machine, so a later day here starts it again; `connector revoke` is what "
+                  "takes the secret off." if moved.expired() else "."))  # fmt: skip
+
+
+@connector.command("revoke")
+def connector_revoke(
+    connector_id: str = typer.Argument(..., help="The id of the link, as `connector list` prints it."),
+    data_dir: Path = DATA_DIR_OPTION,
+    secrets_folder: Path = typer.Option(None, help="Where its code secret is kept."),
+) -> None:  # fmt: skip
+    """Stop a link working and take its code secret off the machine.
+
+    The line stays on the list with the moment it was revoked, because the journal and the access
+    log name ids and an id that names nothing makes both unreadable.
+    """
+    from epicrisis import connectors
+
+    data_dir = _an_instance(data_dir)
+    gone = connectors.revoke(data_dir, connector_id, secrets_folder=secrets_folder)
+    if gone is None:
+        typer.echo(f"No live link here has the id {connector_id}.", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"{connector_id} is revoked. Its address answers nothing, and its code secret is "
+               "off this machine. Whoever held it needs a new link.")  # fmt: skip
 
 
 sources = typer.Typer(help="The archives this instance holds. Adding one reads nothing and sends nothing.")
@@ -1270,6 +1594,7 @@ def index(data_dir: Path = DATA_DIR_OPTION) -> None:
                    + ", or run " + invocation.run("serve", data_dir)
                    + " and add it on the Archive status page.", err=True)  # fmt: skip
         raise typer.Exit(code=2)
+    _say_what_rule_was_refused(registry.data_dir)
     for source in sources:
         output = source_output_dir(registry.data_dir, source.id)
         if (output / layout.CLASSIFY).exists() and validation_state(output)["state"] != "done":
@@ -1526,8 +1851,16 @@ def demo(
     pictures of, and not one call leaves this machine. Nobody in it exists.
     """
     from epicrisis.demo import LIVES, build
+    from epicrisis.sources import SourceError
 
-    made = build(into, seed=seed, say=lambda text: typer.echo(text, err=True))
+    try:
+        # The folder is looked at before a page is drawn; the sentence is the demo's own, and this
+        # says it the way `sources add` says its refusal of a folder. It used to come out as the
+        # registry's traceback, on the way in, with an invented person's scans already on disk.
+        made = build(into, seed=seed, say=lambda text: typer.echo(text, err=True))
+    except SourceError as wrong:
+        typer.echo(str(wrong), err=True)
+        raise typer.Exit(code=2) from wrong
 
     whose = ", ".join(life.whose for life in LIVES)
     typer.echo(f"\nThree archives of people who do not exist: {whose}")

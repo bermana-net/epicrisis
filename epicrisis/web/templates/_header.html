@@ -3,6 +3,13 @@
    do; the rest arrive as the documents do. Typing an address still reaches any page, and the
    page then says which step is missing. #}
 {% set here = stage %}
+{# Where a person is standing, as a press has to send it back: the path with its query, if it has
+   one. Two presses in this file need it — the archive picker and the "build it in" button of the
+   banner — and both wrote it out, byte for byte, sixty-nine lines apart. One of them was added by
+   the fix for a `back` read from a Referer header this server never sends; the fix made a second
+   copy rather than a name. Two copies of one expression come apart on the day one of them is
+   changed, and then one press returns to the wrong page. #}
+{% set where_i_am = request.url.path ~ ("?" ~ request.url.query if request.url.query else "") %}
 {# The order is the order a person uses them: the archive itself first, because the timeline is
    what this is for and what the front page shows; then the two ways of asking it something; then
    what it says about the person, then the two pages that decide what one name means.
@@ -31,7 +38,11 @@
   ("/review", "review", "To check", "Findings of the validation", "read"),
   ("/status", "status", "Archive status", "Archives and progress", "always"),
   ("/consent", "consent", "Model processing", "What is sent and where", "scanned"),
+  ("/connectors", "connectors", "Links over the network", "Who may reach whom", "always"),
 ] %}
+{# The links are reached with "always" and not "scanned": a link is given its archives before
+   anything has been read, and the first thing somebody setting this up for another person does
+   is hand over an address. #}
 {# A brand new instance offers the one thing there is to do, because nine pages that all say
    "nothing yet" is not an interface. From the moment a folder is added the menu is whole and
    stays whole: with two archives on one server, a menu that shrank when a person switched to
@@ -93,7 +104,7 @@
       {# Switching whose archive is shown does not change which page is being read: the same
          question is simply asked of somebody else, and a page with nothing to show for them
          says so where it stands. #}
-      <input type="hidden" name="back" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+      <input type="hidden" name="back" value="{{ where_i_am }}">
       <label for="owner-pick">Archive of</label>
       <select id="owner-pick" name="source">
         {% for item in who.all %}
@@ -156,6 +167,13 @@
      them. Only while nothing is running, so two presses are not two builds. #}
   {% if not catch.building %}
   <form method="post" action="/index/{{ catch.archive }}/build">
+    {# Where to come back to, sent with the press. It was read from the Referer header, which this
+       server never sends — it sets Referrer-Policy: no-referrer on every answer it gives — so the
+       header was always absent, the fallback was "/", and a person who pressed this from the page
+       of findings or from a chart was put on the timeline. This banner stands under the header of
+       every page, so that was every page. The archive picker beside it has sent its own `back`
+       all along. #}
+    <input type="hidden" name="back" value="{{ where_i_am }}">
     <button class="btn small" type="submit">{% if catch.trouble %}Try again{% else %}Build it in{% endif %}</button>
   </form>
   {% endif %}

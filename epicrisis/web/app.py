@@ -26,6 +26,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from collections import Counter
+
 from epicrisis import doc_types, invocation, layout
 from epicrisis.classify.backend import backend_installed
 from epicrisis.classify.pages import PageUnreadable, original_png, page_refs
@@ -35,6 +37,7 @@ from epicrisis.extract.run import LOCK_NAME as EXTRACT_LOCK
 from epicrisis.extract.run import document_refs, done_keys
 from epicrisis.consent import has_consent, not_covered as consent_not_covered, record_consent, withdraw_consent
 from epicrisis.corrections import CORRECTABLE, line_key, set_document_date, set_primary_copy, set_value
+from epicrisis import how_long
 from epicrisis import judgements
 from epicrisis.index.build import FILE_NAME as THE_INDEX
 from epicrisis.index.build import index_path, index_state
@@ -59,7 +62,7 @@ from epicrisis.web.markdown import render_markdown
 from epicrisis.ask import ask, carried_questions, delete_chat, list_chats, load_chat, new_chat
 from epicrisis.ask import running as chat_running
 from epicrisis.settings import unreadable as settings_unreadable
-from epicrisis.settings import answer_mode, ask_enabled, mcp_lock_on, rules_on
+from epicrisis.settings import answer_mode, ask_enabled, mcp_lock_minutes, mcp_lock_on, mcp_lock_scope, rules_on
 from epicrisis.update import start_in_background as start_update
 from epicrisis.update import update_running
 from epicrisis.validate import validate_source, validation_state
@@ -864,6 +867,11 @@ def create_app(
             model_ready=backend_installed(),
             mcp={"last": mcp_access.last(registry.data_dir), "counts": mcp_access.counts(registry.data_dir),
                  "day": mcp_access.activity(registry.data_dir), "lock": mcp_lock_on(registry.data_dir),
+                 # What a code actually opens here, rather than the shipped default written into
+                 # the page: this window is a setting from one minute to a week, and what a code
+                 # opens — this conversation or the whole server for a while — matters more than
+                 # how long it lasts. `mcp-lock status` has printed both all along.
+                 "minutes": mcp_lock_minutes(registry.data_dir), "scope": mcp_lock_scope(registry.data_dir),
                  "secret": bool(read_lock_secret())},
             # The journal is a new file in the data directory, so this page says it is there, what
             # it is for and — the part that matters more — what is not in it. A file nobody is told
@@ -1033,17 +1041,34 @@ def create_app(
         A screen that counted the pages of the archive being looked at named a fraction of what
         leaves the machine, and named one person while three people's pages went.
         """
-        pages = files = 0
+        pages = files = held = 0
         whose = []
+        # Pages by what each one is, for the estimate below: counted off the same refs the count
+        # above is, so the two numbers on this page cannot drift apart.
+        waiting: Counter = Counter()
         for source in archives.all:
             inventory = jobs.records_path(source.id)
             if not inventory.exists():
                 continue
-            refs = all_refs(list(read_records(inventory)))
+            records = list(read_records(inventory))
+            refs = all_refs(records)
             if refs:
                 whose.append(source.whose)
-            pages += len(refs)
-            files += len({ref.file_sha256 for ref in refs})
+            held += len(refs)
+            # **What a run would send, and not what the archive holds.** This counted every page
+            # of every archive, so an instance where everything had been read said "This run will
+            # send 138 pages from 138 files" over a run that sends nothing at all — measured, 0
+            # calls. The number is the one thing a person reads in the place where they decide
+            # whether their pages leave the machine, and it was the whole archive every time.
+            still = _what_a_run_would_still_send(records, source_output_dir(registry.data_dir, source.id))
+            pages += len(still)
+            files += len({ref.file_sha256 for ref in still})
+            waiting += Counter(ref.route for ref in still)
+        # About how long that will take, fitted on this instance's own reading, or nothing at all
+        # where it has read too little to say. Over every archive here, because that is what the
+        # count beside it is over and what pressing the button would read.
+        about_how_long = how_long.in_words(how_long.hours_for(
+            waiting, how_long.prices([jobs.records_path(source.id).parent for source in archives.all])))  # fmt: skip
         showing = archives.showing
         consented = has_consent(registry.data_dir, engines.engine_name(registry.data_dir))
         # Which engine this is about. Consent is kept per engine, so changing the engine asks
@@ -1057,9 +1082,77 @@ def create_app(
         added_since = consent_not_covered(registry.data_dir, engines.engine_name(registry.data_dir))
         by_id = {source.id: source.whose for source in archives.all}
         return {"consented": consented, "error": error, "pages": pages, "files": files,
+                # What the archives hold, beside what a run would send, so that "nothing is
+                # waiting" is not read as "there is nothing here".
+                "pages_held": held,
                 "whose": showing.whose if showing else "", "archives": whose,
                 "added_since": [by_id.get(source_id, source_id) for source_id in added_since],
+                "about_how_long": about_how_long,
                 "engine": engines.chosen_engine(registry.data_dir)}  # fmt: skip
+
+    # The editor of links. A shell, as every route here is: what it shows is gathered in
+    # web/connectors_page.py beside what draws it, and the archives arrive as a value.
+    @app.get("/connectors", response_class=HTMLResponse)
+    def connectors_page(request: Request, looking_at: str = "", saved: str = "",
+                        editing: str = "", deleting: str = "", issuing: str = "",
+                        archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        # Which sheet is open is read off the address and nothing else. Three parameters rather
+        # than a kind and an id, because each names a different thing to be looked at and a
+        # single `sheet=editing&id=…` can arrive with one half of it missing; this cannot.
+        sheet = "editing" if editing else "deleting" if deleting else "issuing" if issuing else ""
+        return templates.TemplateResponse(request, "connectors.html", _connectors_context(
+            request, archives, looking_at=editing or deleting or looking_at, sheet=sheet,
+            stored=saved))  # fmt: skip
+
+    def _connectors_context(request: Request, archives: TheArchives, *, looking_at: str = "",
+                            sheet: str = "", stored: str = "", refused: tuple = ()) -> dict:  # fmt: skip
+        # No shell is built here: `the_shell_of_every_page` is a context processor and adds it to
+        # every response. One place answers what the header needs, as with every other page.
+        from epicrisis.web.connectors_page import connectors_view
+
+        return connectors_view(registry.data_dir, archives, looking_at=looking_at, sheet=sheet,
+                               stored=stored, refused=refused)  # fmt: skip
+
+    @app.post("/connectors/new")
+    def issue_connector(request: Request, name: str = Form(""), archive_ids: list[str] = Form([]),
+                        until: str = Form(""), understood: str = Form(""),
+                        archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        from epicrisis.web.connectors_page import Issued, issue_pressed
+
+        answer = issue_pressed(registry.data_dir, archives, name=name, until=until,
+                               archive_ids=tuple(archive_ids), understood=understood)  # fmt: skip
+        if isinstance(answer, Issued):
+            # Rendered here and never redirected. A redirect carries what it carries in an address
+            # bar and in a browser's history, and this answer holds the code secret: the one time
+            # it is shown is this response and there is no second one to be had.
+            return templates.TemplateResponse(request, "connectors.html", {
+                **_connectors_context(request, archives, looking_at=answer.connector_id),
+                "issued": answer,
+            })  # fmt: skip
+        # A refusal belongs in the sheet the person pressed in, with what they typed still in
+        # front of them, and not on the list behind it.
+        return templates.TemplateResponse(request, "connectors.html", _connectors_context(
+            request, archives, sheet="issuing", refused=answer.refused))  # fmt: skip
+
+    @app.post("/connectors")
+    def save_connector(request: Request, connector_id: str = Form(""), name: str = Form(""),
+                       archive_ids: list[str] = Form([]), until: str = Form(""),
+                       shown: list[str] = Form([]), revoke: str = Form(""),
+                       archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
+        from epicrisis.web.connectors_page import connectors_pressed
+
+        pressed = connectors_pressed(registry.data_dir, archives, connector_id=connector_id,
+                                     name=name, archive_ids=tuple(archive_ids), until=until,
+                                     shown=tuple(shown), revoke=revoke)  # fmt: skip
+        if pressed.refused:
+            # Drawn again rather than redirected, because a refusal has to arrive beside the thing
+            # it is about: a redirect would drop what the person had typed and say nothing.
+            return templates.TemplateResponse(request, "connectors.html", _connectors_context(
+                request, archives, looking_at=pressed.looking_at, sheet="editing",
+                stored=pressed.said(), refused=pressed.refused))  # fmt: skip
+        return RedirectResponse(f"/connectors?looking_at={pressed.looking_at}"
+                                + (f"&saved={quote(pressed.said())}" if pressed.said() else ""),
+                                status_code=303)  # fmt: skip
 
     @app.get("/consent", response_class=HTMLResponse)
     def consent_page(request: Request, archives: TheArchives = Depends(the_archives_of)):
@@ -1144,7 +1237,8 @@ def create_app(
             span = {"first": dated[0] if dated else None, "last": dated[-1] if dated else None,
                     "undated": sum(1 for item in values if not item.get("date")),
                     "total": total, "more": total > len(values)}  # fmt: skip
-        placing = rules_on(registry.data_dir, rules.load(registry.data_dir), kinds.CHARTS)
+        placing = rules_on(registry.data_dir, rules.load(registry.data_dir), kinds.CHARTS,
+                           in_archive=showing or "")
         context.update(
             label=label, material=material, materials=materials, values=values, span=span,
             material_label=next((item["label"] for item in materials if item["key"] == material), material),
@@ -1214,19 +1308,29 @@ def create_app(
     # server is restarted, the newest few hundred questions, so that a tab left open overnight still
     # has its results — and where it has been forgotten the page says so instead of answering
     # nothing.
-    asked_of_the_search: dict[str, dict] = {}
+    #
+    # key -> (the archive it was asked about, the question). The archive is half of what a key
+    # means and not a detail of it, the way `mcp_lock.Lock.passes` holds the archive a pass was
+    # given for: a pass opens one person's archive and not this address, and a key stands for one
+    # person's question and not for this server's. Without it, a key handed out while one archive
+    # was open and opened after a switch repeated somebody's words — a doctor's surname, a
+    # diagnosis, the thing a person types when they are frightened — at the top of a page about
+    # another person, with that other person's name in the bar above it. The results never
+    # crossed, because they come from the index of whichever archive is open; the words did, which
+    # is the first entry of the constitution all the same.
+    asked_of_the_search: dict[str, tuple[str | None, dict]] = {}
     QUESTIONS_KEPT = 300
 
-    def _remember_the_question(q: str, doc_type: str, limit: int, offset: int) -> str:
+    def _remember_the_question(whose: str | None, q: str, doc_type: str, limit: int, offset: int) -> str:
         key = secrets.token_urlsafe(9)
-        asked_of_the_search[key] = {"q": q, "doc_type": doc_type, "limit": limit, "offset": offset}
+        asked_of_the_search[key] = (whose, {"q": q, "doc_type": doc_type, "limit": limit, "offset": offset})
         while len(asked_of_the_search) > QUESTIONS_KEPT:
             asked_of_the_search.pop(next(iter(asked_of_the_search)), None)
         return key
 
     @app.post("/search")
     def search_posted(request: Request, q: str = Form(""), doc_type: str = Form(""), limit: int = Form(40),
-                      offset: int = Form(0)):  # fmt: skip
+                      offset: int = Form(0), archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """The words in the body, then an address a browser can come back to.
 
         An address is kept in a browser's history, synced from there to a vendor's servers, offered
@@ -1245,8 +1349,13 @@ def create_app(
         page of the results was another such entry in the history. So the post stores the question
         and redirects to it by key: the words stay out of the address, and what comes back is an
         ordinary GET, which is the one thing a browser knows how to return to.
+
+        Which archive the words were typed about is stored with them, and this is the one route of
+        this program about somebody's records that used to declare no archive at all — it writes
+        nothing and reads nothing of anybody's, so nothing was missing until the words themselves
+        turned out to be somebody's.
         """
-        key = _remember_the_question(q, doc_type, limit, offset)
+        key = _remember_the_question(archives.showing_id, q, doc_type, limit, offset)
         return RedirectResponse(f"/search?s={key}", status_code=303)
 
     @app.get("/search", response_class=HTMLResponse)
@@ -1256,11 +1365,21 @@ def create_app(
         # The question this key stands for, asked a moment ago or last night. Not popped: this page
         # is one a person comes back to. A key this server no longer holds is not an empty search —
         # it is a question it has forgotten, and the page says which of the two it is.
+        #
+        # And a key asked about another archive is a third thing, said in its own words rather than
+        # folded into the second. The words are not read back at all — that is the whole point —
+        # but "the server was restarted, or a great many questions have been asked since" would be
+        # this page explaining a switch of archives as a loss of memory, which is an answer with
+        # the wrong cause in it. Reached by opening a tab from before the switch, or by pressing
+        # back in it, which is the one thing this key exists to allow.
         forgotten_question = False
+        asked_of_another_archive = False
         if s:
-            question = asked_of_the_search.get(s)
+            whose, question = asked_of_the_search.get(s, (None, None))
             if question is None:
                 forgotten_question = True
+            elif whose != archives.showing_id:
+                asked_of_another_archive = True
             else:
                 q, doc_type = question["q"], question["doc_type"]
                 limit, offset = question["limit"], question["offset"]
@@ -1276,7 +1395,8 @@ def create_app(
         limit = query_index.within_limit(limit)
         offset = max(0, offset)
         context = {"current": "search", "query": q, "doc_type": doc_type, "limit": limit, "offset": offset,
-                   "forgotten_question": forgotten_question}  # fmt: skip
+                   "forgotten_question": forgotten_question,
+                   "asked_of_another_archive": asked_of_another_archive}  # fmt: skip
         try:
             connection = open_index(registry.data_dir, archives.showing_id)
         except IndexMissing:
@@ -1569,7 +1689,7 @@ def create_app(
         return key
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, saved: str = "", tab: str = "",
+    def settings_page(request: Request, saved: str = "", tab: str = "", about: str = "",
                       archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         when_stored, trouble = "", ""
         # Whether anything was in fact just saved, and not merely whether the address carries the
@@ -1581,15 +1701,16 @@ def create_app(
         said = just_saved.pop(saved, None) if saved else None
         if said:
             _when, when_stored, trouble = said
-        return _settings_page(request, archives, bool(said), trouble, tab, stored=when_stored)
+        return _settings_page(request, archives, bool(said), trouble, tab, stored=when_stored,
+                              about=about)  # fmt: skip
 
     def _settings_page(request: Request, archives: TheArchives, saved: bool = False, trouble: str = "",
                        tab: str = "", waiting: dict | None = None, trying: tuple | None = None,
-                       stored: str = "", kept: dict | None = None):  # fmt: skip
+                       stored: str = "", kept: dict | None = None, about: str = ""):  # fmt: skip
         """The shell: what the page shows is gathered in web/settings_page.py and drawn here."""
         return templates.TemplateResponse(request, "settings.html", settings_view(
             registry.data_dir, archives, saved=saved, trouble=trouble, tab=tab,
-            waiting=waiting, trying=trying, stored=stored, kept=kept))  # fmt: skip
+            waiting=waiting, trying=trying, stored=stored, kept=kept, about=about))  # fmt: skip
 
     @app.post("/settings")
     def save_settings(request: Request, ask_page: str = Form(""), mode: str = Form("as_printed"),
@@ -1602,8 +1723,10 @@ def create_app(
                       model_second_reader: str = Form(""),
                       mcp_lock: str = Form(""), mcp_lock_scope_choice: str = Form("conversation", alias="mcp_lock_scope"),
                       mcp_lock_minutes_choice: int = Form(240, alias="mcp_lock_minutes"),
+                      public_host: str = Form(""),
                       knob_name: list[str] = Form([]), knob_value: list[str] = Form([]),
-                      try_rule: str = Form(""), tab: str = Form(""),
+                      try_rule: str = Form(""), tab: str = Form(""), about: str = Form(""),
+                      the_instance_answers: list[str] = Form([], alias="the_instance_answers"),
                       archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """The shell: what the press does is decided in web/settings_page.py and answered here."""
         pressed = settings_pressed(
@@ -1613,7 +1736,12 @@ def create_app(
             models={"first": model_first, "strong": model_strong, "second_reader": model_second_reader},
             mcp_lock=mcp_lock, mcp_lock_scope_choice=mcp_lock_scope_choice,
             mcp_lock_minutes_choice=mcp_lock_minutes_choice,
+            public_host=public_host,
             knob_name=knob_name, knob_value=knob_value, try_rule=try_rule, tab=tab,
+            # Which archive the switches of this press were drawn about, carried by the form
+            # rather than worked out again: a person can switch archive in another tab between
+            # the draw and the press. See settings_page.rules_are_about.
+            about=about, the_instance_answers=the_instance_answers,
             # Building every archive's index again is the indicator page's door as well, so it
             # is one thing in one place here and handed to the press rather than reached for.
             build_indexes=lambda: _rebuild_index(archives),
@@ -1623,8 +1751,9 @@ def create_app(
         # them.
         if pressed.draw_again is not None:
             return _settings_page(request, archives, **pressed.draw_again)
-        return RedirectResponse(f"/settings?saved={_remember_saved(pressed.said, pressed.trouble)}&tab={quote(tab)}",
-                                status_code=303)  # fmt: skip
+        return RedirectResponse(
+            f"/settings?saved={_remember_saved(pressed.said, pressed.trouble)}"
+            f"&tab={quote(tab)}&about={quote(about)}", status_code=303)  # fmt: skip
 
     def _rebuild_index(archives: TheArchives) -> str | None:
         """Build every archive's index again. The first failure is returned, and shown."""
@@ -1978,7 +2107,7 @@ def create_app(
         return RedirectResponse("/status", status_code=303)
 
     @app.post("/index/{source_id}/build")
-    def build_in_what_changed(request: Request, source_id: str,
+    def build_in_what_changed(request: Request, source_id: str, back: str = Form("/"),
                               archives: TheArchives = Depends(the_archives_of)):  # fmt: skip
         """Build this archive's index again, because a person asked for it on the page saying so.
 
@@ -1996,7 +2125,10 @@ def create_app(
         # happened to, and the same line on every page that reports the index being behind reports
         # it. An address travels into a person's history and between their devices.
         building.now(source_id)
-        return RedirectResponse(_same_page(request.headers.get("referer", "/"), source_id) or "/", status_code=303)
+        # The page that pressed it, carried in the form. Read from the Referer header until now,
+        # and this server sets Referrer-Policy: no-referrer on every answer — so the way back was
+        # read from a header this server goes out of its way never to send.
+        return RedirectResponse(_same_page(back, source_id) or "/", status_code=303)
 
     @app.post("/sources/{source_id}/inventory")
     def rescan_source(request: Request, source_id: str):
@@ -2056,7 +2188,17 @@ def build_view(sources: list[Source], jobs: InventoryJobs, showing: str | None =
         "steps": PIPELINE_STEPS,
         "rows": rows,
         # What the "read the documents" button would send: every archive here, not the open one.
-        "everyone": {"pages": everyone.pdf_pages + everyone.image_frames, "archives": len(sources)},
+        "everyone": {"pages": everyone.pdf_pages + everyone.image_frames, "archives": len(sources),
+                     # Split off this page's own count and not off page_refs, so the estimate is
+                     # about the number printed beside it. A page that has to be looked at costs
+                     # about eight times one that carries its own text, which is the whole of why
+                     # the two are counted apart here.
+                     "about_how_long": how_long.in_words(how_long.hours_for(
+                         Counter({how_long.A_PAGE_TO_BE_LOOKED_AT: min(
+                             everyone.vision_pages, everyone.pdf_pages + everyone.image_frames),
+                                  how_long.A_PAGE_OF_TEXT: max(
+                             everyone.pdf_pages + everyone.image_frames - everyone.vision_pages, 0)}),
+                         how_long.prices([jobs.records_path(source.id).parent for source in sources])))},  # fmt: skip
         "any_running": any(step["state"] == "running" for row in rows for step in row["steps"]),
         "update_running": update_running(jobs.data_dir),
         "whose_totals": next((source.whose for source in sources if source.id == showing), ""),
@@ -2069,6 +2211,34 @@ def build_view(sources: list[Source], jobs: InventoryJobs, showing: str | None =
             "damaged": len(totals.damaged),
         },
     }
+
+
+def _what_a_run_would_still_send(records: list[dict], output: Path) -> list:
+    """The pages a run over this archive would send to a model now. Not the pages it holds.
+
+    Both steps that call a model, counted the way each of them decides what to skip, and asked of
+    the same two files the status page asks: the pages not classified yet, and the pages of the
+    documents the ledger has not read. There is no overlap between the two — a page nothing has
+    classified belongs to no document yet.
+
+    It is a floor and the page says so in words: a page whose reading a check did not agree with
+    goes again to a stronger model, and nothing here can know in advance which.
+    """
+    every = all_refs(records)
+    # Kept as the pages themselves rather than as a count, because the estimate beside the number
+    # is priced per route and a page that goes as an image costs about eight times one that
+    # carries its own text. Two numbers worked out from two different sets would drift.
+    by_page = {(ref.file_sha256, ref.page): ref for ref in every}
+    classified = latest_pages(output / layout.CLASSIFY)
+    seen = {(page["file_sha256"], page["page"]) for page in classified}
+    to_classify = [ref for ref in every if (ref.file_sha256, ref.page) not in seen]
+    by_file = {record["sha256"]: record for record in records if "sha256" in record}
+    finished = {key[:2] for key in done_keys(output / layout.LEDGER, classified)}
+    to_read = [by_page[(document.file_sha256, page)]
+               for document in document_refs(by_file, classified)
+               if (document.file_sha256, document.pages) not in finished
+               for page in document.pages if (document.file_sha256, page) in by_page]  # fmt: skip
+    return to_classify + to_read
 
 
 def _classify_step(records: list[dict], output: Path, classify_pages: list[dict] | None = None) -> dict:

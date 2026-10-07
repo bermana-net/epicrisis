@@ -29,12 +29,14 @@ cannot be mended by writing a better name: the numbers of several measurements a
 and no name describes them all. The line has to be read again, which is a person's decision
 because it costs a model.
 
-# What was measured
+# Why it is a rule of its own
 
-On one archive nineteen values were in this state, every one of them from an eye examination,
-and every one of them also named after an eye. They were found while looking at the fifty-two
-values named by nothing but an eye: renaming would have made the other thirty-three right and
-left these nineteen wrong in a way that now looked tidy.
+Every value seen in this state came from an eye examination, and every one of them was also named
+after an eye. They turned up while the other rule was being written, and that is the reason this
+one is separate: renaming the lines named by nothing but an eye would have made most of them right
+and left these looking tidy and still wrong, with a sphere and a cylinder standing under a name
+that now described one of them. A defect no correction can reach needs a finding of its own,
+saying so.
 
 # How it can be wrong
 

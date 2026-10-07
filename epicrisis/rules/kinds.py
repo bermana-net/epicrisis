@@ -28,10 +28,50 @@ rather than quietly ignored.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from epicrisis.extract.checks import THE_HEAD_OF_A_DOCUMENT
 from epicrisis.rules.subjects import A_SERIES, LOOKS_AT, ONE_DOCUMENT, ONE_MATERIAL, ONE_VALUE, THE_ARCHIVE
 
 MARKS, PLACES = "marks", "places"
 DOES = (MARKS, PLACES)
+
+# What a threshold is, where saying so rules out numbers that are in the type and not in the
+# world. Declared per setting as one of these two rather than as a pair of numbers, because every
+# bound this program has needed is one of exactly these two shapes, and a name reads where a
+# `(1, None)` does not.
+#
+# **The failure this closes, measured.** A number of the right type and the wrong size was taken
+# without a word and the check then never fired once: `least_characters = 0` means no page is ever
+# empty, `least_share = 0` means no page is ever short, `-5` the same, and nothing anywhere said
+# so — not the page, not `validate`, not the journal. The dangerous half is that these are the
+# checks that decide whether a document is read again by a model, so a threshold that quietly
+# stops one is a hole in the reading that costs nothing and shows nowhere. A wrong *type* was
+# always refused; a wrong size was not, and a wrong size is what a person types.
+A_COUNT = "a count"  # a whole number of things, and at least one of them
+A_SHARE = "a share"  # more than none of them and at most all of them
+WITHIN = (A_COUNT, A_SHARE)
+#: What each shape wants, in the words the settings page and a refusal both print.
+WITHIN_WORDS = {A_COUNT: "a whole number, one or more",
+                A_SHARE: "a share: more than 0 and at most 1"}  # fmt: skip
+
+
+def out_of_range(shape: str, value) -> str:
+    """Why this value is not that shape of threshold, or an empty string. The one place it is asked.
+
+    Takes the value as it comes — the rule file hands a number, the settings page hands what
+    somebody typed — and answers about numbers only: a shape is declared for a threshold that is
+    one, so anything else here is a type the reader above this has already refused.
+    """
+    if shape not in WITHIN:
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if shape == A_COUNT and number < 1:
+        return WITHIN_WORDS[A_COUNT]
+    if shape == A_SHARE and not 0 < number <= 1:
+        return WITHIN_WORDS[A_SHARE]
+    return ""
 
 # The steps of the program a rule can belong to, in the order the pipeline runs them. The last two
 # are not steps of the pipeline at all but readings made when a page is drawn or a question
@@ -60,6 +100,14 @@ class Step:
 
     serves: frozenset[str]  # the subjects this step assembles and hands a rule, one by one
     costs: str  # what turning a rule of this step on or off asks of a person, in their own words
+    # Whether what a rule of this step finds is acted on by the step itself rather than shown to a
+    # person to work through. At `extract` it is: a check that fires sends the document back to a
+    # stronger model, and nobody is ever handed the finding — what reaches a person is the
+    # summary that `validate` writes, under its own name and with its own words about what to do.
+    # So a rule of such a step says nothing about where a finding hangs or what settles it, and
+    # the rule file is refused for saying it, because a sentence telling somebody how to settle
+    # something they will never be shown is a sentence that will never be read.
+    answered_by_the_step: bool = False
     # Whether that cost is one the page has to ask about first rather than store on a click.
     # Documents read again by a model take hours and, on an API key, money, and a switch like that
     # is not one a person should be able to flip by leaning on the mouse.
@@ -73,11 +121,24 @@ class Step:
 # never fires. Adding a subject to a step means teaching that step to build it first, and then
 # writing it here — in that order.
 STEPS: dict[str, Step] = {
-    # Nothing at this step assembles a subject or runs a rule yet. The day one does, a kind may
-    # stand here, and everything the table says about the step applies to it with no second list
-    # to remember: it is a costly step, so the page will ask before it stores the switch.
-    EXTRACT: Step(serves=frozenset(), asks_first=True,
-                  costs="Documents are read again by a model. That takes time and, on an API key, money."),
+    # The checks that decide whether a document is read again by a stronger model. This step hands
+    # them one document — the transcription that has just come back, the text of the pages that
+    # went as text, and which pages carry a table — and a rule of it may only mark: "this reading
+    # does not look finished". What happens next is the step's own business and not the rule's.
+    #
+    # It is the one step whose switches cost money, and the only one where turning a rule *on*
+    # can mean reading documents again. The page asks before it stores one.
+    # What this costs, measured rather than assumed. It said "Documents are read again by a
+    # model", which is the thing a person is afraid of and is not what either press does: a check
+    # switched on or off, or a threshold moved, changes what the **next** reading of a document
+    # does, and a run over an archive that is already read sends nothing — measured at 0 calls,
+    # both directions, on an archive of 23 documents. Reading what is already read again takes
+    # `forget` and a full re-read, which is the slowest and costliest thing this program does, and
+    # no switch on that page starts it.
+    EXTRACT: Step(serves=frozenset({ONE_DOCUMENT}), asks_first=True, answered_by_the_step=True,
+                  costs="Changes what the next reading costs: a document read after this may be sent "
+                        "to a stronger model, which takes time and, on an API key, money. Nothing "
+                        "already read is read again."),  # fmt: skip
     VALIDATE: Step(serves=frozenset({ONE_DOCUMENT, THE_ARCHIVE}),
                    costs="The archive is checked again. No model, seconds, nothing is read again."),
     INDEX: Step(serves=frozenset(),
@@ -90,7 +151,7 @@ STEPS: dict[str, Step] = {
 
 
 def from_the_table():
-    """The four questions the rest of the program asks of the table above, all answered from it.
+    """The five questions the rest of the program asks of the table above, all answered from it.
 
     Kept as plain values rather than as functions because they are read as values everywhere —
     `AT.index(rule.at)` orders the rules on the settings page — and worked out here so that a test
@@ -103,12 +164,14 @@ def from_the_table():
     # would be promising a confirmation that nothing can reach. That is the whole of what the two
     # lists this replaces disagreed about, and it is now one word in one record.
     costly = tuple(name for name, step in STEPS.items() if step.asks_first and step.serves)
-    return at, served, costs, costly
+    answered = tuple(name for name, step in STEPS.items() if step.answered_by_the_step)
+    return at, served, costs, costly, answered
 
 
-# The steps a rule may stand at, what turning one on or off asks of a person, and which of those
-# the page has to ask about first. All three are the table, read.
-AT, SERVED, COSTS, COSTLY = from_the_table()
+# The steps a rule may stand at, what turning one on or off asks of a person, which of those the
+# page has to ask about first, and which of them answer their own rules. All four are the table,
+# read.
+AT, SERVED, COSTS, COSTLY, ANSWERED_BY_THE_STEP = from_the_table()
 
 
 @dataclass(frozen=True)
@@ -122,18 +185,42 @@ class Kind:
     # What each setting means, in words a person can act on. A threshold nobody can explain is a
     # threshold nobody will ever change, and one changed without understanding is worse.
     means: dict = field(default_factory=dict)
+    #: Whether this check has a switch at all. Almost every one does, and should: a check that is
+    #: useful on two archives and noise on the third is exactly what the switch is for. The
+    #: exception is a check reporting on **this program's own reading** — four of them say a page
+    #: came back with nothing on it, and the fifth says a stored value is nowhere in the text of
+    #: the page it came from. Neither is a judgement about anybody's data to be called noise, and
+    #: `validate.LEFTOVER` has said in writing since before these were rules that such a thing
+    #: stays on, "because a switch on them would be a switch that hides a hole in somebody's
+    #: archive".
+    #:
+    #: It had one for nine days. Measured: an archive of 23 documents, every one of them read by
+    #: the weak model and every page nearly empty, reports 23 of 23 to check; with two of these
+    #: switched off for that archive it reports 19, the whole section leaves the findings page, and
+    #: nothing anywhere — not the status page, not the coverage, not the journal, not `validate` —
+    #: says the archive has a hole in it. The ledger says done.
+    stays_on: bool = False
+    #: Which of its settings are a count or a share, by name. A threshold with no shape declared
+    #: is checked for its type and nothing else, which is right where there is no honest bound to
+    #: give: `apart_by` ships as 0.0 and means it.
+    within: dict = field(default_factory=dict)
     run: Callable | None = None
 
     @property
     def cost(self) -> str:
         return COSTS[self.at]
 
+    def refuses(self, name: str, value) -> str:
+        """Why this threshold cannot hold that value, or an empty string. Both writers ask here."""
+        return out_of_range(self.within.get(name, ""), value)
+
 
 KINDS: dict[str, Kind] = {}
 
 
 def kind(name: str, does: str, at: str, about: str, looks_at: str = A_SERIES,
-         settings: dict | None = None, means: dict | None = None):  # fmt: skip
+         settings: dict | None = None, means: dict | None = None, stays_on: bool = False,
+         within: dict | None = None):  # fmt: skip
     """Register a kind of check. The function it decorates is what the rules of that kind do."""
     if does not in DOES or at not in STEPS or looks_at not in LOOKS_AT:
         raise ValueError(f"{name}: does={does!r} at={at!r} looks_at={looks_at!r} is not a kind of check that exists")
@@ -148,10 +235,16 @@ def kind(name: str, does: str, at: str, about: str, looks_at: str = A_SERIES,
     # Every threshold says what it means, or it cannot be offered to anybody to change.
     if set(settings or {}) != set(means or {}):
         raise ValueError(f"{name}: every setting needs a line saying what it means, and only those")
+    for named, shape in (within or {}).items():
+        if named not in (settings or {}):
+            raise ValueError(f"{name}: there is no setting called {named!r} to give a shape to")
+        if shape not in WITHIN:
+            raise ValueError(f"{name}: {named} is {shape!r}, and a threshold is {' or '.join(WITHIN)}")
 
     def keep(run: Callable) -> Callable:
         KINDS[name] = Kind(name=name, does=does, at=at, looks_at=looks_at, about=about,
-                           settings=settings or {}, means=means or {}, run=run)  # fmt: skip
+                           settings=settings or {}, means=means or {}, stays_on=stays_on,
+                           within=within or {}, run=run)  # fmt: skip
         return run
 
     return keep
@@ -507,3 +600,282 @@ def _printed_range_powers_from_the_rest(archive, settings: dict):
     from epicrisis import validate
 
     return validate.range_powers_from_the_rest(archive, settings)
+
+
+# The checks of the extract step, which are the only checks in this program that cost money when
+# they fire: each one, firing, sends the document back to a stronger model. They were eleven
+# conditions written into one function, with their thresholds as module constants — so the owner
+# paying per document could not turn off a check that was escalating documents for nothing, could
+# not see which of them had fired how often, and could not raise a threshold that was wrong for
+# their laboratory's forms. Here they are rules like any other: a name, a sentence about what they
+# look at and how they can be wrong, a switch, and thresholds with words beside them.
+#
+# **The three below ask about completeness**, in the order a page fails: no text at all, far less
+# text than the page held, or the text is there and the numbers are not. Each one says in full what
+# it looks at rather than standing in a chain with the others, because a rule read on a settings
+# page is read alone.
+#
+# **Each carries only its own thresholds, and that is the fix of a defect this chain shipped
+# with.** They were written as a ladder — the second asking only of pages the first let through,
+# the third only of pages the second let through — so each one carried a copy of the numbers of
+# the ones before it: one `least_characters` written in three kinds and three rule files, one
+# `least_share` in two of each. The copies are separate answers, stored per archive and typed one
+# at a time on the settings page, so the ladder held only while all three happened to be equal.
+# Raise the first and leave the second and a page of thirty characters is not empty to the first
+# and already reported to the second: **reported by nothing at all**, which is the one outcome
+# these three exist to prevent. Nothing anywhere said when the numbers came apart.
+#
+# So the rungs are independent now. A page can be named by two of them — it came back empty *and*
+# much shorter than it was sent — and that costs nothing: a document goes back to a stronger model
+# if anything at all was found, so a page named twice is a page named once as far as the bill goes.
+#
+# **These three and the table below them keep their thresholds and have no switch** — `stays_on`,
+# and the reason is in `validate.LEFTOVER`, which has said since before any of this was a rule
+# that a finding of a hole in somebody's archive stays on. What they report is not a judgement
+# about anybody's data that could be called noise; it is this program saying it did not finish
+# reading a page. The threshold is the knob that was wanted here — how empty is empty for one
+# laboratory's forms — and it is still here.
+
+A_PAGE_IS_EMPTY = ("How few characters a page's transcription may hold before it counts as not "
+                   "transcribed at all. A page of a form with one line on it is still a page.")
+
+
+@kind(
+    "page-with-no-text", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT, stays_on=True,
+    about="A page of the document whose transcription is empty or nearly so, while the page itself "
+          "is part of the document. The reading stopped before the end, or never reached this page.",
+    settings={"least_characters": 20},
+    means={"least_characters": A_PAGE_IS_EMPTY},
+    within={"least_characters": A_COUNT},
+)  # fmt: skip
+def _page_with_no_text(document, settings: dict):
+    from epicrisis.extract.checks import pages_with_no_text
+
+    return pages_with_no_text(document, settings)
+
+
+@kind(
+    "page-much-shorter-than-the-page", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT, stays_on=True,
+    about="A page that went to the model as text and came back as much less text than was sent. "
+          "Only pages whose own text is long enough to compare at all are asked about.",
+    settings={"least_share": 0.5, "words_before_asking": 40},
+    within={"least_share": A_SHARE, "words_before_asking": A_COUNT},
+    means={"least_share": "What share of the words sent must come back before a page counts as transcribed. "
+                          "0.5 is half of them.",
+           "words_before_asking": "How many words a page must hold before a share of them means anything. A "
+                                  "short page can lose half its words to one heading."},
+)  # fmt: skip
+def _page_much_shorter(document, settings: dict):
+    from epicrisis.extract.checks import pages_much_shorter_than_the_page
+
+    return pages_much_shorter_than_the_page(document, settings)
+
+
+@kind(
+    "page-whose-numbers-are-missing", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT, stays_on=True,
+    about="A page of text whose transcription came back the right length but without the numbers "
+          "the page prints. The words of a result are easy to write again from memory; the numbers "
+          "are the one part that cannot be.",
+    settings={"numbers_before_asking": 10, "least_number_share": 0.9},
+    within={"numbers_before_asking": A_COUNT, "least_number_share": A_SHARE},
+    means={"numbers_before_asking": "How many numbers a page must print before their absence means anything. Two "
+                                    "numbers missing from three is a date and a page number.",
+           "least_number_share": "What share of the page's numbers must be found again in the transcription. "
+                                 "0.9 is nine in ten."},
+)  # fmt: skip
+def _page_whose_numbers_are_missing(document, settings: dict):
+    from epicrisis.extract.checks import pages_whose_numbers_are_missing
+
+    return pages_whose_numbers_are_missing(document, settings)
+
+
+@kind(
+    "table-page-without-values", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT, stays_on=True,
+    about="A page that classification said carries a table of results, and from which no value was "
+          "stored. Asked of laboratory results only: a letter or a discharge often prints a table "
+          "inside its text, and nothing is wrong when a model reads it as prose.",
+    settings={"of_document_types": ["lab_panel"]},
+    means={"of_document_types": "The kinds of document whose table pages must hold values. A type not on this "
+                                "list is never asked."},
+)  # fmt: skip
+def _table_page_without_values(document, settings: dict):
+    from epicrisis.extract.checks import table_pages_without_values
+
+    return table_pages_without_values(document, settings)
+
+
+# **And the two that read the head of a document** — what the form says it is, and who printed it.
+# They cost the same as the rest when they fire, and the first of them is the check that fires
+# oftenest of all on a real archive after `unreadable_on_images`.
+
+
+@kind(
+    "provider-reads-like-a-person", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="The institution field of a transcription holding what looks like a person's name: the "
+          "signature under the stamp read as the laboratory. Asked with the title beside it, "
+          "because the two are swapped often enough that the title is what tells a swap from a "
+          "form that really prints only a doctor.",
+)  # fmt: skip
+def _provider_reads_like_a_person(document, settings: dict):
+    from epicrisis.extract.checks import the_provider_reads_like_a_person
+
+    return the_provider_reads_like_a_person(document, settings)
+
+
+@kind(
+    "a-word-in-two-alphabets", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="A word of the document's head written in both alphabets at once, as in \"Кліnіка\": a "
+          "letter read from the wrong one. A name holding a word of each is not this.",
+    # The pair itself is `extract.checks.THE_HEAD_OF_A_DOCUMENT`, which the other check of the
+    # head reads too, so a third printed field added there reaches both. Written out as a list
+    # because a setting is stored and read back as JSON, where a tuple is a list anyway.
+    settings={"of_fields": list(THE_HEAD_OF_A_DOCUMENT)},
+    means={"of_fields": "Which printed fields of the head are read. One hit per field and never per word: "
+                        "a title with four such words is one field read wrongly."},
+)  # fmt: skip
+def _a_word_in_two_alphabets(document, settings: dict):
+    from epicrisis.extract.checks import words_in_two_alphabets
+
+    return words_in_two_alphabets(document, settings)
+
+
+# **And the checks that hold a stored value against the page it came from.** They are the largest
+# group and the one that divides in two: a page that went to the model as text can be compared
+# with the page itself, and a page that went as an image can only be compared with the model's own
+# reading of it. Those are different questions and have always had different codes, so they are
+# different rules — a person turning one off is saying something about scans or about text layers,
+# and never about both at once.
+
+A_PAGE_WORTH_COMPARING = ("How many words a page must hold before what is missing from it means anything. "
+                          "A page of a few words says nothing either way.")
+
+
+@kind(
+    # The third of the three `validate.LEFTOVER` names, and the only check of this step whose
+    # findings a person is shown one by one, under this name. It stays on for the reason the other
+    # two do: a stored value that is nowhere on its own page is this program reporting that it
+    # read something that is not there, and a switch on that is a switch that hides it. Its
+    # thresholds are the knobs — which pages are long enough to compare, and whether a value
+    # printed as a word is passed over.
+    "value-not-on-its-own-page", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT, stays_on=True,
+    about="A value that is nowhere in the text of the page it claims to come from, on a page that "
+          "went to the model as text. The page itself is the evidence there, not a reading of it.",
+    settings={"words_before_asking": 40, "skip_qualitative": True},
+    within={"words_before_asking": A_COUNT},
+    means={"words_before_asking": A_PAGE_WORTH_COMPARING,
+           "skip_qualitative": "Whether values the form printed as words rather than numbers are passed over. "
+                               "They are compared by their digits, and a value with none has nothing to compare."},
+)  # fmt: skip
+def _value_not_on_its_own_page(document, settings: dict):
+    from epicrisis.extract.checks import values_not_on_their_page
+
+    return values_not_on_their_page(document, settings)
+
+
+@kind(
+    "value-not-in-the-page-text", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="On pages that went as text: a stored value whose printed form is not in the page's own "
+          "text at all.",
+)  # fmt: skip
+def _value_not_in_the_page_text(document, settings: dict):
+    from epicrisis.extract.checks import values_not_in_the_page_text
+
+    return values_not_in_the_page_text(document, settings)
+
+
+@kind(
+    "value-not-in-the-models-own-text", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="On pages that went as images: a stored value that is not in the model's own "
+          "transcription of that page. The reading disagrees with itself.",
+)  # fmt: skip
+def _value_not_in_the_models_own_text(document, settings: dict):
+    from epicrisis.extract.checks import values_not_in_the_models_own_text
+
+    return values_not_in_the_models_own_text(document, settings)
+
+
+@kind(
+    "reference-not-in-the-page-text", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="On pages that went as text: a printed range whose numbers are not all on the page. "
+          "Number by number, because a range is printed over several lines and columns.",
+)  # fmt: skip
+def _reference_not_in_the_page_text(document, settings: dict):
+    from epicrisis.extract.checks import references_not_in_the_page_text
+
+    return references_not_in_the_page_text(document, settings)
+
+
+@kind(
+    "reference-not-in-the-models-own-text", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="On pages that went as images: a printed range whose numbers are not all in the model's "
+          "own transcription of that page.",
+)  # fmt: skip
+def _reference_not_in_the_models_own_text(document, settings: dict):
+    from epicrisis.extract.checks import references_not_in_the_models_own_text
+
+    return references_not_in_the_models_own_text(document, settings)
+
+
+@kind(
+    "letters-in-a-numeric-value-on-an-image", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="A value stored as a number whose printed form carries letters nothing explains, on a "
+          "page that went as an image. On a text page those letters are printed ones.",
+)  # fmt: skip
+def _letters_in_a_numeric_value(document, settings: dict):
+    from epicrisis.extract.checks import letters_in_a_numeric_value_on_an_image
+
+    return letters_in_a_numeric_value_on_an_image(document, settings)
+
+
+@kind(
+    "comparator-stored-and-not-printed", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="A comparator stored against a value whose printed form carries none: a sign the reading "
+          "worked out from the range rather than read off the form.",
+)  # fmt: skip
+def _comparator_stored_and_not_printed(document, settings: dict):
+    from epicrisis.extract.checks import comparators_not_printed
+
+    return comparators_not_printed(document, settings)
+
+
+# **And the last three**, which are about the document rather than about one value: a table whose
+# columns are unnamed, a date that is somebody's birthday, and a reading that says out loud it
+# could not read part of a scan. With these the step's checks are rules entire, and
+# `transcription_problems` is a loop over the registry and nothing else.
+
+
+@kind(
+    "rows-of-several-values-without-a-heading", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="A row printing more than one value where the document carries no column heading at "
+          "all: nothing says which of them is the result. A row, and never a page — a name "
+          "printed twice on a page is a measurement in two places, which long reports do.",
+)  # fmt: skip
+def _rows_without_a_heading(document, settings: dict):
+    from epicrisis.extract.checks import rows_of_several_values_without_a_heading
+
+    return rows_of_several_values_without_a_heading(document, settings)
+
+
+@kind(
+    "a-document-date-that-is-a-birth-date", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="A date stored as the document's own that is a date of birth printed on the same page. "
+          "A document filed under a birth date stands decades from where it belongs.",
+    settings={"of_dates": ["date_of_study_as_printed", "date_of_report_as_printed"]},
+    means={"of_dates": "Which printed dates of the document are asked about. One hit per field."},
+)  # fmt: skip
+def _a_document_date_that_is_a_birth_date(document, settings: dict):
+    from epicrisis.extract.checks import dates_that_are_a_birth_date
+
+    return dates_that_are_a_birth_date(document, settings)
+
+
+@kind(
+    "unreadable-parts-on-a-scan", does=MARKS, at=EXTRACT, looks_at=ONE_DOCUMENT,
+    about="The reading says part of the document could not be read, and part of it went to the "
+          "model as an image. Where every page went as text there is nothing a second reading "
+          "would see differently.",
+)  # fmt: skip
+def _unreadable_parts_on_a_scan(document, settings: dict):
+    from epicrisis.extract.checks import unreadable_parts_on_pages_that_went_as_images
+
+    return unreadable_parts_on_pages_that_went_as_images(document, settings)

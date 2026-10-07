@@ -1,0 +1,37 @@
+# The dashboard: the pages their owner reads, on this machine and nowhere else. Copy this to
+# /etc/systemd/system/, put this machine's paths in place of the ones below, then
+# `systemctl daemon-reload && systemctl enable --now epicrisis-dashboard`.
+#
+# It listens on 127.0.0.1 and must stay there: what reaches the network is the MCP server beside
+# it, and a dashboard on a public address would be the whole archive with no lock in front of it.
+[Unit]
+Description=Epicrisis Companion: the dashboard, on this machine only
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# As whoever the model subscription belongs to. The pages themselves need no privilege; reading
+# an archive again does, because that is where the subscription is read from, and running this as
+# one user and the reading as another is how an archive ends up half readable.
+User=root
+WorkingDirectory=/home/ubuntu/epicrisis
+ExecStart=/home/ubuntu/epicrisis/.venv/bin/epicrisis serve --data-dir /home/ubuntu/epicrisis/data --host 127.0.0.1 --port 8050
+Restart=on-failure
+RestartSec=5
+
+# Less is locked away here than for the MCP server, and the reason is written rather than left to
+# be guessed: this one writes the archive — corrections, verdicts, settings, the index — and it
+# calls models over the network. What it must not do is reach the rest of the machine.
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/home/ubuntu/epicrisis
+
+[Install]
+WantedBy=multi-user.target

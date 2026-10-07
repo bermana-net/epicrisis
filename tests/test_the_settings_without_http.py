@@ -17,6 +17,7 @@ import ast
 import inspect
 import json
 import textwrap
+import time
 
 import pytest
 
@@ -24,7 +25,8 @@ from epicrisis import rules, settings
 from epicrisis.rules import kinds
 from epicrisis.sources import NO_ARCHIVES, SourceRegistry
 from epicrisis.web import settings_page as the_page
-from epicrisis.web.settings_page import Pressed, settings_pressed, settings_view
+from epicrisis.web.settings_page import (Pressed, rules_are_about, settings_pressed,
+                                          settings_view)  # fmt: skip
 
 #: The rule the measurements of the bad threshold were taken on: three numbers, so one press can
 #: have one of them mistyped and the other two good, which is the shape the swallowed refusal hid.
@@ -42,7 +44,17 @@ def an_instance(tmp_path):
     return data_dir, registry.as_one_reading()
 
 
-def a_whole_press(data_dir, **asked) -> dict:
+def about(archives, asked: str = "") -> str:
+    """Which archive the Rules tab is drawn about, read the way the page reads it.
+
+    The switches are the open archive's answers now, and the counts beside them always were. A
+    test harness that drew the instance's answers and submitted them as this page's would be
+    writing one answer into the other, which is the defect the tab was written to close.
+    """
+    return rules_are_about(archives, asked)["in_archive"]
+
+
+def a_whole_press(data_dir, archives, **asked) -> dict:
     """The page exactly as it is drawn, submitted unchanged, plus whatever is asked for here.
 
     Built from the rules this instance loads rather than written out, so a rule shipped next
@@ -50,13 +62,19 @@ def a_whole_press(data_dir, **asked) -> dict:
     is stored, because a checkbox that is not ticked is not sent at all: a press written out with
     fewer switches than the page draws is a press that turns the missing ones off, which is a
     different press and not a smaller one.
+
+    `archives` because the switches are of one archive: see about(). An `about` asked for here
+    is the address of the page, and the switches are then drawn from the answers that address
+    shows — a press built from one archive's answers and sent to the other address would be
+    writing one of the two answers over the other.
     """
+    asking = about(archives, asked.get("about", ""))
     shown, knob_name, knob_value, on = [], [], [], []
     for rule in rules.load(data_dir):
         shown.append(rule.id)
-        if settings.rule_on(data_dir, rule):
+        if settings.rule_on(data_dir, rule, in_archive=asking):
             on.append(rule.id)
-        chosen = settings.rule_settings(data_dir, rule)
+        chosen = settings.rule_settings(data_dir, rule, in_archive=asking)
         for name in rule.settings:
             knob_name.append(f"{rule.id}:{name}")
             knob_value.append(str(chosen[name]))
@@ -125,10 +143,10 @@ def test_a_bad_threshold_is_named_and_the_good_ones_of_the_same_press_are_stored
     """
     data_dir, archives = an_instance
     rule = rules.load(data_dir).get(THREE_NUMBERS)
-    before = settings.rule_settings(data_dir, rule)
+    before = settings.rule_settings(data_dir, rule, in_archive=about(archives))
     mistyped, *good = list(rule.settings)
 
-    press = a_whole_press(data_dir)
+    press = a_whole_press(data_dir, archives)
     for name in good:
         press = nudged(press, f"{THREE_NUMBERS}:{name}", str(before[name] + 1))
     press = nudged(press, f"{THREE_NUMBERS}:{mistyped}", "not a number")
@@ -144,7 +162,7 @@ def test_a_bad_threshold_is_named_and_the_good_ones_of_the_same_press_are_stored
     assert said in pressed.trouble
     assert pressed.said, "a press that stored thresholds said it stored nothing"
 
-    now = settings.rule_settings(data_dir, rule)
+    now = settings.rule_settings(data_dir, rule, in_archive=about(archives))
     assert now[mistyped] == before[mistyped], "the number that could not be read was stored anyway"
     assert [now[name] for name in good] == [before[name] + 1 for name in good], (
         "the good thresholds of the same press were lost with the bad one")  # fmt: skip
@@ -169,7 +187,7 @@ def test_one_press_is_one_write_of_the_settings_and_one_copy_of_the_version_befo
     builds = []
     try:
         rule = rules.load(data_dir).get(THREE_NUMBERS)
-        press = a_whole_press(data_dir, mode="with_meaning", mcp_lock_minutes_choice=120,
+        press = a_whole_press(data_dir, archives, mode="with_meaning", mcp_lock_minutes_choice=120,
                               ask_page="on", read_materials="on",
                               models={"first": "zzz-one", "strong": "zzz-two",
                                       "second_reader": "zzz-three"})  # fmt: skip
@@ -204,7 +222,7 @@ def test_the_two_choices_of_the_lock_are_refused_out_loud_and_change_nothing(an_
     stood_at = settings.mcp_lock_minutes(data_dir)
 
     pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None,
-                               **a_whole_press(data_dir, mcp_lock_minutes_choice=0,
+                               **a_whole_press(data_dir, archives, mcp_lock_minutes_choice=0,
                                                mcp_lock_scope_choice="whatever"))  # fmt: skip
 
     assert len(pressed.refused) == 2, pressed.refused
@@ -225,7 +243,7 @@ def test_an_engine_that_cannot_answer_is_refused_in_words_and_not_in_silence(an_
     stood_at = the_page.engines.chosen_engine(data_dir)
 
     pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None,
-                               **a_whole_press(data_dir, engine="no-engine-of-this-name"))  # fmt: skip
+                               **a_whole_press(data_dir, archives, engine="no-engine-of-this-name"))  # fmt: skip
 
     assert len(pressed.refused) == 1 and "The engine was not stored" in pressed.refused[0]
     assert the_page.engines.chosen_engine(data_dir) == stood_at
@@ -240,7 +258,7 @@ def test_a_settings_file_that_cannot_be_read_stores_nothing_and_says_which_file(
     settings.settings_path(data_dir).write_text("{ not json", encoding="utf-8")
 
     pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None,
-                               **a_whole_press(data_dir, mode="direct", tab="network"))  # fmt: skip
+                               **a_whole_press(data_dir, archives, mode="direct", tab="network"))  # fmt: skip
 
     assert pressed.stored == () and pressed.refused == ()
     assert pressed.draw_again is not None and pressed.draw_again["tab"] == "network"
@@ -256,15 +274,17 @@ def test_trying_a_threshold_stores_nothing_and_keeps_the_rest_of_the_page(an_ins
     an answer mode, a model — and said nothing about it.
     """
     data_dir, archives = an_instance
-    before = settings.rule_settings(data_dir, rules.load(data_dir).get(THREE_NUMBERS))
+    before = settings.rule_settings(data_dir, rules.load(data_dir).get(THREE_NUMBERS),
+                                    in_archive=about(archives))
 
-    press = a_whole_press(data_dir, try_rule=THREE_NUMBERS, mode="direct", ask_page="on")
+    press = a_whole_press(data_dir, archives, try_rule=THREE_NUMBERS, mode="direct", ask_page="on")
     press = nudged(press, f"{THREE_NUMBERS}:{list(before)[0]}", "99")
     pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None, **press)
 
     assert pressed.stored == () and pressed.refused == ()
     assert pressed.draw_again["trying"] == (THREE_NUMBERS, dict(zip(press["knob_name"], press["knob_value"])))
-    assert settings.rule_settings(data_dir, rules.load(data_dir).get(THREE_NUMBERS)) == before
+    assert settings.rule_settings(data_dir, rules.load(data_dir).get(THREE_NUMBERS),
+                                  in_archive=about(archives)) == before
     # The page drawn from that submission shows what was typed, not what is stored.
     shown = settings_view(data_dir, archives, **pressed.draw_again)
     tried = next(rule for rule in shown["rules"] if rule["id"] == THREE_NUMBERS)
@@ -289,15 +309,16 @@ def test_a_costly_rule_is_held_back_for_asking_and_the_rest_of_the_press_is_stor
     everything else in the same press is already stored, so answering yes is one step and not two.
     """
     data_dir, archives = an_instance
-    press = a_whole_press(data_dir, mode="direct")
+    press = a_whole_press(data_dir, archives, mode="direct")
     a_costly_step(monkeypatch)
-    costly = next(rule for rule in rules.load(data_dir) if rule.costly and not settings.rule_on(data_dir, rule))
+    costly = next(rule for rule in rules.load(data_dir)
+                  if rule.costly and not settings.rule_on(data_dir, rule, in_archive=about(archives)))  # fmt: skip
 
     held = {**also_on(press, costly.id), "confirmed_rules": []}
     pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None, **held)
 
-    assert pressed.waiting == {costly.id: True}
-    assert settings.rule_on(data_dir, costly) is False, "held back, and stored anyway"
+    assert pressed.waiting == {costly.id: {"on": True, "switching": True, "thresholds": {}}}
+    assert settings.rule_on(data_dir, costly, in_archive=about(archives)) is False, "held back, and stored anyway"
     assert settings.answer_mode(data_dir) == "direct", "the rest of the press was held back with it"
     assert pressed.draw_again["waiting"] == pressed.waiting
     assert pressed.draw_again["stored"] == pressed.said
@@ -306,7 +327,186 @@ def test_a_costly_rule_is_held_back_for_asking_and_the_rest_of_the_press_is_stor
     said_yes = settings_pressed(data_dir, archives, build_indexes=lambda: None,
                                 **also_on(press, costly.id))  # fmt: skip
     assert said_yes.waiting == {} and said_yes.draw_again is None
-    assert settings.rule_on(data_dir, costly) is True
+    assert settings.rule_on(data_dir, costly, in_archive=about(archives)) is True
+
+
+def test_a_threshold_of_a_costly_rule_is_held_back_for_the_same_question(an_instance, monkeypatch):
+    """A threshold of such a rule costs exactly what its switch costs, and was stored on a click.
+
+    The check that stands between a person and that cost guarded the switch alone, three lines
+    below the write it was supposed to guard. `least_number_share` from 0.9 to 0.5, or
+    `least_characters` from 20 to 200, and the next run sends most of an archive to the strongest
+    model there is — on one press, with the page saying "thresholds of 1 rule".
+    """
+    data_dir, archives = an_instance
+    a_costly_step(monkeypatch)
+    costly = next(rule for rule in rules.load(data_dir) if rule.costly and rule.settings)
+    field = f"{costly.id}:{next(iter(costly.settings))}"
+    was = settings.rule_settings(data_dir, costly, in_archive=about(archives))
+    press = a_whole_press(data_dir, archives)
+
+    typed = {**nudged(press, field, "7"), "confirmed_rules": []}
+    pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None, **typed)
+
+    assert pressed.waiting[costly.id]["thresholds"] == {field.split(":", 1)[1]: "7"}
+    assert pressed.waiting[costly.id]["switching"] is False, "the switch was not touched"
+    assert settings.rule_settings(data_dir, costly, in_archive=about(archives)) == was, "held back, and stored anyway"
+    # The question says which half of the press it is about. It said "Turning this on" over a
+    # press that turned nothing on.
+    drawn = settings_view(data_dir, archives, tab="rules", **{
+        name: value for name, value in pressed.draw_again.items() if name != "tab"})  # fmt: skip
+    row = next(one for one in drawn["rules"] if one["id"] == costly.id)
+    assert row["waiting_about"] == "moving its thresholds"
+    # And what was typed is still in the field, so saying yes is one press and not a page of
+    # numbers to type again.
+    assert str(next(knob["value"] for knob in row["knobs"]
+                    if knob["field"] == field)) == "7"  # fmt: skip
+
+    said_yes = settings_pressed(data_dir, archives, build_indexes=lambda: None,
+                                **nudged(press, field, "7"))  # fmt: skip
+    assert said_yes.waiting == {}
+    assert settings.rule_settings(data_dir, costly, in_archive=about(archives))[field.split(":", 1)[1]] == 7
+
+
+def test_the_rules_tab_says_which_archive_its_switches_are_about(an_instance):
+    """The defect this card is about, and it was a mismatch rather than an absence.
+
+    The count beside each switch was already counted on the archive being looked at — "found 255
+    on 255 documents" — while the switch itself was one switch for the whole instance. So
+    unticking that box turned the rule off on two other archives where it had found 24 and 4
+    things worth looking at, with nothing on the page saying the two halves were about different
+    things. The tab says which it is asking about now, and both answers are reachable by name.
+    """
+    data_dir, archives = an_instance
+    whose = archives.showing.whose
+
+    shown = settings_view(data_dir, archives, tab="rules")
+    assert shown["rules_about"]["in_archive"] == archives.showing.id
+    assert shown["rules_about"]["whose"] == whose and shown["rules_about"]["can_choose"] is True
+    assert shown["rules_about"]["about"] == "archive"
+
+    wide = settings_view(data_dir, archives, tab="rules", about="instance")
+    assert wide["rules_about"]["in_archive"] == settings.THE_WHOLE_INSTANCE
+    assert wide["rules_about"]["about"] == "instance"
+    # The same archive is still the one the counts are of, and the page says so rather than
+    # letting a person read an instance-wide switch and an archive's count as one thing.
+    assert wide["rules_about"]["whose"] == whose
+
+    # And the words are on the page itself, with the way to the other answer, and the hidden
+    # field that carries which of the two a press was drawn about.
+    from pathlib import Path
+
+    from epicrisis import web
+
+    page = (Path(web.__file__).parent / "templates" / "settings.html").read_text(encoding="utf-8")
+    assert "Answering for" in page
+    assert "every archive on this machine" in page
+    assert "about=instance" in page, "and the way to the other one"
+    # The field exactly, and not merely a field of that name: the form for writing a rule of
+    # one's own has an "about" of its own, and an assertion on the name alone passed over a tab
+    # that had stopped carrying which archive its switches were drawn about.
+    assert '<input type="hidden" name="about" value="{{ rules_about.about }}">' in page
+
+
+def test_a_press_on_the_rules_tab_answers_the_archive_it_was_drawn_about(an_instance):
+    """One press, one archive, and the sentence it hands back says which.
+
+    "2 rules switched" over a page that can answer for one archive or for every one of them says
+    that something happened and not what — and the two presses are a word apart in the form.
+    """
+    data_dir, archives = an_instance
+    rule = next(one for one in rules.load(data_dir) if not one.costly
+                and not settings.rule_on(data_dir, one))  # fmt: skip
+    only = archives.showing.id
+
+    pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None,
+                               **also_on(a_whole_press(data_dir, archives), rule.id))  # fmt: skip
+
+    assert settings.rule_on(data_dir, rule, in_archive=only) is True
+    assert settings.rule_on(data_dir, rule) is False, "the instance was not answered"
+    assert any("switched for" in said and archives.showing.whose in said for said in pressed.stored), pressed.stored
+
+    # The other address answers for every archive, and says so.
+    for_all = settings_pressed(data_dir, archives, build_indexes=lambda: None,
+                               **also_on(a_whole_press(data_dir, archives, about="instance"), rule.id))  # fmt: skip
+    assert settings.rule_on(data_dir, rule) is True
+    assert any("for every archive" in said for said in for_all.stored), for_all.stored
+
+
+def test_a_press_can_put_one_rule_back_under_the_instance_s_answer(an_instance):
+    """A switch set for one archive and no way back is the seventh entry's dead end.
+
+    And the order matters: the box beside it is drawn at whatever this archive answered, so
+    reading the box before taking the answer away would write it straight back.
+    """
+    data_dir, archives = an_instance
+    rule = next(one for one in rules.load(data_dir) if not one.costly
+                and not settings.rule_on(data_dir, one))  # fmt: skip
+    only = archives.showing.id
+    settings.set_rule_on(data_dir, rule.id, True, in_archive=only)
+    assert settings.answered_about(data_dir, rule.id, only) == {"on": True}
+
+    press = also_on(a_whole_press(data_dir, archives), rule.id)
+    pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None,
+                               **{**press, "the_instance_answers": [rule.id]})  # fmt: skip
+
+    assert settings.answered_about(data_dir, rule.id, only) == {}
+    assert settings.rule_on(data_dir, rule, in_archive=only) is False, "the instance's answer again"
+    assert any(rule.name in said for said in pressed.stored), pressed.stored
+    # Pressing it again, with nothing of its own left, stores nothing and says nothing.
+    again = settings_pressed(data_dir, archives, build_indexes=lambda: None,
+                             **{**a_whole_press(data_dir, archives), "the_instance_answers": [rule.id]})  # fmt: skip
+    assert again.stored == ()
+
+
+def test_a_switch_set_for_one_archive_says_so_beside_itself(an_instance):
+    """A switch that looks the same whether it was answered here or inherited is a switch nobody
+    can tell they have set, and the page has to say which of the two it is drawing."""
+    data_dir, archives = an_instance
+    rule = next(one for one in rules.load(data_dir) if not settings.rule_on(data_dir, one))
+    only = archives.showing.id
+
+    before = next(one for one in settings_view(data_dir, archives, tab="rules")["rules"]
+                  if one["id"] == rule.id)  # fmt: skip
+    assert before["its_own"] is False and before["on"] is False
+
+    settings.set_rule_on(data_dir, rule.id, True, in_archive=only)
+
+    after = next(one for one in settings_view(data_dir, archives, tab="rules")["rules"]
+                 if one["id"] == rule.id)  # fmt: skip
+    assert after["its_own"] is True and after["on"] is True
+    assert after["instance_wide"] is False, "what every other archive runs by, said beside it"
+    # On the instance-wide address nothing is "its own": there is no archive to be its own of.
+    wide = next(one for one in settings_view(data_dir, archives, tab="rules", about="instance")["rules"]
+                if one["id"] == rule.id)  # fmt: skip
+    assert wide["its_own"] is False and wide["on"] is False
+
+
+def test_the_journal_names_the_archive_a_rule_was_switched_for(an_instance):
+    """The journal already records a settings change. A per-archive line names the archive the way
+    "the archive shown was switched" already names one: the random id, and never a name."""
+    from epicrisis import journal
+
+    data_dir, archives = an_instance
+    rule = next(one for one in rules.load(data_dir) if not settings.rule_on(data_dir, one))
+    only = archives.showing.id
+
+    settings.set_rule_on(data_dir, rule.id, True, in_archive=only)
+    settings.set_rule_settings(data_dir, rule, {name: 7 for name in rule.settings}, in_archive=only)
+    settings.let_the_instance_answer(data_dir, rule.id, only)
+
+    said = [line for line in journal.entries(data_dir) if line.get("rule") == rule.id]
+    assert [line["event"] for line in said] == [
+        "a rule was switched on",
+        "a rule's thresholds were changed",
+        "an archive stopped answering a rule for itself",
+    ]
+    assert all(line["archive"] == only for line in said), said
+    # And the instance's own answer is still written down without an archive on the line.
+    settings.set_rule_on(data_dir, rule.id, True)
+    wide = [line for line in journal.entries(data_dir)
+            if line.get("rule") == rule.id and "archive" not in line]  # fmt: skip
+    assert [line["event"] for line in wide] == ["a rule was switched on"]
 
 
 def test_neither_half_of_the_page_can_be_asked_without_naming_an_archive(an_instance):
@@ -363,7 +563,7 @@ def test_what_the_press_hands_back_is_a_value_and_not_a_page(an_instance):
     """
     data_dir, archives = an_instance
     pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None,
-                               **a_whole_press(data_dir, mode="with_meaning"))  # fmt: skip
+                               **a_whole_press(data_dir, archives, mode="with_meaning"))  # fmt: skip
     assert isinstance(pressed, Pressed)
     assert pressed.draw_again is None, "a press that is over draws nothing"
     assert pressed.stored and pressed.said == ", ".join(pressed.stored)
@@ -373,7 +573,7 @@ def test_what_the_press_hands_back_is_a_value_and_not_a_page(an_instance):
     # setting and not the side, so the move into the one mode where this application compares a
     # number with a printed range and the move back out of it read exactly alike.
     back = settings_pressed(data_dir, archives, build_indexes=lambda: None,
-                            **a_whole_press(data_dir, mode="as_printed"))  # fmt: skip
+                            **a_whole_press(data_dir, archives, mode="as_printed"))  # fmt: skip
     assert the_page.ANSWER_MODE_NAMES["as_printed"] in back.said
     assert back.said != pressed.said
 
@@ -389,10 +589,10 @@ def test_the_press_and_the_page_it_draws_again_speak_one_language(an_instance, m
     gathers = set(inspect.signature(settings_view).parameters) - {"data_dir", "archives"}
     settings.settings_path(data_dir).parent.mkdir(parents=True, exist_ok=True)
 
-    presses = [a_whole_press(data_dir, try_rule=THREE_NUMBERS)]
+    presses = [a_whole_press(data_dir, archives, try_rule=THREE_NUMBERS)]
     a_costly_step(monkeypatch)
     costly = next(rule for rule in rules.load(data_dir) if rule.costly and not settings.rule_on(data_dir, rule))
-    presses.append({**also_on(a_whole_press(data_dir), costly.id), "confirmed_rules": []})
+    presses.append({**also_on(a_whole_press(data_dir, archives), costly.id), "confirmed_rules": []})
     for press in presses:
         pressed = settings_pressed(data_dir, archives, build_indexes=lambda: None, **press)
         assert pressed.draw_again is not None
@@ -400,7 +600,7 @@ def test_the_press_and_the_page_it_draws_again_speak_one_language(an_instance, m
         settings_view(data_dir, archives, **pressed.draw_again)  # it draws, rather than raising
 
     settings.settings_path(data_dir).write_text("{ not json", encoding="utf-8")
-    torn = settings_pressed(data_dir, archives, build_indexes=lambda: None, **a_whole_press(data_dir))
+    torn = settings_pressed(data_dir, archives, build_indexes=lambda: None, **a_whole_press(data_dir, archives))
     assert set(torn.draw_again) <= gathers, torn.draw_again
     assert settings_view(data_dir, archives, **torn.draw_again)["settings_unreadable"] is True
 
@@ -420,10 +620,99 @@ def test_the_press_runs_the_checks_before_it_builds_and_only_when_a_rule_moved(a
 
     builds = []
     quiet = settings_pressed(data_dir, archives, build_indexes=lambda: builds.append(1) or None,
-                             **a_whole_press(data_dir))  # fmt: skip
+                             **a_whole_press(data_dir, archives))  # fmt: skip
     assert quiet.stored == () and builds == [], "a press that changed nothing built the index"
 
     moved = settings_pressed(data_dir, archives, build_indexes=lambda: builds.append(1) or None,
-                             **also_on(a_whole_press(data_dir), validating.id))  # fmt: skip
+                             **also_on(a_whole_press(data_dir, archives), validating.id))  # fmt: skip
     assert builds == [1], "a rule of the checks moved and nothing was built in"
     assert "every archive checked again and built in" in moved.said
+
+
+def test_a_threshold_typed_for_one_archive_does_not_age_the_others(an_instance, monkeypatch):
+    """What a step is built from is per archive, and what was written down was every archive's
+    answers in one lump.
+
+    So a threshold typed for one archive of 23 documents put "this index is older than the files
+    it is built from" over all three, and two of the three were checked and rebuilt for nothing.
+    Measured: 0 badges before the change, 3 after, on archives of 43, 72 and 23 documents.
+    """
+    from epicrisis.settings import THE_WHOLE_INSTANCE, changed_for
+
+    data_dir, archives = an_instance
+    # A second archive, because the defect is one archive's answer reaching another's badge.
+    folder = data_dir.parent.parent / "An archive of somebody else"
+    folder.mkdir()
+    SourceRegistry(data_dir).add(str(folder), owner="Another Person")
+    mine, other = archives.showing.id, SourceRegistry(data_dir).list()[-1].id
+    assert mine != other
+    rule = next(one for one in rules.load(data_dir) if one.settings and not one.costly)
+    before = {one: changed_for(data_dir, "validate", in_archive=one) for one in (mine, other)}
+
+    settings.set_rule_settings(data_dir, rule, {next(iter(rule.settings)): "3"}, in_archive=mine)
+
+    after = {one: changed_for(data_dir, "validate", in_archive=one) for one in (mine, other)}
+    assert after[mine] > before[mine], "the archive it was typed for is behind, and should be"
+    assert after[other] == before[other], "and the other two are not"
+
+    # An answer for the whole instance moves every archive that has not overridden that rule:
+    # what each archive reads includes what it inherits.
+    settings.set_rule_on(data_dir, rule.id, False, in_archive=THE_WHOLE_INSTANCE)
+
+    everyone = {one: changed_for(data_dir, "validate", in_archive=one) for one in (mine, other)}
+    assert everyone[other] > after[other], "an instance-wide answer reaches the archives under it"
+    assert everyone[mine] > after[mine]
+
+
+def test_the_badge_over_one_archive_is_about_that_archive(an_instance):
+    """The wiring, which the test above cannot see.
+
+    `changed_for` answers per archive now, and the badge is drawn by `layout.changed_since` — so a
+    test of the first alone stayed green with the second still asking the instance-wide question,
+    which is the whole defect. Measured by mutation: putting the old call back failed nothing.
+    """
+    from epicrisis import layout
+    from epicrisis.sources import source_output_dir
+
+    data_dir, archives = an_instance
+    folder = data_dir.parent.parent / "Another archive of nobody"
+    folder.mkdir()
+    SourceRegistry(data_dir).add(str(folder), owner="Somebody Else")
+    mine, other = archives.showing.id, SourceRegistry(data_dir).list()[-1].id
+    rule = next(one for one in rules.load(data_dir) if one.settings and not one.costly)
+    outputs = {one: source_output_dir(data_dir, one) for one in (mine, other)}
+    for output in outputs.values():
+        output.mkdir(parents=True, exist_ok=True)
+    before = {one: layout.changed_since(outputs[one], data_dir, "validate") for one in (mine, other)}
+
+    settings.set_rule_settings(data_dir, rule, {next(iter(rule.settings)): "3"}, in_archive=mine)
+
+    after = {one: layout.changed_since(outputs[one], data_dir, "validate") for one in (mine, other)}
+    assert after[mine] > before[mine], "the archive it was typed for"
+    assert after[other] == before[other], "and not the other, whose owner changed nothing"
+
+
+def test_the_page_says_a_wait_only_where_somebody_is_being_held_out(an_instance):
+    """The count beside the way out, asked of what is in those files rather than of how many.
+
+    Each link keeps its run of wrong codes in a file of its own. A run answered correctly leaves
+    the file holding `[]`; a run from last week has aged out of the window the wait can last.
+    Counting files, this page said "1 link is in a wait after wrong codes" on the owner's own
+    instance — measured, one file of two bytes holding nothing — and offered him the command.
+
+    Of the view and not of the function beside it: a mutation that put the count of files back
+    failed nothing, because the only test was of the counting and not of the page.
+    """
+    from epicrisis import mcp_lock
+
+    data_dir, archives = an_instance
+    answered = mcp_lock.where_the_wait_is_kept(data_dir, "aaaa1111")
+    answered.parent.mkdir(parents=True, exist_ok=True)
+    answered.write_text("[]", encoding="utf-8")
+
+    assert settings_view(data_dir, archives, tab="network")["waits"] == 0
+
+    mcp_lock.where_the_wait_is_kept(data_dir, "bbbb2222").write_text(
+        json.dumps([time.time()] * mcp_lock.WRONG_CODES), encoding="utf-8")  # fmt: skip
+
+    assert settings_view(data_dir, archives, tab="network")["waits"] == 1

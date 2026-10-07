@@ -67,10 +67,17 @@ class Rule:
     does: str
     at: str
     on_by_default: bool
-    # The name this rule's switch had before it was a rule, if it had one. Read only where no
-    # answer has been stored for the rule itself, so that a check moving into a file does not
-    # quietly change what an archive had already chosen. Remove it once nobody can still be
-    # carrying the old answer.
+    # The name this rule's switch had before it was a rule, if it had one — a **setting of an
+    # older version of this program**, written at the top level of settings.json: `convert_units`,
+    # `unit_from_range`, `unit_by_numbers`. Read only where no answer has been stored for the rule
+    # itself, so that a check moving into a file does not quietly change what an archive had
+    # already chosen. Remove it once nobody can still be carrying the old answer.
+    #
+    # **It is not a place to put the code a check used to have.** One rule carried
+    # `was_called = "institution_looks_like_a_name"`, which is the id of a live rule at another
+    # step: that name was never a setting, so it carried nothing at all, and it pointed the one
+    # mechanism that reads a stored answer by somebody else's name at a rule that asks a different
+    # question of a different thing. `load` refuses it now, for the reason written there.
     was_called: str
     # What a person is being asked to do about a finding, where it hangs, and where it stands in
     # the queue. A list of findings without these is a wall: it says a check failed and leaves
@@ -91,6 +98,11 @@ class Rule:
     @property
     def check(self) -> Kind:
         return KINDS[self.kind]
+
+    @property
+    def stays_on(self) -> bool:
+        """Whether this rule has a switch at all. Decided by the kind; see `Kind.stays_on`."""
+        return self.check.stays_on
 
     @property
     def costly(self) -> bool:
@@ -171,11 +183,20 @@ def read(path: Path, shipped: bool) -> Rule:
     # A rule that sends something to be looked at has to say what would settle it, and where the
     # finding hangs. Without the first, a person is given a wall; without the second, nothing
     # knows whether to show it against a value or against the whole document.
-    if header["does"] == "marks":
+    #
+    # Unless the step answers its own rules, which `extract` does: what fires there is acted on by
+    # the step — the document goes back to a stronger model — and no finding of it is ever put in
+    # front of anybody. Saying how to settle such a finding would be writing a sentence nobody can
+    # be shown, so the file is refused for saying it rather than for leaving it out.
+    answered_by_the_step = header["at"] in kinds.ANSWERED_BY_THE_STEP
+    if header["does"] == "marks" and not answered_by_the_step:
         if not str(header.get("settles", "")).strip():
             raise RuleFileProblem("settles is missing: a rule that marks has to say what settles it")
         if header.get("attaches") not in ("value", "document"):
             raise RuleFileProblem("attaches should be value or document")
+    if answered_by_the_step and (header.get("settles") or header.get("attaches")):
+        raise RuleFileProblem(f"a rule at the {header['at']} step is answered by that step: nobody is shown "
+                              "what it finds, so it has no settles and nothing to attach to")  # fmt: skip
     settings = _settings(header.get("settings", {}), kind)
     return Rule(
         id=header["id"], name=header["name"], summary=header["summary"].strip(),
@@ -203,6 +224,13 @@ def _settings(given: dict, kind: Kind) -> dict:
         # bool is an int in Python, and a rule that wants a number should not accept "true".
         if isinstance(value, bool) != isinstance(kind.settings[name], bool) or not isinstance(value, wanted | int if wanted is float else wanted):
             raise RuleFileProblem(f"{name} should be {wanted.__name__} and is {type(value).__name__}")
+        # And the size, where the kind says what shape of threshold it is. A number of the right
+        # type and the wrong size was taken without a word, and the check then never fired once:
+        # `least_characters = 0` means no page is ever empty. The type was always checked here;
+        # the size was checked nowhere, and a wrong size is what a person types.
+        refuses = kind.refuses(name, value)
+        if refuses:
+            raise RuleFileProblem(f"{name} is {value!r}, and it wants {refuses}")
     return {**kind.settings, **given}
 
 
@@ -223,6 +251,46 @@ def load(data_dir: Path | None = None, shipped_dir: Path | None = None) -> Rules
                 loaded.problems.append(f"{path.name}: there is already a rule called {rule.id!r}")
                 continue
             loaded.rules.append(rule)
+    return _nobody_answers_under_another_rules_name(loaded)
+
+
+def _nobody_answers_under_another_rules_name(loaded: "Rules") -> "Rules":
+    """A `was_called` that is a live rule's id is refused, and the rule keeps its own answer.
+
+    `was_called` names a **setting of an older version of this program**, so that an archive's own
+    answer survives a check becoming a rule. One rule carried the id of a live rule at another
+    step there. Two things were wrong with it and the second is the dangerous one:
+
+    * It carried nothing. That name was a finding's code and never a setting, so the one line that
+      reads it — `settings.rule_on`, which looks at the top level of settings.json, where the old
+      switches were written — never found it. A field announced as carrying a switch across a
+      rename carried no switch across anything.
+    * Had anything ever written that name at the top level, **one answer would have put out two
+      different checks**: one reading a transcription as it comes back, the other reading what the
+      index recorded. A person turning off the noisy one on one archive would have silently turned
+      off the other on every archive.
+
+    Refused rather than corrected, and the rule still loads: it is the `was_called` alone that is
+    dropped, so the rule runs with its own answer, which is the safe direction. Said out loud,
+    because a line in a file that does nothing is a line the next reader believes.
+
+    **A rule naming itself is the ordinary case and is left alone.** `unit_by_numbers` and
+    `unit_from_range` were top-level settings under exactly the names their rules now carry, so
+    `was_called` there is how an archive's answer from before the registry is still read. The
+    first draft of this check refused those two as well, which would have quietly dropped the one
+    answer each of them exists to carry.
+    """
+    from dataclasses import replace
+
+    held = {rule.id for rule in loaded.rules}
+    for at, rule in enumerate(loaded.rules):
+        if rule.was_called and rule.was_called != rule.id and rule.was_called in held:
+            loaded.problems.append(
+                f"{rule.path.name}: was_called is {rule.was_called!r}, which is a rule of this "
+                f"instance and not a setting of an older version of it. One answer must not reach "
+                f"two checks, so it is ignored and “{rule.name}” uses its own."
+            )  # fmt: skip
+            loaded.rules[at] = replace(rule, was_called="")
     return loaded
 
 
@@ -265,14 +333,14 @@ def _as_toml(text: str) -> str:
     return f'"{escaped}"'
 
 
-def write_one(data_dir: Path, header: dict, about: str, kinds: dict) -> tuple[str, str]:
+def write_one(data_dir: Path, header: dict, about: str, known: dict) -> tuple[str, str]:
     """A rule of this archive's own. Returns its id, or an empty id and what is wrong with it.
 
     Written, then read back before it is allowed to stay. A file the registry cannot take would
     otherwise sit in the folder saying so on every page, and the person who wrote it would be
     told at some later moment, about something they had stopped thinking about.
     """
-    kind = kinds.get(header.get("kind", ""))
+    kind = known.get(header.get("kind", ""))
     if kind is None:
         return "", "Choose a kind of check."
     if not str(header.get("name", "")).strip():
@@ -291,7 +359,16 @@ def write_one(data_dir: Path, header: dict, about: str, kinds: dict) -> tuple[st
              f"summary = {_as_toml((header.get('summary') or header['name']).strip())}",
              f"kind = {_as_toml(kind.name)}", f"does = {_as_toml(kind.does)}", f"at = {_as_toml(kind.at)}",
              "on_by_default = false  # somebody else's archive has not agreed to this one"]  # fmt: skip
-    if kind.does == "marks":
+    # What a person is asked to do about a finding, and where it hangs — **unless the step answers
+    # its own rules**, in which case nobody is ever shown the finding and `read` refuses a file
+    # that says how to settle it. Two places decided this and by different tests: this one by
+    # "does it mark", the reader by "which step is it at". So the settings page offered sixteen
+    # kinds of the extract step, wrote these two lines for each of them, and was refused by its
+    # own loader — "a rule at the extract step is answered by that step: nobody is shown what it
+    # finds, so it has no settles and nothing to attach to" — about two fields the person had not
+    # filled in and could not see, with no way out named. §7: a dead end with no way out is a
+    # defect.
+    if kind.does == "marks" and kind.at not in kinds.ANSWERED_BY_THE_STEP:
         lines += [f"attaches = {_as_toml(header.get('attaches') or 'document')}",
                   f"settles = {_as_toml((header.get('settles') or 'Open the page and see.').strip())}"]  # fmt: skip
     written = "\n".join(lines) + f"\n{FENCE}\n\n" + (about.strip() or "# Written here\n\nNo more was said.") + "\n"

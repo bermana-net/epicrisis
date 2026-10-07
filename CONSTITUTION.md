@@ -38,6 +38,35 @@ A shared dictionary is not a shared page. The vocabulary may hold five hundred t
 page shows the tests that archive prints, because the page is about that archive and not about the
 instance.
 
+**One person and many archives, counted from two sides.** This is where the wall stands, and it
+stands in a different place depending on which side of the program you are on. The sentence is the
+owner's own, written down the day the registry of connectors was designed:
+
+> С точки зрения консоли это всё ещё однопользовательская система — один человек и много
+> пациентов. С точки зрения MCP-коннектора — многопользовательская: много коннекторов, и каждый
+> может открывать нескольких или всех пациентов.
+
+The console is one person at this machine, and that is why it has no login: there is no second
+person at it to tell apart, and asking a person to prove who they are to their own medical records
+is friction and one more way to lose them. What reaches the network is the MCP server, and there
+**one link is one session**: the link says which people it may reach, a conversation chooses one of
+them and answers about that one until it ends, and reaching another means closing that pass and
+taking a new code. Many users is a fact about connectors and never about the console.
+
+So "two archives are never open at once" stopped being true the day a link could carry rights of
+its own — not of the rule above, which is about what may meet, but of the construction that used
+to keep it: until then one archive was open to the server at a time and a leak between two was
+impossible by accident. It is now a thing to be proved, and it is proved by measurement rather than
+by argument: two connectors read side by side, in turn and in eight threads at once, and every
+answer is swept for every string the other archive prints.
+
+**And the console has no answer for two people at one keyboard, and is not going to have one.**
+Two people whose records must not meet get two instances, each under its own system user, where
+the separation belongs to the operating system and not to a promise this program makes about
+itself. That is said out loud here because the alternative is a program that quietly behaves as
+though the second person were impossible — and that is the program which shows somebody another
+person's doctors.
+
 What follows from the first paragraph:
 
 - Anything holding a string printed on somebody's document belongs inside that archive's own

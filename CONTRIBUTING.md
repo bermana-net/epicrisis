@@ -36,6 +36,10 @@ document. These identify. There is no wording that makes them safe.
 wrong; neither needs a number out of anybody's archive, and a count of what a rule found on one
 real archive belongs in a report, not in a file that ships. Where a figure genuinely explains
 something, use the kind that belongs to forms rather than to people.
+`tests/test_a_rule_file_counts_nobodys_archive.py` holds the shipped rules to that paragraph, and
+says in its own words what it can and cannot tell apart — a paragraph of this page went unenforced
+for nine rule files, five of them published in one release, which is what a sentence with no test
+behind it is worth.
 
 **A printed reference range or the scale a form uses** — `53-115 µmol/L`, `1,001-1,040`,
 `19,0-37,0%` — is a property of laboratory forms and not of a person, and belongs here wherever
@@ -60,9 +64,34 @@ and tokens by their shape, and for a published picture that nothing accounts for
 your own will stop your push as surely as a stranger's name. It does not look for measured values;
 numbers are not phrases, and a check that shouts about every number is a check nobody runs twice.
 
+Whole phrases, with one exception, and the exception is a person's surname. A signature is printed
+with initials and pasted without them, so a field where a person can be named — the owner of an
+archive, the doctor, and the laboratory field on the forms that are filled in with a signature
+instead — is looked for in words as well as whole, and a word of a name counts however short it
+is. Which words those are is the initials: on a form the name has initials beside it and the
+speciality does not. **A surname of yours in a docstring, a test or a commit message now stops the
+push, with no initials needed.**
+
+Two columns were asked to be read in words and measured their way out of it, and this is the
+reason: a diagnosis and a prescription are sentences, and splitting them means refusing a push
+over "after", "history", "level", "treatment", "forma" and the word for "kidney" — the words any
+form of that kind prints and any program that reads such forms has to be free to write. The same
+is true of a laboratory's name where it is a laboratory's name and not a signature: a place is
+written in common nouns, a town and a street. Both are still compared whole, which is how a
+sentence out of a record gets pasted anyway.
+
 What it cannot see: a person's name printed only inside the text of a document. The lines of a
-document are compared whole, so a name lifted out of one on its own matches nothing. Do not copy
-document text and that gap stays shut.
+document are compared whole, so a name lifted out of one on its own matches nothing — the words
+of a line are not read as the words of a name, for the reason the two columns above were left
+alone. Do not copy document text and that gap stays shut.
+
+What it also cannot see: one name spelled in the other alphabet. The spelling this check compares
+by drops case and accents, and pairs nothing else, so a Russian surname out of an archive and the
+Ukrainian spelling of it in a file here are two strings to it and one name to any reader. Measured
+on the three archives on this machine: of the words this check reads out of the two name columns,
+one more collides with a file of this repository once those letters are paired, and it was an
+invented name chosen badly rather than a leak. Invent in the alphabet of the archive and look for
+both spellings.
 
 ## The licence of what you send
 

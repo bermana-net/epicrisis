@@ -1,0 +1,229 @@
+{% extends "_page.html" %}
+{% set page_class = "connectors" %}
+{% block title %}Links over the network{% endblock %}
+{% block page %}
+
+  {% set current = "connectors" %}
+  {% include "_header.html" %}
+
+  <section class="rule" style="padding-top: 18px;">
+    <div class="keys-head">
+      <h1>Links over the network</h1>
+      {% if not trouble %}<a class="btn primary" href="/connectors?issuing=yes">Add a link</a>{% endif %}
+    </div>
+    <p class="lead caps">Each link is one assistant's way in, and it reaches only the people you tick for it. This console is one person at this machine; the links are how anybody else reaches anything, and there is no other way in.</p>
+
+    {% if trouble %}
+    <p class="alert">{{ about }}</p>
+    <p class="note caps">{{ trouble }}</p>
+    {% else %}
+
+    {% if issued %}
+    {# The one time this is shown. Above everything, because a person who scrolls past it has
+       lost it: there is no second answer, by design. Not a sheet either — a sheet is a thing
+       people close without reading, and this is the one page in the program whose content
+       cannot be fetched again. #}
+    <div class="issued">
+      <h2 class="caps">Link issued{% if issued.name %} &mdash; {{ issued.name }}{% endif %}</h2>
+      <p class="alert caps">The code below is shown <b>now and never again</b>. Set up the authenticator before leaving this page. If it is lost, revoke this link and issue another &mdash; that costs nothing.</p>
+      {# Said rather than prevented. This answer is rendered where it stands and not redirected,
+         because a redirect would carry the code in an address bar and in a browser's history —
+         and the price of that is a reload sending the form again. A nonce would stop it and buy
+         a second kind of state to get wrong; saying it costs a sentence, and an extra link is
+         visible on this page and revoked in one press. #}
+      <p class="note caps">Reloading this page sends the form again and issues <b>another</b> link. This one is already made &mdash; leave the page by the links above when you are done with the code.</p>
+
+      {% if issued.link %}
+      <p class="note caps">The address to hand over:</p>
+      <input class="address mono" type="text" value="{{ issued.link }}" readonly aria-label="The address to hand over">
+      {% else %}
+      <p class="note caps">This instance has no public name yet, so there is no address to hand over. Put the name the tunnel answers on into <a href="/settings?tab=network">the settings</a> and the address appears on this page &mdash; the link itself is already made and the code below is still the one it needs.</p>
+      {% endif %}
+
+      <p class="note caps">The code for the authenticator:</p>
+      {% if issued.qr %}
+      <div class="qr">{{ issued.qr|safe }}</div>
+      <p class="note caps">Scan it, or use the line below where there is no camera.</p>
+      {% else %}
+      <p class="note caps">There is no picture of it on this instance, so use the line below: an authenticator takes it pasted, or takes the <span class="mono">secret=</span> part typed by hand.</p>
+      {% endif %}
+      <input class="address mono" type="text" value="{{ issued.uri }}" readonly aria-label="The line for the authenticator">
+    </div>
+    {% endif %}
+
+    {# What stands between a link and the records it reaches, said where a link is handed over.
+       Not a scold and not a nag: one line, the plain consequence, and the way to change it. #}
+    {% if not lock_on %}
+    <p class="alert caps">The six-digit code is <b>off</b> for this instance. Whoever has a link's address reads that archive without one &mdash; the address and the tunnel say where a request came from and nothing about who sent it. <a href="/settings?tab=network">Turn it on</a>.</p>
+    {% endif %}
+
+    {% if stored %}<p class="note caps">Saved: {{ stored }}.</p>{% endif %}
+    {% for line in refused %}<p class="alert caps">{{ line }}</p>{% endfor %}
+
+    {# The list, and nothing else on the page: a name, how many people it reaches, and the two
+       things that can be done to it. Everything that needs more room than a row is a sheet, and
+       every sheet is an address of its own — so a half-finished edit is left by pressing Back,
+       which is what people press anyway. #}
+    <div class="editor">
+      <h2 class="caps keys-title">The links</h2>
+      {% if not links %}
+      <p class="note caps">No link has been issued yet. Nothing outside this machine can reach any archive here.</p>
+      {% else %}
+      <ul class="plain keys">
+        {% for one in links %}
+        {# Three states and not two: taken back, past its last day, answering. The middle one is
+           the only one of the three a person fixes by typing, so it keeps its buttons. #}
+        <li class="key{% if one.revoked_at %} gone{% elif one.expired %} ended{% endif %}">
+          <span class="key-name">{% if one.named %}{{ one.name }}{% else %}<i>{{ one.name }}</i>{% endif %}</span>
+          <span class="key-reach caps">
+            {%- if one.revoked_at -%}
+            revoked {{ one.revoked_at[:10] }}
+            {%- elif one.expired -%}
+            ended {{ one.until }}
+            {%- else -%}
+            {{ one.whose|length }} of {{ archives|length }}{% if one.until %} &middot; until {{ one.until }}{% endif %}
+            {%- endif -%}
+          </span>
+          <span class="key-acts">
+            {% if one.revoked_at %}
+            <span class="caps muted">its address answers nothing</span>
+            {% else %}
+            <a class="btn small" href="/connectors?editing={{ one.id }}">Edit</a>
+            <a class="btn small quiet" href="/connectors?deleting={{ one.id }}">Delete</a>
+            {% endif %}
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    {% endif %}
+  </section>
+
+  {# The sheets. Drawn after the page and positioned over it, each one an address somebody can be
+     sent to, and each one closed by a link rather than by a script. `<dialog>` would want
+     `showModal()` to draw its backdrop, and this page hands over credentials: the day a script
+     does not run is the day somebody cannot reach the address they came here to copy. #}
+  {% if sheet == "editing" and looking_at %}
+  <div class="sheet">
+    <a class="sheet-away" href="/connectors" aria-label="Close without saving"></a>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-head">
+        <h2 class="caps" id="sheet-title">{% if looking_at.name %}{{ looking_at.name }}{% else %}This link{% endif %}</h2>
+        <a class="sheet-close" href="/connectors" aria-label="Close without saving">&times;</a>
+      </div>
+
+      {% if looking_at.expired %}
+      {# Said first, because everything below it reads differently once you know the link is not
+         answering. Whoever holds it gets what an invented address gets — nothing, and no reason —
+         so they cannot tell that it ever worked, and only this page can say so. #}
+      <p class="alert caps">This link stopped answering on <b>{{ looking_at.until }}</b>. Whoever holds it now gets what any wrong address gets: nothing at all, and no reason. Give it a later day below and the same address and the same authenticator work again.</p>
+      {% endif %}
+
+      {% if looking_at.link %}
+      <p class="note caps">The address for this link</p>
+      {# A field rather than a line of text: an address with no spaces in it ran off the side of a
+         phone, and a field holds it, scrolls it, and lets a thumb select the whole of it. #}
+      <input class="address mono" type="text" value="{{ looking_at.link }}" readonly aria-label="The address for this link">
+      <p class="note caps">Hand this over whole. The code for the authenticator was shown once, when the link was made; it cannot be shown again, and a link whose code is lost is one to take back and issue afresh.</p>
+      {% else %}
+      <p class="note caps">This instance has no public name yet, so there is no address to hand anybody. Put the name the tunnel answers on into <a href="/settings?tab=network">the settings</a> and it appears here.</p>
+      {% endif %}
+
+      <form method="post" action="/connectors">
+        <input type="hidden" name="connector_id" value="{{ looking_at.id }}">
+        <label class="caps">What to call it
+          {# Says it was drawn, so a press that did not draw it cannot clear the name. #}
+          <input type="hidden" name="shown" value="name">
+          <input type="text" name="name" value="{{ looking_at.name }}" placeholder="your own words">
+        </label>
+
+        <h3 class="caps">Who it may read</h3>
+        {# And this one says it was drawn for the sharper half of the same reason: a set of
+           ticks absent from a press would otherwise read as every tick cleared, and the link
+           would quietly stop reaching anybody. #}
+        <input type="hidden" name="shown" value="archives">
+        <ul class="plain ticks">
+          {% for tick in looking_at.ticks %}
+          <li><label class="choice"><input type="checkbox" name="archive_ids" value="{{ tick.id }}"{% if tick.ticked %} checked{% endif %}> {{ tick.whose }}</label></li>
+          {% endfor %}
+        </ul>
+        <p class="note caps">One conversation reads one of them. Which one is settled by the first question asked in it, and another means closing that conversation and opening a new one with a fresh code.</p>
+
+        <h3 class="caps">How long it lasts</h3>
+        {# And this one says it was drawn for the sharpest form of the same reason: an empty date
+           means "no end" and an absent one means "this form did not ask", and a browser sends
+           the two identically. #}
+        <input type="hidden" name="shown" value="until">
+        <label class="caps">The last day it answers
+          <input type="date" name="until" value="{{ looking_at.until }}">
+        </label>
+        <p class="note caps">Empty is a link with no end, which is what a link is unless you say otherwise. A day here is the last day it works, that day included; come back and type a later one and it goes on. Nothing warns anybody when it ends &mdash; not you and not whoever holds it &mdash; so an end is worth setting only where you know the date, and taking a link back is the other button.</p>
+
+        <div class="sheet-acts">
+          <button class="btn primary" type="submit">Save</button>
+          <a class="btn quiet" href="/connectors">Cancel</a>
+          <a class="sheet-undo caps" href="/connectors?deleting={{ looking_at.id }}">Take this link back</a>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if sheet == "deleting" and looking_at %}
+  <div class="sheet">
+    <a class="sheet-away" href="/connectors" aria-label="Leave it alone"></a>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-head">
+        <h2 class="caps" id="sheet-title">Take back {% if looking_at.name %}&ldquo;{{ looking_at.name }}&rdquo;{% else %}this link{% endif %}?</h2>
+        <a class="sheet-close" href="/connectors" aria-label="Leave it alone">&times;</a>
+      </div>
+      <p class="note caps">Its address stops answering and its code comes off this machine. Nobody else's link is touched, and whoever held this one needs a new one.</p>
+      {# Why the row does not disappear, said where somebody is about to press. #}
+      <p class="note caps">The line stays in this list with the day it stopped, because the journal and the log of calls name it: a row deleted outright would leave those lines pointing at nothing, and &ldquo;what was this link used for&rdquo; is the question somebody asks afterwards.</p>
+      <form method="post" action="/connectors">
+        <input type="hidden" name="revoke" value="{{ looking_at.id }}">
+        <div class="sheet-acts">
+          <button class="btn primary" type="submit">Take it back</button>
+          <a class="btn quiet" href="/connectors">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if sheet == "issuing" %}
+  <div class="sheet">
+    <a class="sheet-away" href="/connectors" aria-label="Close"></a>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-head">
+        <h2 class="caps" id="sheet-title">A new link</h2>
+        <a class="sheet-close" href="/connectors" aria-label="Close">&times;</a>
+      </div>
+      <p class="note caps">Nothing here is typed but the name. The address and the code are made by this server, and <b>the code is shown once</b> &mdash; on the answer to this press and nowhere afterwards, not on a reload, not in the journal, not in any log. Losing it before the authenticator is set up costs one revoke and one new link.</p>
+      <form method="post" action="/connectors/new">
+        <label class="caps">What to call it
+          <input type="text" name="name" placeholder="your own words">
+        </label>
+        {% if archives %}
+        <h3 class="caps">Who it may read</h3>
+        <ul class="plain ticks">
+          {% for one in archives %}
+          <li><label class="choice"><input type="checkbox" name="archive_ids" value="{{ one.id }}"> {{ one.owner or "nobody named" }}</label></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        <label class="caps">The last day it answers &mdash; leave it empty for a link with no end
+          <input type="date" name="until">
+        </label>
+        <label class="check caps"><input type="checkbox" name="understood" value="yes" required> I understand the code is shown once</label>
+        <div class="sheet-acts">
+          <button class="btn primary" type="submit">Issue it</button>
+          <a class="btn quiet" href="/connectors">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+{% endblock %}

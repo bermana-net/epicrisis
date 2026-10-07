@@ -528,6 +528,160 @@ def test_a_second_run_of_the_migration_still_puts_the_old_file_aside(tmp_path):
     assert not (tmp_path / "people.json").exists()  # and still put aside rather than kept for ever
 
 
+#: A laboratory two archives in one city both print, and the second spelling one of them adds
+#: behind it. The pair people.py's own docstring invents for the shape; looked for in all three
+#: archive indexes on this machine before it was written here, and in none of them.
+A_LAB = "Лабораторія Абва"
+A_LAB_AGAIN = "Лабораторія Абва Гдеж"
+
+
+def _the_old_file(tmp_path, *groups) -> None:
+    (tmp_path / "people.json").write_text(json.dumps(list(groups), ensure_ascii=False), encoding="utf-8")
+
+
+def test_a_group_two_archives_could_be_about_is_carried_into_both_as_a_question(tmp_path):
+    """The shape the first entry names as its own example, and this machine holds one of it.
+
+    Two archives in one city print the same laboratory. The press that joined its two spellings
+    was made once, on one page, about one archive — and on the instance that kept one file of
+    joins for every archive, which archive was open was written down nowhere. Carried into both
+    as a join, it stands in one person's archive as a decision the other person made, unmarked.
+
+    So it is offered in each of them instead. Nothing of the work is lost — the names, the label
+    and the sentence saying where it came from are all in the archive, and one press makes it a
+    join where it belongs.
+    """
+    _an_archive_naming(tmp_path, "aaaa1111", A_LAB)
+    _an_archive_naming(tmp_path, "bbbb2222", A_LAB)
+    _the_old_file(tmp_path, {"kind": "institution", "label": A_LAB, "names": [A_LAB, A_LAB_AGAIN]})
+
+    assert people.carry_the_old_file_in(tmp_path) == {"aaaa1111": 1, "bbbb2222": 1}
+
+    for which in ("aaaa1111", "bbbb2222"):
+        held = people.load(tmp_path, which)
+        assert people.settled(held) == [], f"{which} holds nobody's join as its own"
+        offered = people.waiting(held, "institution")
+        assert [one.names for one in offered] == [sorted([A_LAB, A_LAB_AGAIN])]
+        assert offered[0].carried is True
+        assert offered[0].why == people.CARRIED_FROM_THE_INSTANCE
+        assert offered[0].label == A_LAB, "the spelling they chose to keep is still theirs"
+    # And it is at home in both, so the old file goes aside rather than waiting for ever.
+    assert not (tmp_path / "people.json").exists()
+    assert people.carry_the_old_file_in(tmp_path) == {}
+
+
+def test_a_group_only_one_archive_could_be_about_is_carried_in_as_the_join_it_was(tmp_path):
+    """The other half, and the reason this is not simply "offer everything".
+
+    Where one archive prints a name of the group, that archive is the only page the press can
+    have been made on: the page offers the names its own index holds, so both spellings stood on
+    it. Demoting that to a question would cost a person a press for nothing and say, falsely,
+    that nobody had answered.
+    """
+    _an_archive_naming(tmp_path, "aaaa1111", "Нетудихата І.В")
+    _an_archive_naming(tmp_path, "bbbb2222", "Загуменна О.П")
+    _the_old_file(tmp_path,
+                  {"kind": "doctor", "label": "Нетудихата І.В",
+                   "names": ["Нетудихата І.В", "Уролог Нетудихата І.В"]},
+                  {"kind": "doctor", "label": "Загуменна О.П",
+                   "names": ["Загуменна О.П", "ЛОР Загуменна О.П"]})  # fmt: skip
+
+    people.carry_the_old_file_in(tmp_path)
+
+    for which, label in (("aaaa1111", "Нетудихата І.В"), ("bbbb2222", "Загуменна О.П")):
+        held = people.load(tmp_path, which)
+        assert [one.label for one in people.settled(held)] == [label]
+        assert people.waiting(held) == []
+        assert held[0].carried is False and held[0].why == "", "nothing was added to their own work"
+
+
+def test_a_refusal_two_archives_could_be_about_is_carried_as_a_refusal_and_marked(tmp_path):
+    """A shape no archive here holds, which is why it is invented: the sixth entry.
+
+    A refusal reaching too far costs one question that is not asked, it renames nothing, and it
+    stands on the page under its own heading with "Ask me again" beneath it. Turning one into a
+    proposal would be this program asking its owner something they had already answered. So the
+    state stands and only the mark is added.
+    """
+    _an_archive_naming(tmp_path, "aaaa1111", A_LAB)
+    _an_archive_naming(tmp_path, "bbbb2222", A_LAB)
+    _the_old_file(tmp_path, {"kind": "institution", "label": A_LAB, "names": [A_LAB, A_LAB_AGAIN],
+                             "settled": False, "refused": True})  # fmt: skip
+
+    people.carry_the_old_file_in(tmp_path)
+
+    for which in ("aaaa1111", "bbbb2222"):
+        held = people.load(tmp_path, which)
+        assert [one.names for one in people.refused(held, "institution")] == [sorted([A_LAB, A_LAB_AGAIN])]
+        assert people.waiting(held) == [] and people.settled(held) == []
+        assert held[0].carried is True
+        assert people.CARRIED_FROM_THE_INSTANCE in held[0].why
+        # Still answered, so nothing offers it again: that is what a refusal is for.
+        assert people.says_no_to(held, "institution", [A_LAB, A_LAB_AGAIN]) is True
+
+
+def test_an_index_that_will_not_read_carries_nothing_at_all_and_says_so(tmp_path):
+    """How many archives print a name has to be known before the first byte is written.
+
+    An index this cannot read is an archive that could be the second home of every group in the
+    file, so a survey short of one archive makes a group two archives print look like a group one
+    does — which is the reading that settles somebody else's join for them. Nothing is written,
+    the old file stays, and the next start tries again.
+    """
+    from epicrisis import journal
+    from epicrisis.index.build import index_path
+
+    _an_archive_naming(tmp_path, "aaaa1111", A_LAB)
+    index_path(tmp_path, "bbbb2222").write_bytes(b"not a database at all")
+    _the_old_file(tmp_path, {"kind": "institution", "label": A_LAB, "names": [A_LAB, A_LAB_AGAIN]})
+
+    assert people.carry_the_old_file_in(tmp_path) == {}
+
+    assert people.load(tmp_path, "aaaa1111") == [], "nothing on the strength of a short survey"
+    assert (tmp_path / "people.json").exists()
+    assert people.still_beside_the_instance(tmp_path) == 1
+    said = [line["event"] for line in journal.entries(tmp_path)]
+    assert "an index would not read while the old people.json was being carried in" in said
+
+
+def test_joining_a_carried_group_makes_it_an_ordinary_join_with_no_mark_left(tmp_path):
+    """The one press this whole mend costs, and what it leaves behind: nothing.
+
+    The person answers the question in the archive they meant it about, and what is stored is
+    their own join — not a carried thing with a mark on it, because the mark says "nobody here
+    was asked" and somebody here has now been asked.
+    """
+    _an_archive_naming(tmp_path, "aaaa1111", A_LAB)
+    _an_archive_naming(tmp_path, "bbbb2222", A_LAB)
+    _the_old_file(tmp_path, {"kind": "institution", "label": A_LAB, "names": [A_LAB, A_LAB_AGAIN]})
+    people.carry_the_old_file_in(tmp_path)
+
+    people.join(tmp_path, "aaaa1111", "institution", [A_LAB, A_LAB_AGAIN], A_LAB)
+
+    held = people.load(tmp_path, "aaaa1111")
+    assert [one.label for one in people.settled(held, "institution")] == [A_LAB]
+    assert held[0].carried is False and held[0].why == ""
+    assert people.waiting(held) == []
+    # And the other archive is untouched by it: the question there is still a question.
+    assert [one.carried for one in people.waiting(people.load(tmp_path, "bbbb2222"))] == [True]
+
+
+def test_a_file_saying_a_carried_group_is_settled_is_read_as_the_question_it_is(tmp_path):
+    """Of the two readings, "a person here said these are one" is the one that must not be the
+    answer in a file that says in the next field that nobody here was asked. The same reason a
+    refusal wins over `settled`, and reachable the same way: a file edited by hand.
+    """
+    people.save(tmp_path, "aaaa1111", [])
+    people.path(tmp_path, "aaaa1111").write_text(json.dumps(
+        [{"kind": "institution", "label": A_LAB, "names": [A_LAB, A_LAB_AGAIN],
+          "settled": True, "carried": True}], ensure_ascii=False), encoding="utf-8")  # fmt: skip
+
+    held = people.load(tmp_path, "aaaa1111")
+
+    assert people.settled(held) == []
+    assert [one.names for one in people.waiting(held, "institution")] == [sorted([A_LAB, A_LAB_AGAIN])]
+
+
 def test_the_command_carries_the_old_file_in_and_says_what_is_still_waiting(tmp_path):
     """The docstring promised "by the page and by the command line" and no command called it.
 

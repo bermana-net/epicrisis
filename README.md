@@ -151,17 +151,25 @@ when the models change.
 
 | | |
 |---|---|
-| Documents read | **479** |
-| Values kept as printed | **5 355** |
+| Documents read | **600+** |
+| Values kept as printed | **6 000+** |
 | Years covered | **1989–2026** |
 | Languages | Russian, Ukrainian, English, Spanish, Greek |
-| Institutions as printed | over 200 |
-| Tests in the vocabulary | 492 approved groups of spellings |
-| Test suite | 1571 tests, no network, no model |
+| Institution names as printed | 150+ |
+| Tests in the vocabulary | 500+ approved groups of spellings |
+| Test suite | 1851 tests, no network, no model |
 
 These are real medical records of real people, and whose they are is nobody's business. Nothing
 from them appears in this repository: every screenshot here comes from `uv run epicrisis demo`, which
 invents its own people.
+
+Every row that counts something — documents, values, institution names, approved groups — is a
+**floor, not a count**, and that is the only honest shape for it: the archives are not in this
+repository, nothing in the test suite can read them, and each of those grows every time another
+document is read. An exact count published here is stale within the week and nothing can hold it —
+this table said 479 documents while both one-pagers said 500+, two published numbers about one
+thing. A floor only ever has to be raised. The last row counts this repository instead, so it is
+exact and a test holds it to `pytest` itself.
 
 ---
 
@@ -174,18 +182,23 @@ invents its own people.
   (`uv run epicrisis index`), the checks in seconds (`uv run epicrisis validate`), the walk of the folder in
   minutes (`uv run epicrisis inventory`). The readings themselves — what each page is and what was printed
   on it — can only be made again by paying a model to read the documents again, and it will read
-  them a little differently. And six things under `data/` are **your own work, which nothing can
+  them a little differently. And seven things under `data/` are **your own work, which nothing can
   rebuild**: your corrections (`corrections.jsonl`), your verdicts on findings
   (`judgements.jsonl`), the indicators you approved (`indicators.json`), the doctors and clinics you
   said were one (`people.json`), the earlier readings kept when a later one displaced them
-  (`replaced/`), and your conversations (`chats/`). Copy those somewhere:
+  (`replaced/`), your conversations (`chats/`), and the rules you wrote for your own laboratory's
+  forms (`rules/`). Copy those somewhere:
   `uv run epicrisis backup <folder>` puts exactly them, and nothing else, in one place.
   `people.json` lives **inside each archive's own folder**, because a file beside the instance is
   a file every archive can see. For one version it sat beside the instance; if yours still has a
   `data/people.json`, it is carried into the archives that print those names at every start of the
-  dashboard and by `uv run epicrisis people`, and both say what moved. A group that no archive
-  here names stays in that file rather than being thrown away, and the Archive status page says
-  how many are waiting. Do not delete it: nothing makes that work again.
+  dashboard and by `uv run epicrisis people`, and both say what moved. Where only one archive here
+  prints the names, the join arrives as the join you made. Where two or more do, nobody wrote down
+  which of them you were looking at when you pressed, so it arrives in each of them **as a
+  question** instead, under a heading of its own on the page of people, to be joined where it
+  belongs or refused. A group that no archive here names stays in that file rather than being
+  thrown away, and the Archive status page says how many are waiting. Do not delete it: nothing
+  makes that work again.
 - **Everything that goes wrong is written down, and none of what the archive holds.**
   `data/journal.jsonl` is the file to read when something behaved oddly an hour ago: one line per
   failure and per decision nothing else records, with the time, the type of the fault, the module
@@ -208,26 +221,72 @@ invents its own people.
   - an unguessable secret path — without it, the server answers as if nothing were there;
   - a private tunnel (Tailscale Funnel) that admits only the connector's own network;
   - and **a six-digit code from your authenticator** (RFC 6238): `unlock` returns a pass good for
-    four hours, every tool refuses without it, `lock_archive` ends it early. The secret behind that code is
+    four hours by default — the window is a setting on the same page — every tool refuses
+    without it, `lock_archive` ends it early. The secret behind that code is
     generated on your server, read once into your phone, and never travels through a conversation.
   - The access log keeps who called and which tool — never the question, never the answer. A log
     of a medical archive that holds the questions is a second copy of the archive.
+  - **Each link reaches the people you ticked, and one conversation holds one of them.** Rights
+    are given per link under **Settings → Links over the network**: one person, or two, or all of
+    them. Opening the lock names nobody — the pass comes back with the signatures the link
+    reaches and nothing else — and the assistant says which of them a question is about, by
+    signature and never by a name it matched. From the first question on, that conversation
+    answers about that one person; reaching another means locking the pass and taking a new code.
+    So the records of two people cannot meet in one conversation either, and the switch is a thing
+    a person did, written in the log.
 
 A secret path and a private tunnel say *where* a request came from and nothing at all about *who*
 sent it. The code from a phone is the only part a stranger cannot copy out of an address bar.
 
-Setting that up, in order — the first two on the server, as root:
+Setting that up, in order — the first on the server, as root:
 
 ```sh
-sudo $(which uv) run epicrisis mcp-secret    # the secret that stands in the served path
-sudo $(which uv) run epicrisis mcp-lock init # prints one line for your authenticator, once
-uv run epicrisis mcp --http --secret-file /etc/epicrisis/mcp-token --public-host <name.ts.net>
-tailscale funnel 8051                     # or `tailscale serve` to keep it inside your own network
+sudo $(which uv) run epicrisis connector add --name "for my cardiologist" --archive <id>
+uv run epicrisis mcp --http          # serves every link the registry holds
+tailscale funnel 8051                # or `tailscale serve` to keep it inside your own network
 ```
 
-`--public-host` is the name the tunnel answers on. Without it a request arriving through the
-tunnel carries a name this server does not know itself by, and is refused before it reaches
-anything.
+Both of those run until something stops them, and something will: a reboot, a kernel update, a
+power cut. `deploy/` holds a unit for each — put this machine's paths into them, and then
+
+```sh
+sudo cp deploy/*.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now epicrisis-dashboard epicrisis-mcp
+```
+
+The one that matters is the MCP server: the person who notices that it is down is whoever you gave
+a link to, somewhere else, with no way to tell "my access was taken away" from "their machine came
+back up without the server". The dashboard answers on this machine only and the unit keeps it
+there; the MCP unit reads the archive and writes two things and nothing else — the record of who
+called it, and the run of wrong codes behind each link, which is what makes a wait after guessing
+outlive a restart. Nothing else on the machine is in its reach.
+
+`connector add` prints the address and one line for an authenticator, **once**, and nothing will
+print the second of those again. The same thing is done under **Settings → Links over the
+network**, where each link also says which people it may reach and is taken back in one press.
+`connector list` shows every link issued — what it is called, what it may open, and which of them
+have stopped — without printing a secret of any of them; `connector rename` changes what one is
+called, and `connector revoke` stops a link working and takes its code off the machine for good.
+
+The name the tunnel answers on is a setting on the same page. Without it a request arriving
+through the tunnel carries a name this server does not know itself by and is refused before it
+reaches anything — and no page can write out an address to hand anybody. `--public-host` still
+overrides it for one run.
+
+A link can be given a **last day**, and is given none unless you say so: `connector add --until
+2027-03-31`, or the date field in the sheet where a link is made. That day is the last on which it
+answers, that day included; `connector until <id> <day>` moves it later or earlier and
+`connector until <id> forever` takes it off, and none of that touches the address or the
+authenticator — so extending a link somebody abroad is already using costs one date and no
+message. A link past its day answers exactly what a wrong address answers, nothing and no reason,
+because telling the two apart tells somebody the address was real; where it stands is said on your
+own page, and its code stays on this machine until the link is actually taken back.
+
+Every live link is served, so one issued while the server is running answers without a restart,
+and a revoked one stops answering the same way. A day falling due takes a link out the same way,
+with nothing restarted. An instance upgraded from before the registry
+carries its old secret in with `connector carry-in`: the address and the code already in use go
+on working until they are revoked.
 
 Then turn the lock on under **Settings → Over the network**, which also says what a code opens,
 for how long, and what to do if you lose the phone it is in. Behind `tailscale serve` rather than
@@ -313,8 +372,8 @@ Other commands:
 ```sh
 uv run epicrisis check-indicators     # a second model over the test vocabulary
 uv run epicrisis mcp                  # read-only tools for an assistant, over stdio
-uv run epicrisis mcp --http --secret-file /etc/epicrisis/mcp-token --public-host <tunnel host>
-uv run pytest -n 4             # 1571 tests, no network, no model
+uv run epicrisis mcp --http    # every link the registry holds; --public-host for one run
+uv run pytest -n 4             # 1851 tests, no network, no model
 ```
 
 > **Status:** working and in daily use by its author and their family; not yet used by anyone

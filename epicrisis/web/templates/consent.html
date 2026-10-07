@@ -11,7 +11,11 @@
     <p class="lead caps">What goes to a model, where it goes, and what is never sent. Nothing leaves this server before you say so here.</p>
     <dl>
       <dt class="caps">What is sent</dt>
-      <dd>The full image of a page, or all of its text, with everything printed on it, including names, dates of birth and results. {% if pages %}This run will send {{ pages|thousands }} pages from {{ files|thousands }} files, each in a request of its own, and some of them more than once &mdash; a page whose reading a check did not agree with is read again by a stronger model{% if archives|length > 1 %}, out of every archive on this server &mdash; {{ archives|join(", ") }}{% endif %}.{% else %}No pages are ready to send yet.{% endif %} Epicrisis removes the file name, folder names, paths and image metadata. It does not remove anything from the page itself.</dd>
+      {# The one number a person reads where they decide whether their pages leave the machine, so
+         it is what a run would send and not what the archives hold. It was every page of every
+         archive: an instance where everything had been read said "This run will send 138 pages
+         from 138 files" over a run that sends nothing at all. #}
+      <dd>The full image of a page, or all of its text, with everything printed on it, including names, dates of birth and results. {% if pages %}A run now would send <b>{{ pages|thousands }} pages</b> from {{ files|thousands }} files &mdash; what has not been read yet, out of {{ pages_held|thousands }} pages in all{% if archives|length > 1 %}, from every archive on this server &mdash; {{ archives|join(", ") }}{% endif %}. Each page goes in a request of its own, and at least twice over the whole reading: once to say what kind of document it is, once to be read. That number is a floor for a second reason &mdash; a page whose reading a check did not agree with is read again by a stronger model, and nothing here can know in advance which.{% if about_how_long %} On what this instance has already read itself, that is <b>{{ about_how_long }}</b> &mdash; an estimate off this machine's own history and not a promise, because a page nobody can read as text costs about eight times one that carries its own.{% endif %}{% elif pages_held %}Nothing is waiting: all {{ pages_held|thousands }} pages here have been read, so a run now would send nothing at all. A folder added later, or a document read again by hand, is sent when it is.{% else %}No pages are ready to send yet.{% endif %} Epicrisis removes the file name, folder names, paths and image metadata. It does not remove anything from the page itself.</dd>
 
       {# By the engine this instance is set to, because that is what decides the transport, the
          terms and the bill — and consent is recorded against it, so changing the engine asks
@@ -51,8 +55,16 @@
          one text file became two hundred and sixty-one pages cannot find out why anywhere in this
          program, and "how many pages will be sent" is the number on this very page. One paragraph
          per kind of file, written from what its reader actually does — epicrisis/readers/. #}
+      {# Folded on 7 Oct 2026, not cut. It answers the question a person on this page is actually
+         asking — "why does it say that many pages?" — and that question is now the thing they
+         open, rather than six paragraphs they scroll past to reach the button. Kept whole
+         because the number it explains is printed on this very page: that is the first of the
+         four things §7 does not let a page stop saying. #}
       <dt class="caps">What a page is, for each kind of file</dt>
       <dd>
+      <details class="fix-row">
+        <summary class="caps">Why that many pages &mdash; what counts as one in a PDF, a photograph, a Word file, a spreadsheet, a text file</summary>
+        <div class="lock-how-to">
         <b>A PDF</b> has the pages whoever made it printed. Each of them goes one of two ways: a page
         carrying enough text of its own goes as that text, and a page that is a photograph of paper
         goes as an image. One file holds both kinds, and a text layer that comes out as nonsense
@@ -74,6 +86,8 @@
         pages here, and a page of it is a document rather than a slice of one.<br>
         Anything else &mdash; a format this program does not read &mdash; is counted in the inventory,
         named on the status page, and never sent anywhere.
+        </div>
+      </details>
       </dd>
 
       <dt class="caps">Your control</dt>
@@ -95,7 +109,7 @@
     {# An archive added after the agreement. The person whose it is was not named on this page when
        somebody pressed the button, and often never sees this program: the licence takes for granted
        that one person holds the server for another. #}
-    <div class="notice caps"><span class="alert">The archive of {{ added_since | join(", ") }} was added after this was agreed to, so nothing of {% if added_since | length > 1 %}theirs{% else %}theirs{% endif %} has been sent and nothing will be. Read what is above again &mdash; it now names every archive on this server &mdash; and agree again to cover {% if added_since | length > 1 %}them{% else %}it{% endif %} too.</span></div>
+    <div class="notice caps"><span class="alert">The archive of {{ added_since | join(", ") }} was added after this was agreed to, so nothing of theirs has been sent and nothing will be. Read what is above again &mdash; it now names every archive on this server &mdash; and agree again to cover {% if added_since | length > 1 %}them{% else %}it{% endif %} too.</span></div>
     {% endif %}
     <form method="post" action="/consent">
       <label class="check">

@@ -28,7 +28,7 @@ from epicrisis.records import read_records, torn_under
 from epicrisis.printed_values import SIGNS, comparator_printed, fold, squeezed, number_matches, number_tokens
 from epicrisis import reference
 from epicrisis.rules import load as load_rules
-from epicrisis.rules.kinds import VALIDATE
+from epicrisis.rules.kinds import EXTRACT, VALIDATE
 from epicrisis.rules.subjects import ONE_DOCUMENT, THE_ARCHIVE, Archive, Document, Found
 from epicrisis.settings import rules_on, trusts_read_materials
 from epicrisis.sources import data_dir_of
@@ -50,6 +50,15 @@ FILE_NAME = layout.VALIDATION
 # a switch on them would be a switch that hides a hole in somebody's archive — which is how a
 # transcription that had gone missing from disk came to be drawn as a finished step (see the note
 # in web/app.py:_extract_step). They fire when something really is missing, and they stay on.
+#
+# **"They stay on" is now true of the checks underneath them as well, and was not for nine days.**
+# Two of these three are built here out of the extract step's own checks, which became rules with
+# switches of their own — so switching off `page_text_missing` and `table_page_without_values` for
+# one archive took the whole of "Parts of the document were not transcribed" off the findings page,
+# and nothing anywhere said the archive had a hole in it: not the status page, not `coverage`, not
+# the journal, not `validate`. Measured on 23 documents: 23 of 23 to check became 19. The five
+# checks those two findings are made of carry `stays_on` in `rules/kinds.py` now, which is read in
+# one place — `settings.rule_on` — and keeps their thresholds, which is the knob that was wanted.
 LEFTOVER = {
     "transcription_incomplete": ("document", "Parts of the document were not transcribed", 0,
         "Open the document beside the original. If pages or tables are missing, this file needs reading again."),
@@ -90,9 +99,13 @@ NUMBER = re.compile(r"[-+]?(?:\d+(?:[.,]\d+)?|[.,]\d+)")
 # still asked of the extract step itself, where it decides whether a document is read again by a
 # stronger model: a question about this program's own reading, and not a finding to show anybody.
 #
-# `institution_looks_like_a_name` was **not** in this set until the index began writing down what
-# it does with such a name, and why it was not is worth keeping: covering a code whose rule is
-# blind deletes the finding instead of moving it. Measured then — it fired on 15, 4 and 255
+# `provider_reads_like_a_person` — the extract step's own check, which was called
+# `institution_looks_like_a_name` until it became a rule and had to stop sharing an id with the
+# rule of that name at the suspects step. The two ask the same question of different things: this
+# one reads a transcription as it comes back, that one reads what the index recorded. It was
+# **not** in this set until the index began writing down what it does with such a name, and why it
+# was not is worth keeping: covering a code whose rule is blind deletes the finding instead of
+# moving it. Measured then — it fired on 15, 4 and 255
 # transcriptions, which is 274 of the 285 `checks_still_failing` findings the three archives hold,
 # while the rule of that name found nothing at all on any of them, because
 # `index/build.institution_and_doctor` had already moved every such name out of the provider
@@ -109,7 +122,7 @@ NUMBER = re.compile(r"[-+]?(?:\d+(?:[.,]\d+)?|[.,]\d+)")
 # `no_column_headings_in_multi_value_rows`, and a name in this set that nothing can say is a line
 # the next reader has to go and check.
 COVERED_CHECK_PROBLEMS = {"unreadable_on_images", "no_column_headings_in_multi_value_rows",
-                          "comparator_not_printed", "institution_looks_like_a_name"}  # fmt: skip
+                          "comparator_not_printed", "provider_reads_like_a_person"}  # fmt: skip
 # Checks that mean a transcription is incomplete: listed on their own, ahead of the rest.
 INCOMPLETE_CHECK_PROBLEMS = {"page_text_missing", "page_text_short", "page_numbers_missing", "table_page_without_values"}
 # Checks from the extract pass that stand on their own here, with their own line and their own
@@ -370,9 +383,26 @@ def validate_source(output: Path, archive_root: Path | None = None) -> dict:
 
 
 def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
-    # Which of the checks this instance runs is its own answer, kept per rule; the way from an
+    # Which of the checks run here is answered per rule and per archive; the way from an
     # archive's folder back to the instance it belongs to is written once, in sources.py.
-    checked_by = rules_on(data_dir_of(output), load_rules(data_dir_of(output)), VALIDATE)
+    #
+    # Which archive this is, is the name of the folder, which `sources.source_output_dir` is the
+    # one place that builds — so it is read back here as that folder's name and nowhere else. One
+    # check is useful on two archives and noise on a third: this archive's own answer is asked,
+    # and where it has none, the instance's.
+    data_dir = data_dir_of(output)
+    # One reading of the registry for both steps asked about below. `Rules.at(step)` exists so
+    # that one load serves them all, and this loaded the files twice three lines apart — forty-two
+    # files read twice, and two readings that could in principle see two different sets if the
+    # settings page wrote a rule file between them.
+    loaded = load_rules(data_dir)
+    checked_by = rules_on(data_dir, loaded, VALIDATE, in_archive=Path(output).name)
+    # The extract step's own checks, as this archive has them switched. They are re-run here to
+    # report on them and never acted on: what they decide — whether a document goes back to a
+    # stronger model — was decided when it was read. Asked of the same registry and the same
+    # switches as the step itself, because a check turned off for an archive must not go on
+    # producing findings about it from this side.
+    extract_checks = rules_on(data_dir, loaded, EXTRACT, in_archive=Path(output).name)
     records = {record["sha256"]: record for record in read_records(output / layout.INVENTORY) if "sha256" in record}
     pages = latest_pages(output / layout.CLASSIFY)
     corrections = load_corrections(output)
@@ -429,9 +459,18 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
                            goes_to_extract=goes_to_extract(group[0]), date_flags=tuple(date["flags"]),
                            page_dates=tuple(page.get("date_on_page") for page in group))  # fmt: skip
         findings = findings_for(subject, checked_by)
+        # The extract step's own checks, by code, before they are folded into the three summaries
+        # below. Codes and counts, nothing of anybody's — the same thing the journal is allowed to
+        # hold. They are kept because the folding is lossy and was unmeasurable: eleven checks
+        # arrive here and three numbers leave, so a check that changed its mind about a document
+        # moved a summary by one and no ruler could say which check it was. The snapshot that
+        # guards the move of these checks into the registry reads this field and adds them up
+        # again against the summaries.
+        problems: dict[str, int] = {}
         if item:
             # Checks run again with today's rules: the page text for text pages, the transcription otherwise.
-            problems = transcription_problems(item, _sent_texts(records[sha256], numbers, archive_root), tabular)
+            problems = transcription_problems(item, _sent_texts(records[sha256], numbers, archive_root),
+                                               tabular, checked_by=extract_checks)  # fmt: skip
             incomplete = {code: count for code, count in problems.items() if code in INCOMPLETE_CHECK_PROBLEMS}
             if incomplete:
                 findings["transcription_incomplete"] += sum(incomplete.values())
@@ -447,7 +486,8 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
         # left — and a list of work that does not shrink as the work is done is not a list of work,
         # which is written twenty lines above this and was true of every check but that one.
         documents.append({"file_sha256": sha256, "pages": list(numbers), "date": date["value"],
-                          "item": as_left, "findings": findings, "carries_on_from": carries_on_from})  # fmt: skip
+                          "item": as_left, "findings": findings, "checks": dict(problems),
+                          "carries_on_from": carries_on_from})  # fmt: skip
 
     # The rules of this step that look at the archive as a whole, rather than at one document:
     # they run once, after every document has been read, and hang their findings on the documents
@@ -475,6 +515,14 @@ def _validate_source(output: Path, archive_root: Path | None = None) -> dict:
             if doc["findings"]
         ],
         "totals": dict(sum((doc["findings"] for doc in documents), Counter())),
+        # The extract step's own checks, by code, for **every** document and not only for the ones
+        # that ended with a finding: four of these codes are covered by rules elsewhere and make no
+        # finding at all, so the list above cannot see them. Codes and counts, nothing of anybody's.
+        # The list of documents above keeps its own shape — the dashboard counts its length and
+        # means "documents with something to look at" by it — so this stands beside it rather than
+        # widening it.
+        "checks": {f"{doc['file_sha256']}:{'.'.join(str(page) for page in doc['pages'])}": doc["checks"]
+                   for doc in documents if doc["checks"]},  # fmt: skip
         "coverage": coverage(output),
         "documents_checked": len(documents),
     }

@@ -17,6 +17,24 @@ import unicodedata
 from collections.abc import Iterable
 from functools import cache
 
+# One word holding two alphabets is a letter read from the wrong one. The ranges rather than a
+# list of letters, because these are whole alphabets and a form can print any of them.
+CYRILLIC = re.compile(r"[\u0400-\u04FF]")
+LATIN = re.compile(r"[A-Za-z]")
+
+
+def mixed_script_words(text: str | None) -> list[str]:
+    """Words holding both alphabets at once, as in "Кліnіка": a letter read from the wrong one.
+
+    A name may hold words of each alphabet ("Клініка VITAMED"); one word holding both is a slip.
+
+    Here rather than in the step that first needed it: this is a decision about letters, which is
+    what this module owns, and it is asked by a check of the extract step — one module reaching
+    up into another for a text predicate, which is the shape `ARCHITECTURE.md` names.
+    """
+    return [word for word in re.findall(r"[^\W\d_]+", text or "") if CYRILLIC.search(word) and LATIN.search(word)]
+
+
 SIGNS = ("<", ">", "≤", "≥")
 # The words a form prints instead of a sign, in the five languages of this archive, and which way
 # each one points. One list for the whole program: there were two, in two files, and they had

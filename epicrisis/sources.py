@@ -13,9 +13,10 @@ import json
 import os
 import secrets
 import threading
-from epicrisis import layout
+from epicrisis import keepers, layout
 from epicrisis.invocation import run
-from epicrisis.runs import copy_whole, write_whole
+from epicrisis.keepers import Keeper
+from epicrisis.runs import Busy, copy_whole, write_whole
 from epicrisis.state import Unreadable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -86,7 +87,7 @@ def _the_open_one(sources: list[Source]) -> Source | None:
 
 @dataclass(frozen=True)
 class TheArchives:
-    """One reading of the list: every archive on it, and which of them is open.
+    """One reading of the list: every archive on it, which of them is open, and who keeps them.
 
     Reading the file answers both questions at once, and this is what that one answer is carried
     in. `list()` and `active()` each read the file afresh, which is right for a command that asks
@@ -99,10 +100,22 @@ class TheArchives:
 
     So it is a value and not a question. Whoever is handed it cannot ask again, and whoever needs
     it has to be given it.
+
+    **The keepers are carried here for exactly that reason.** They are in a second file, and
+    there is no atomic read across two files: a page that read the list of archives and then the
+    keepers would be two readings inside one answer again, which is the whole of what this class
+    exists to prevent, and the second file is the one that says whose the archives are. So one
+    reading takes both, and whoever draws a page about who keeps what is handed the pair. The link
+    itself is decided in `keepers.py`; this only carries what was read and asks that module the
+    questions (`kept_by`, `kept_by_nobody`).
     """
 
     all: tuple[Source, ...]
     showing: Source | None
+    #: Who this instance is for, out of the same one reading. `None` means the file is there and
+    #: will not read: no door opens an archive by a signature, so that file may not take down a
+    #: page about archives, and the one page that shows the keepers says it in words instead.
+    keepers: tuple[Keeper, ...] | None = ()
 
     @property
     def showing_id(self) -> str | None:
@@ -124,11 +137,37 @@ class TheArchives:
         separate question, and the pages that must ask it ask it of `showing` as well."""
         return next((source for source in self.all if source.id == source_id), None)
 
+    def kept_by(self, keeper) -> tuple[Source, ...]:
+        """The archives on this list that this keeper keeps. Asked of `keepers.py`, which decides it."""
+        return keepers.the_archives_they_keep(keeper, self.all)
+
+    @property
+    def kept_by_nobody(self) -> tuple[Source, ...]:
+        """The archives on this list that no keeper on it keeps, which is said rather than hidden."""
+        return keepers.kept_by_nobody(self.keepers or (), self.all)
+
 
 #: No archive on the list, for a caller whose reading of it did not come off. A page is still
 #: drawn over a torn list of archives — it is the page that says the list is torn — and it is
 #: drawn about nobody.
 NO_ARCHIVES = TheArchives(all=(), showing=None)
+
+
+def the_server_folder_it_is_in(path: Path) -> str:
+    """Which of the server's own folders this path is inside, or "" where it is a person's to use.
+
+    The same question as `belongs_to_the_server`, answered with the folder rather than with yes.
+    A refusal has to name what will not do, and the part of a path that will not do is usually not
+    the path itself: somebody who typed /var/tmp/demo and was told "this is a system folder" has
+    been told that about the folder they chose, when what is wrong is the /var it begins with.
+    """
+    path = Path(path)
+    if str(path) == "/":
+        return "/"
+    # Sorted, so that the same path is always refused by the name of the same folder. Nothing in
+    # either list is inside another, so at most one of them matches.
+    return next((folder for folder in sorted(SYSTEM_FOLDERS | set(RUNTIME_FOLDERS))
+                 if path.is_relative_to(folder)), "")  # fmt: skip
 
 
 def belongs_to_the_server(path: Path) -> bool:
@@ -140,8 +179,7 @@ def belongs_to_the_server(path: Path) -> bool:
     disagree with the two that do, and a person meeting two rules that disagree cannot tell which
     one is the program.
     """
-    path = Path(path)
-    return str(path) == "/" or any(path.is_relative_to(folder) for folder in SYSTEM_FOLDERS | set(RUNTIME_FOLDERS))
+    return bool(the_server_folder_it_is_in(path))
 
 
 def folder_is_there(path: Path | str) -> bool:
@@ -254,6 +292,7 @@ class SourceRegistry:
                 owner=owner.strip(),
             )
             self._save([*sources, source])
+        self._a_signature_for_a_name_just_written_down(sources, [*sources, source])
         return source
 
     def active(self) -> Source | None:
@@ -261,12 +300,26 @@ class SourceRegistry:
         return _the_open_one(self.list())
 
     def as_one_reading(self) -> TheArchives:
-        """Every archive and which of them is open, out of a single reading of the file.
+        """Every archive, which of them is open, and who keeps them, out of one reading.
 
         For a caller that needs both, or that needs either more than once: see `TheArchives`.
         """
         sources = self.list()
-        return TheArchives(all=tuple(sources), showing=_the_open_one(sources))
+        return TheArchives(all=tuple(sources), showing=_the_open_one(sources), keepers=self._the_keepers())
+
+    def _the_keepers(self) -> tuple[Keeper, ...] | None:
+        """Who this instance is for, or None where that file is there and will not read.
+
+        Refused inside `keepers.py` and caught here, which is the same division the two acts that
+        write a name down make and for the same reason: no door takes a signature and no filter
+        asks one, so a file nothing opens an archive by may not be the reason the list of archives
+        cannot be drawn. None rather than an empty tuple, because "there are no keepers" and "the
+        file will not read" are two different things and the one page that shows them says which.
+        """
+        try:
+            return tuple(keepers.load(self.data_dir))
+        except (Unreadable, OSError):
+            return None
 
     def set_active(self, source_id: str) -> Source | None:
         """Choose whose archive the interface shows. Exactly one is active at a time."""
@@ -279,11 +332,39 @@ class SourceRegistry:
 
     def set_owner(self, source_id: str, owner: str) -> None:
         with self._lock:
+            before = self.list()
             sources = [
                 Source(**{**asdict(source), "owner": owner.strip()}) if source.id == source_id else source
-                for source in self.list()
+                for source in before
             ]
             self._save(sources)
+        self._a_signature_for_a_name_just_written_down(before, sources)
+
+    def _a_signature_for_a_name_just_written_down(self, before: list[Source], after: list[Source]) -> None:
+        """Tell keepers.py that the list has changed; what that means for a keeper is decided there.
+
+        Called by the two acts that write a name down — a folder added with an owner beside it, and
+        a name typed on an archive — and by nothing else. Moving an archive's folder, switching
+        which one is open and taking one off the list change no name.
+
+        It is called outside the registry's own lock, so that a thread holding this lock never
+        waits on the keepers' one, and it refuses nothing. A keepers file that will not read is
+        refused inside keepers.py rather than written over, which is the eighth entry; but it must
+        not be refused *here*. Adding a folder, or naming it, is a person's own act over the one
+        file that ties their folders to everything ever read from them, and no door in this program
+        takes a signature and no filter asks one — so a file that opens nothing may not be the
+        reason an archive does not go on the list. One page shows what is in that file, and a page
+        saying it will not read is that page working. The trouble is written in the journal, which
+        is where what went wrong is kept, and the next name written down catches a mended file up
+        by itself.
+        """
+        from epicrisis import journal  # here, so the registry stays import-light
+
+        try:
+            keepers.catch_up(self.data_dir, before, after)
+        except (Unreadable, Busy, OSError) as trouble:
+            journal.went_wrong(self.data_dir, "a keeper could not be given a signature", trouble,
+                               file=layout.KEEPERS)  # fmt: skip
 
     def set_path(self, source_id: str, raw_path: str, typed: bool = False) -> Source | None:
         """Point an archive already on the list at the folder it has moved to.

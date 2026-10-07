@@ -716,6 +716,47 @@ def test_one_printed_fact_makes_one_finding_and_not_two(setup):
     assert finding == {"comparator_missing": 1}, "one printed fact, one finding"
 
 
+def test_the_checks_are_reported_by_code_even_where_they_make_no_finding(setup):
+    """Eleven checks arrive at `validate` and three summaries leave it, and until now that was all
+    anybody could measure.
+
+    Four of the codes make no finding at all — a rule elsewhere already covers what they are
+    about — so the list of findings cannot see them, and they are exactly the ones a move of these
+    checks into the rule registry would drop in silence. `validate` now reports what each
+    document's checks said, by code, beside the findings rather than inside them: the list of
+    documents keeps its shape, because the dashboard counts its length and means "documents with
+    something to look at" by it.
+
+    Codes and counts and nothing else, which is what makes it safe to write into a file and to
+    diff: the same thing the journal is allowed to hold.
+    """
+    from epicrisis.validate import COVERED_CHECK_PROBLEMS, validate_source
+
+    data_dir, source, output, records = setup
+    extract_source(data_dir, source, FakeExtractBackend())
+    labs = records["labs.pdf"]["sha256"]
+    stored = load_extracted(output / "extracted", labs)
+    document = stored["documents"][0]
+    # One row printing two values under no column heading: a check that fires, and whose finding
+    # the rule `no_column_headings` is responsible for — so the findings below say nothing of it.
+    one = document["observations"][0]
+    row = dict(one["provenance"], snippet="Analyte 6,8 7,2 g/L")
+    document["observations"] = [dict(one, value_as_printed="6,8", value_numeric=6.8, column_as_printed=None, provenance=row),
+                                dict(one, value_as_printed="7,2", value_numeric=7.2, column_as_printed=None, provenance=row)]  # fmt: skip
+    write_document(output / "extracted", labs, document)
+
+    result = validate_source(output)
+
+    pages = ".".join(str(page) for page in document["pages"])
+    said = result["checks"][f"{labs}:{pages}"]
+    assert said.get("no_column_headings_in_multi_value_rows") == 1, said
+    assert "no_column_headings_in_multi_value_rows" in COVERED_CHECK_PROBLEMS, "the premise of this test moved"
+    found = next((item for item in result["documents"] if item["file_sha256"] == labs), {"findings": {}})
+    assert "no_column_headings_in_multi_value_rows" not in found["findings"], "it was a finding after all"
+    # And nothing of anybody's rode along with the codes.
+    assert all(isinstance(count, int) for count in said.values()), said
+
+
 def test_every_code_the_checks_can_land_under_is_a_code_they_can_say(setup):
     """A name in one of the three sets that nothing produces is a line nobody can check.
 
@@ -724,17 +765,17 @@ def test_every_code_the_checks_can_land_under_is_a_code_they_can_say(setup):
     out that one of its four names meant nothing. Read off the extract checks themselves, so the
     answer cannot go stale while the code moves under it.
     """
-    import ast
-    import inspect
-
-    from epicrisis.extract.run import transcription_problems
+    from epicrisis import rules
+    from epicrisis.rules.kinds import EXTRACT
     from epicrisis.validate import COVERED_CHECK_PROBLEMS, INCOMPLETE_CHECK_PROBLEMS, OWN_FINDING_PROBLEMS
 
-    tree = ast.parse(inspect.getsource(transcription_problems))
-    said = {node.args[0].value for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "add"
-            and node.args and isinstance(node.args[0], ast.Constant)}  # fmt: skip
-    assert len(said) > 8, "the codes are not being read off the checks any more"
+    # Read off the registry alone. Half of this used to walk the body of `transcription_problems`
+    # for the codes it named itself, which was right while the checks were conditions in that
+    # body — and the move finished: there are none there, the walk returns an empty set every
+    # time, and that half of the test could not fail. The comment beside it still said the move
+    # was half done.
+    said = {rule.id for rule in rules.load().at(EXTRACT)}
+    assert len(said) > 8, "the codes are not being read off the rules of this step"
 
     accounted = COVERED_CHECK_PROBLEMS | INCOMPLETE_CHECK_PROBLEMS | OWN_FINDING_PROBLEMS
     assert accounted <= said, f"named in a set and said by nothing: {sorted(accounted - said)}"
@@ -774,6 +815,14 @@ def test_index_holds_documents_values_dates_and_folded_search(setup):
 
 
 def test_a_transcription_that_stops_early_fails_the_check():
+    """Page 2 came back short, page 3 did not come back at all, page 1 is whole.
+
+    Each rung of the completeness ladder asks its own question of every page now, so a page is
+    named by every rung it fails rather than by the first: page 3 is empty, and it is also much
+    shorter than what was sent and also missing the numbers that were sent. That is three true
+    things about one page, and it costs nothing — a document goes back to a stronger model if
+    anything at all was found, not once per finding. What it bought is in the test below.
+    """
     from epicrisis.extract.run import transcription_problems
 
     sent = {page: " ".join(f"word{n} 1{n},5" for n in range(60)) for page in (1, 2, 3)}
@@ -783,8 +832,50 @@ def test_a_transcription_that_stops_early_fails_the_check():
                                   "comparator": None, "provenance": {"page": 1}, "column_as_printed": "Resultado"}]}  # fmt: skip
 
     assert transcription_problems(document, sent, tabular_pages=(1, 3)) == {
-        "page_text_short": 1, "page_text_missing": 1, "table_page_without_values": 1,
+        "page_text_missing": 1, "page_text_short": 2, "page_numbers_missing": 2,
+        "table_page_without_values": 1,
     }  # fmt: skip
+
+
+def test_no_page_can_fall_between_two_rungs_of_the_completeness_ladder(tmp_path):
+    """The defect the ladder shipped with, and it was silent in the one direction that matters.
+
+    The three completeness checks were written as a ladder — each asking only of pages the one
+    before it let through — so each carried a copy of the thresholds of the ones before it: one
+    `least_characters` in three kinds and three rule files. Those copies are separate answers,
+    stored per archive and typed one at a time. Raise the first to 40 and leave the second at 20,
+    and a page of thirty characters is **not empty** to the first and **already reported** to the
+    second: reported by nothing at all, with no number anywhere saying so.
+
+    So the thresholds live in one rule each now, and this walks the gap that used to be there.
+    """
+    from epicrisis import rules, settings
+    from epicrisis.extract.run import transcription_problems
+    from epicrisis.rules.kinds import EXTRACT
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    loaded = rules.load(data_dir)
+    # A page of thirty characters, where sixty words went out: short by any share, and on the
+    # wrong side of a `least_characters` of 40.
+    sent = {1: " ".join(f"word{n} 1{n},5" for n in range(60))}
+    document = {"doc_type": "letter", "pages": [1], "unreadable": [], "observations": [],
+                "page_texts": [{"page": 1, "text": "word1 11,5 word2 12,5 wo"}]}  # fmt: skip
+
+    settings.set_rule_settings(data_dir, loaded.get("page_text_missing"), {"least_characters": "40"})
+    found = transcription_problems(document, sent, (),
+                                   checked_by=settings.rules_on(data_dir, loaded, EXTRACT))  # fmt: skip
+
+    # Named by the check whose threshold was raised, and by the one it used to hide it from.
+    assert found.get("page_text_missing") == 1
+    assert found.get("page_text_short") == 1, "the page fell between two rungs"
+    # And no rule of this step carries a threshold that belongs to another rule of it: the three
+    # held one number in six places, and the partition only held while all six were equal.
+    ladder = [loaded.get(one) for one in ("page_text_missing", "page_text_short", "page_numbers_missing")]
+    assert [sorted(rule.settings) for rule in ladder] == [
+        ["least_characters"], ["least_share", "words_before_asking"],
+        ["least_number_share", "numbers_before_asking"],
+    ]  # fmt: skip
 
 
 def test_copies_include_short_documents_and_excerpts_and_derived_values_are_marked(setup):
@@ -1029,7 +1120,8 @@ def test_one_file_can_be_read_again_on_demand_with_close_ups(setup):
 
 def test_an_institution_read_as_the_signing_doctor_fails_the_check(setup):
     """The name under the stamp is not the laboratory: the check sends the page to the strong model."""
-    from epicrisis.extract.run import mixed_script_words, transcription_problems
+    from epicrisis.extract.run import transcription_problems
+    from epicrisis.printed_values import mixed_script_words
 
     document = {
         "doc_type": "lab_panel", "pages": [1], "provider_as_printed": "Соловьёв А.И.", "title_as_printed": "Кліnіка VITAMED",
@@ -1037,7 +1129,11 @@ def test_an_institution_read_as_the_signing_doctor_fails_the_check(setup):
     }  # fmt: skip
     problems = transcription_problems(document, {})
 
-    assert problems["institution_looks_like_a_name"] == 1 and problems["word_in_two_alphabets"] == 1
+    # The code of the first one changed with the move into the registry: a rule of the suspects
+    # step already answers to `institution_looks_like_a_name`, and two rules cannot share an id.
+    # The two ask the same question of different things — that one reads the index, this one reads
+    # a transcription the moment it comes back — and the rule file says so under `was_called`.
+    assert problems["provider_reads_like_a_person"] == 1 and problems["word_in_two_alphabets"] == 1
     assert mixed_script_words("Кліnіка VITAMED") == ["Кліnіка"] and mixed_script_words("Клініка VITAMED") == []
 
     named = dict(document, provider_as_printed="«ПОЛІДІАГНОСТИКА»", title_as_printed="Клініка VITAMED")
@@ -1217,8 +1313,6 @@ def test_the_rules_of_the_whole_archive_are_given_what_a_person_corrected(setup)
     a group of copies answers nowhere at all, which means a page somebody had corrected by hand
     could be hidden from every list and every answer on the strength of the text they corrected.
     """
-    from datetime import date
-
     from epicrisis.corrections import set_document_date, set_value, value_key
     from epicrisis.validate import validate_source
 
@@ -1307,3 +1401,138 @@ def test_the_doctor_has_a_field_of_their_own(setup):
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
     card = client.get(f"/documents/{source.id}/{records['labs.pdf']['sha256']}/1")
     assert "Doctor as printed" in card.text and "Нетудихата І.В" in card.text
+
+
+def test_a_check_of_this_step_can_be_turned_off_and_stops_sending_documents_back(tmp_path):
+    """The reason these became rules at all, in one test.
+
+    The checks of the extract step are the only ones in this program that cost money when they
+    fire: each one, firing, sends the document back to a stronger model. The owner paying per
+    document could not turn one off, could not raise a threshold that was wrong for their
+    laboratory's forms, and could not see which check had been doing it — the thresholds were
+    constants in a module and the conditions were an if-chain in one function.
+
+    Now the answer comes from the same registry and the same switches as every other check, and a
+    check turned off for an archive is a check that does not escalate anything.
+    """
+    from epicrisis import rules, settings
+    from epicrisis.extract.run import transcription_problems
+    from epicrisis.rules.kinds import EXTRACT
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    # A document whose provider field holds what reads as a person's name — one of the checks of
+    # this step that has a switch. The four that report a page with nothing on it do not: see
+    # `test_a_check_that_reports_a_hole_in_the_archive_has_no_switch` below.
+    document = {"pages": [1], "doc_type": "lab_panel", "observations": [], "page_texts": [
+        {"page": 1, "text": "Hemoglobin 140 g/L, printed in a table this reading did not store."}],
+        "unreadable": [], "provider_as_printed": "Petrov P. P.", "title_as_printed": "Blood count"}  # fmt: skip
+
+    loaded = rules.load(data_dir)
+    on = settings.rules_on(data_dir, loaded, EXTRACT)
+    assert transcription_problems(document, {}, (1,), checked_by=on).get("provider_reads_like_a_person") == 1
+
+    settings.set_rule_on(data_dir, "provider_reads_like_a_person", False)
+    off = settings.rules_on(data_dir, loaded, EXTRACT)
+
+    found = transcription_problems(document, {}, (1,), checked_by=off)
+    assert "provider_reads_like_a_person" not in found, "the switch did not reach the step"
+    assert [rule.id for rule in off] != [rule.id for rule in on]
+
+
+def test_a_check_that_reports_a_hole_in_the_archive_has_no_switch(tmp_path):
+    """The other half of the same sentence, and it was not true for nine days.
+
+    `validate.LEFTOVER` has said since before any of this was a rule that a finding of a hole in
+    somebody's archive stays on, "because a switch on them would be a switch that hides a hole in
+    somebody's archive". Then the checks those findings are built from became rules with switches
+    of their own: switching two of them off for one archive took the whole of "Parts of the
+    document were not transcribed" off the findings page, and nothing anywhere said the archive
+    had a hole in it — not the status page, not the coverage, not the journal, not `validate`. The
+    ledger said done.
+
+    The thresholds stay, because that is the knob this was all for: how empty a page has to be
+    before it counts as not read, for one laboratory's forms.
+    """
+    import pytest
+
+    from epicrisis import rules, settings
+    from epicrisis.rules.kinds import EXTRACT
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    loaded = rules.load(data_dir)
+    stays_on = [rule for rule in loaded.at(EXTRACT) if rule.stays_on]
+
+    assert {rule.id for rule in stays_on} == {"page_text_missing", "page_text_short",
+                                              "page_numbers_missing", "table_page_without_values",
+                                              "value_not_on_the_page"}  # fmt: skip
+    assert all(rule.settings for rule in stays_on), "and every one of them keeps its thresholds"
+
+    for rule in stays_on:
+        with pytest.raises(ValueError, match="no switch"):
+            settings.set_rule_on(data_dir, rule.id, False)
+        assert settings.rule_on(data_dir, rule) is True
+
+    # And an answer already stored for one of them — by a hand, or by the version of this program
+    # that offered the switch — does not put it out. One place reads this, so there is one answer.
+    settings._write_settings(data_dir, {"rules": {"page_text_missing": {"on": False}}})
+    assert settings.rule_on(data_dir, loaded.get("page_text_missing")) is True
+    assert "page_text_missing" in {rule.id for rule in settings.rules_on(data_dir, loaded, EXTRACT)}
+
+
+def test_a_threshold_of_this_step_is_the_rule_file_and_not_a_constant(tmp_path):
+    """And the other half of it: a threshold somebody's forms are wrong for can be changed.
+
+    `MIN_PAGE_TEXT_CHARS`, `MIN_TEXT_SHARE` and `MIN_NUMBER_SHARE` were module constants, which is
+    a threshold nobody whose archive it is wrong for can reach. A page of twenty-three
+    characters counts as transcribed as shipped; an archive of forms that print one line per page
+    can say that is not enough.
+    """
+    from epicrisis import rules, settings
+    from epicrisis.extract.run import transcription_problems
+    from epicrisis.rules.kinds import EXTRACT
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    PAGE = "Hemoglobin 140 g/L (ok)"
+    document = {"pages": [1], "doc_type": "lab_panel", "observations": [], "page_texts": [
+        {"page": 1, "text": PAGE}], "unreadable": [],
+        "provider_as_printed": "City Laboratory", "title_as_printed": "Blood count"}  # fmt: skip
+
+    assert 20 <= len(PAGE) < 40, "the premise of this test is the length of that line"
+    loaded = rules.load(data_dir)
+    as_shipped = settings.rules_on(data_dir, loaded, EXTRACT)
+    assert transcription_problems(document, {}, (), checked_by=as_shipped) == {}
+
+    settings.set_rule_settings(data_dir, loaded.get("page_text_missing"), {"least_characters": 40})
+    stricter = settings.rules_on(data_dir, loaded, EXTRACT)
+
+    assert transcription_problems(document, {}, (), checked_by=stricter) == {"page_text_missing": 1}
+
+
+def test_the_head_of_a_document_is_named_once_and_both_checks_read_it():
+    """A constant with a docstring about a guarantee and no readers is the shape of a defence.
+
+    `THE_HEAD_OF_A_DOCUMENT` said it was named in one place "because both checks below read the
+    same two, and a third field added to a transcription's head should reach them together or not
+    at all" — and nothing read it: one check wrote the pair out as two literals, the other took it
+    from a setting whose default was the same pair a third time, in another module. Three
+    statements of one fact, none of them pointing at the others. This project has found a
+    documented defence with no caller three times now.
+    """
+    from types import SimpleNamespace
+
+    from epicrisis.extract import checks
+    from epicrisis.rules import kinds
+
+    assert kinds.KINDS["a-word-in-two-alphabets"].settings["of_fields"] == list(checks.THE_HEAD_OF_A_DOCUMENT)
+
+    # And the provider check reads it rather than naming the fields itself: a head with a third
+    # printed field in it reaches both checks or neither.
+    provider, title = checks.THE_HEAD_OF_A_DOCUMENT
+    document = SimpleNamespace(item={provider: "Петренко П. П.", title: "Загальний аналіз крові"})
+    assert checks.the_provider_reads_like_a_person(document, {}) == [provider]
+    # The same name in the title and a letterhead in the provider field is not this check's find.
+    swapped = SimpleNamespace(item={provider: "Клініка ВІТА", title: "Петренко П. П."})
+    assert checks.the_provider_reads_like_a_person(swapped, {}) == []

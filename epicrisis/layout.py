@@ -29,6 +29,8 @@ CORRECTIONS = "corrections.jsonl"  # what a person changed by hand, kept apart f
 ARCHIVES = "sources"
 # The data directory itself
 SOURCES = "sources.json"  # the archives this instance holds
+KEEPERS = "keepers.json"  # who this instance is for: the signature each keeper is known by
+CONNECTORS = "connectors.json"  # the MCP links issued, and which archives each may open
 INDICATORS = "indicators.json"  # which printed spellings are one test
 PEOPLE = "people.json"  # which printed spellings are one doctor, or one institution
 SETTINGS = "settings.json"  # what this instance allows
@@ -59,7 +61,18 @@ THEIR_OWN_WORK = (
 # Their answers rather than their work: minutes to give again by hand, and gone without a word if
 # nobody carries them. sources.json is here because it is the only thing that says which random id
 # belongs to which folder, and without it nothing else in a copy can be put back.
-THEIR_CHOICES = (SOURCES, SETTINGS)
+#
+# keepers.json is here for the same reason and not for the one above it: nobody typed a signature,
+# so the line a backup prints about the kinds of a person's own work this instance holds none of
+# has nothing to say about it — and like sources.json it is the only place that says which random
+# id means whom. While nothing reads a signature it costs nothing to lose; the step that makes one
+# load-bearing is the step to ask this question again.
+THEIR_CHOICES = (SOURCES, KEEPERS, SETTINGS, CONNECTORS)
+# CONNECTORS is here and not in THEIR_OWN_WORK because what it holds is answers a person gave —
+# which links exist and what each may open — and a copy carrying them is right: restored without
+# it, every link somebody handed out would be gone with nothing to say so. What is *not* in it is
+# the one dangerous half: each connector's code secret is a file of its own outside the data
+# directory, for exactly this reason. See connectors.py.
 # Made again by code alone, in seconds or minutes, from what is already on this machine.
 #
 # The journal is here because the question these lists answer is "does a copy carry it?", and for
@@ -84,7 +97,7 @@ IN_AN_ARCHIVE = (
     INVENTORY, INVENTORY_STATUS, CLASSIFY, EXTRACTED, RECHECKED, REPLACED, LEDGER, DATE_SEARCH,
     JUDGEMENTS, VALIDATION, CORRECTIONS, PEOPLE, MATERIALS, BOUNDARIES,
 )
-IN_THE_INSTANCE = (SOURCES, INDICATORS, SETTINGS, CONSENT, CHATS, JOURNAL, RULES)
+IN_THE_INSTANCE = (SOURCES, KEEPERS, CONNECTORS, INDICATORS, SETTINGS, CONSENT, CHATS, JOURNAL, RULES)
 
 # Everything one reading of an archive left in that archive's own folder, and so everything that
 # "read it again from nothing" puts aside. Worked out from the lists above rather than written
@@ -148,7 +161,10 @@ def changed_since(output, data_dir, step: str) -> float:
     if SETTINGS in instance:
         from epicrisis import settings
 
-        moments.append(settings.changed_for(data_dir, step))
+        # Asked about this archive, because the answers a step is built from are per archive. The
+        # archive is the name of its own folder, which is the one place that name is built
+        # (`sources.source_output_dir`) and the same way `validate` reads it back.
+        moments.append(settings.changed_for(data_dir, step, in_archive=Path(output).name))
     return max(moments, default=0)
 
 def _last_written(path) -> float:

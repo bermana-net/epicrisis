@@ -9,12 +9,11 @@ attaches = "document"
 settles = """Open the document beside the original; every one of these is listed on Looks misread, behind the line on To check. If the form prints a unit, add it on the card; most old forms print none, and then there is nothing to do."""
 does = "marks"
 at = "suspects"
-# Off, because it is noise here rather than a signal. On the archive it was measured against it
-# found 350 lines on 63 documents, and almost every one of them was a form with no unit column at
-# all — which is what it says itself under "How it can be wrong", and which the rule above has its
-# own line for. Nothing a reader of these ever did was wrong, and three hundred of them in front
-# of the twenty-nine worth opening is how a queue stops being worked through. Switch it on where a
-# laboratory really does drop units from some lines and not others.
+# Off, because it is noise here rather than a signal. Almost everything it found where it was
+# measured was a form with no unit column at all — which is what it says itself under "How it can
+# be wrong", and which the rule above has its own line for. Nothing a reader of those ever did was
+# wrong, and a queue of them in front of the few worth opening is how a queue stops being worked
+# through. Switch it on where a laboratory really does drop units from some lines and not others.
 on_by_default = false
 
 [settings]

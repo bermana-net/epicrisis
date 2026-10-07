@@ -179,39 +179,74 @@ def test_a_code_can_open_the_server_instead_of_one_conversation():
         lock.require(None, enabled=True, now=now + 61 * 60, scope="server")
 
 
-def test_switching_the_archive_closes_the_passes_given_for_the_one_before():
-    """A pass opens one person's records, and whoever holds it was told whose they are."""
+def test_one_patient_to_a_pass_bound_by_the_first_question_asked():
+    """One active patient to a conversation, and a conversation here is a pass.
+
+    A code opens the lock and picks nobody: who the conversation is about is decided by the first
+    question asked in it, and after that this pass is for that person. Another means closing it
+    and taking a new code — the records of two people never meet, and a model's own context is
+    the one place they could.
+
+    Not the rule this test used to hold. The old one wrote the archive at unlock time out of
+    whatever the dashboard had open and tore the pass up when somebody pressed Show, which was a
+    rule about the dashboard; it reaches no connector now. This binds to what was asked for.
+    """
     now = 1_700_000_000.0
     lock = Lock(secret=RFC_SECRET, minutes=60)
 
-    ticket = lock.unlock(code_at(RFC_SECRET, now), now=now, archive="vera")["pass"]
-    lock.require(ticket, enabled=True, now=now + 60, archive="vera")
+    ticket = lock.unlock(code_at(RFC_SECRET, now), now=now)["pass"]
 
-    # The dashboard is switched to another archive: the session ends there and then, with a
-    # notice that says what happened rather than an ordinary "locked".
-    with pytest.raises(Locked, match="was changed to somebody else"):
-        lock.require(ticket, enabled=True, now=now + 120, archive="anders")
-
-    # And the pass is gone: going back to the first archive does not revive it.
+    # Nobody yet, and a call that names nobody does not bind it.
+    assert lock.passes[ticket] == (now + 60 * 60, "")
+    lock.require(ticket, enabled=True, now=now + 10)
+    assert lock.passes[ticket][1] == ""
+    # The first question names them, and the pass is for that one from here on.
+    lock.require(ticket, enabled=True, now=now + 60, about="vera")
+    assert lock.passes[ticket][1] == "vera"
+    lock.require(ticket, enabled=True, now=now + 120, about="vera")
+    with pytest.raises(Locked, match="one person's records"):
+        lock.require(ticket, enabled=True, now=now + 180, about="anders")
+    # Refused and not closed: the conversation it was reading goes on working.
+    lock.require(ticket, enabled=True, now=now + 240, about="vera")
+    # A second code opens a second conversation, for whoever the first question there names.
+    second = lock.unlock(code_at(RFC_SECRET, now + 300), now=now + 300)["pass"]
+    lock.require(second, enabled=True, now=now + 360, about="anders")
+    assert lock.passes[second][1] == "anders"
+    # And it still runs out, and it is still only a pass that opens anything.
     with pytest.raises(Locked):
-        lock.require(ticket, enabled=True, now=now + 180, archive="vera")
-
-    # A code taken now opens the archive that is open now, and only that one.
-    fresh = lock.unlock(code_at(RFC_SECRET, now + 200), now=now + 200, archive="anders")["pass"]
-    lock.require(fresh, enabled=True, now=now + 260, archive="anders")
-    with pytest.raises(Locked, match="was changed to somebody else"):
-        lock.require(fresh, enabled=True, now=now + 300, archive="vera")
+        lock.require(ticket, enabled=True, now=now + 3700, about="vera")
+    with pytest.raises(Locked):
+        lock.require("not a pass", enabled=True, now=now + 60, about="vera")
 
 
-def test_a_server_opened_as_a_whole_is_open_for_one_archive_too():
-    """The wider setting widens who may read, not whose records they may read."""
+def test_a_server_opened_as_a_whole_is_open_to_everyone_who_reaches_it():
+    """What that setting gives up, held as a test so nobody has to find out by using it.
+
+    This used to say the wider setting widened who may read and not whose records — true while
+    the lock also knew which archive a call was about. It does not any more: a call names its own
+    archive, which `mcp_server.answering` checks against what the link reaches, and the lock
+    answers only "is it you". So one code set to open the server opens **every call that reaches
+    it** until the window runs out, with no pass at all.
+
+    That is what the settings page says in so many words — "Opening everything is easier to live
+    with and gives that up for the length of the window" — and what a person choosing it is
+    choosing. The narrower setting, which is the default, keeps the opening with whoever made it.
+    """
     now = 1_700_000_000.0
     lock = Lock(secret=RFC_SECRET, minutes=60)
-    lock.unlock(code_at(RFC_SECRET, now), now=now, scope="server", archive="vera")
+    lock.unlock(code_at(RFC_SECRET, now), now=now, scope="server")
 
-    lock.require(None, enabled=True, now=now + 60, scope="server", archive="vera")
+    # No pass, and let through, which is the whole of the trade.
+    lock.require(None, enabled=True, now=now + 60, scope="server")
+    lock.require(None, enabled=True, now=now + 3000, scope="server")
+    # And it ends. A window that did not would be a lock that was turned off by using it once.
     with pytest.raises(Locked):
-        lock.require(None, enabled=True, now=now + 60, scope="server", archive="anders")
+        lock.require(None, enabled=True, now=now + 3700, scope="server")
+    # The narrower setting does not let a call with no pass through at any point.
+    shut = Lock(secret=RFC_SECRET, minutes=60)
+    shut.unlock(code_at(RFC_SECRET, now), now=now, scope="conversation")
+    with pytest.raises(Locked):
+        shut.require(None, enabled=True, now=now + 60, scope="conversation")
 
 
 def test_an_index_the_server_cannot_read_is_said_in_words(archive_index, monkeypatch):  # noqa: F811
@@ -382,3 +417,36 @@ def test_the_lock_command_does_not_print_defaults_as_the_owner_s_own_choices(tmp
     assert "settings.json.previous" in said, "and the way back is an act, as on the page"
     # The lock staying closed over an unreadable file is the safe direction, and now it says so.
     assert "fails closed" in said
+
+
+def test_a_file_of_wrong_codes_is_not_a_wait(tmp_path):
+    """The count on the settings page answered a different question from the one it asked.
+
+    Each link keeps its run of wrong codes in a file of its own, and the page counted the files.
+    A run that was answered correctly leaves the file behind holding `[]`; a run from last week
+    has aged out of the window the wait can last. Measured on the owner's own machine: one file,
+    two bytes, holding nothing — and "1 link is in a wait after wrong codes", with the command to
+    clear it underneath.
+    """
+    import json
+    import time as the_clock
+
+    from epicrisis import mcp_lock
+
+    now = the_clock.time()
+    answered = mcp_lock.where_the_wait_is_kept(tmp_path, "aaaa1111")
+    answered.parent.mkdir(parents=True, exist_ok=True)
+    answered.write_text("[]", encoding="utf-8")
+    stale = mcp_lock.where_the_wait_is_kept(tmp_path, "bbbb2222")
+    old = now - (mcp_lock.WAITS_MINUTES[-1] * 60 + 600)
+    stale.write_text(json.dumps([old] * mcp_lock.WRONG_CODES), encoding="utf-8")
+    holding = mcp_lock.where_the_wait_is_kept(tmp_path, "cccc3333")
+    holding.write_text(json.dumps([now] * mcp_lock.WRONG_CODES), encoding="utf-8")
+
+    assert len(mcp_lock.every_wait_kept(tmp_path)) == 3, "three files"
+    assert [file.name for file in mcp_lock.whoever_is_waiting(tmp_path, now)] == ["cccc3333.json"]
+
+    # And the one that is waiting is waiting for the reason the lock itself says it is.
+    lock = mcp_lock.Lock(secret=mcp_lock.new_secret(), remembers=holding)
+    lock._recall_wrong(now)
+    assert lock._wait_over(now) > 0

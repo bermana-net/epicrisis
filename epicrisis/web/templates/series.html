@@ -37,7 +37,11 @@
          top read as the whole test while being one material of it. The tabs are the other count
          on this page, and the difference is named here, where the number is. #}
       {% set in_every_material = materials | map(attribute="count") | sum %}
-      <p class="caps muted">{{ values | length }} values<span class="chart-material caps">{{ material_label }}</span>{% if materials | length > 1 %} &middot; of {{ in_every_material }} this test has here, one material at a time{% endif %}{% if folded_away %} &middot; {{ folded_away }} of them {{ "are" if folded_away != 1 else "is" }} a later document retelling a measurement already here, folded into the row it belongs to{% endif %}{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}{% if derived_left_out %} &middot; {{ derived_left_out }} more the laboratory calculated rather than measured, not drawn here{% endif %}<br>every number exactly as its form printed it</p>
+      <p class="caps muted">{{ values | length }} values<span class="chart-material caps">{{ material_label }}</span>{% if materials | length > 1 %} &middot; of {{ in_every_material }} this test has here, one material at a time{% endif %}{% if folded_away %} &middot; {{ folded_away }} of them {{ "are" if folded_away != 1 else "is" }} a later document retelling a measurement already here, folded into the row it belongs to{% endif %}{% if span.first %} &middot; {{ span.first }} – {{ span.last }}{% endif %}{% if span.undated %} &middot; {{ span.undated }} from documents with no settled date{% endif %}{% if span.more %} &middot; showing the {{ values | length }} oldest of {{ span.total }}{% endif %}{% if derived_left_out %} &middot; {{ derived_left_out }} more the laboratory calculated rather than measured, not drawn here{% endif %}</p>
+      {# Its own line and not a <br> inside the one above. A break carries no space with it, so on
+         a wide screen this sentence sat directly under the bold count with nothing between them
+         and read as the end of that line rather than as a sentence of its own. #}
+      <p class="caps muted under-the-count">every number exactly as its form printed it</p>
     </div>
     {% if materials | length > 1 %}
     <div class="materials caps">
@@ -86,6 +90,15 @@
     <p class="caps read-by-model-note"><span class="signal">An asterisk on a specimen below means the form printed none: a model read the table the value stands in and said this one. {{ read_by_model }} of these {{ "value is" if read_by_model == 1 else "values are" }} marked that way.</span></p>
     {% endif %}
   </section>
+
+  {# What the shaded band is, said once for the page rather than under every chart. It was inside
+     the loop, so a test with three scales printed the same fifty-six words three times down one
+     screen. It stays — it is the first of the four things §7 does not let a page stop saying,
+     "why the picture is not what you expected" — and it is said where a person meets the first
+     band, which is here. #}
+  {% if charts | selectattr("points") | first %}
+  <p class="caps muted chart-note band-note">The shaded band is the reference range printed on the form beside that value, drawn around the value it belongs to. Where a form printed no range there is no band, and the band moves because laboratories differ &mdash; nothing is calculated.</p>
+  {% endif %}
 
   {% for chart in charts %}
   <section class="card-section">
@@ -169,9 +182,6 @@
        with nothing on either to say which was which. The strip of tabs is answered by the title;
        this is the same answer inside the picture. #}
     <p class="chart-what">{{ label }} <span class="chart-material caps">{{ material_label }}</span> <span class="chart-unit">{{ chart.unit or "no unit printed" }}</span>{% if owners.whose %} <span class="chart-whose caps">archive of {{ owners.whose }}</span>{% endif %}</p>
-    {% if chart.points %}
-    <p class="caps muted chart-note">The shaded band is the reference range printed on the form beside that value, drawn around the value it belongs to. Where a form printed no range there is no band: the range on the form before it says nothing about a value printed without one. It moves because laboratories differ, not because anything was calculated.</p>
-    {% endif %}
     {# A row said "corrected" and stopped there. What the line used to hold is on the document's
        own card, and this page named neither the fact nor the way to it — on the page the readme
        offers for showing a doctor from a phone, where there is no hovering to fall back on. The

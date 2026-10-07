@@ -37,12 +37,17 @@ name is right for a field holding a sphere and a cylinder together, so asking so
 one would be asking for the wrong work. Those are reported by "Several measurements in one
 value", which says what they really need.
 
-# What was measured
+# Why it exists
 
-On one archive, ninety values carried an eye in their name. Thirty-eight of them were "Vis OD"
-or "Vis OS" and perfectly well named. Fifty-two were named by the eye and nothing else, so that a
-chart of "ОС" put dioptres and visual acuity on one axis. Nineteen of those fifty-two also held
-several measurements in the value, and belong to the other rule.
+A chart is drawn under a name, so a value named after the eye draws one chart of everything that
+eye was ever measured for: the dioptres of a sphere and a decimal of visual acuity on one axis,
+with a line between them that means nothing. The name is the only thing wrong with it — the
+number, the unit and the printed line are as the form printed them — which makes it the cheapest
+kind of defect to mend and the easiest to walk past.
+
+Properly named lines sit beside these on the same form: "Vis OD" is written exactly as it should
+be, and an archive of eye examinations holds both shapes. That is why the name has to be an eye
+and nothing else before anything is said.
 
 # How it can be wrong
 

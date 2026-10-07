@@ -10,9 +10,7 @@ in the document's provenance so it runs only once.
 """
 
 import json
-import re
 import tempfile
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -25,12 +23,12 @@ from epicrisis.classify.pages import PageRef, PageUnreadable, document_payloads,
 from epicrisis.classify.report import goes_to_extract, group_documents, latest_pages
 from epicrisis.extract.backend import PROMPT_VERSION
 from epicrisis.readers.text import TEXT_PAGE_CHARS
-from epicrisis.dates import birth_dates, read_printed_date, same_date
 from epicrisis.records import append_line, now, read_records
-from epicrisis.printed_values import comparator_printed, number_tokens, squeezed, numbers_in_text, typewriter_digits, unexplained_letters
+from epicrisis.rules import load as load_rules
+from epicrisis.rules.kinds import EXTRACT
+from epicrisis.settings import rules_on
 from epicrisis.parallel import DEFAULT_WORKERS, STATE_LOCK, run_parallel
 from epicrisis.sources import Source, source_output_dir
-from epicrisis.suspects import provider_looks_like_a_person
 from epicrisis.runs import one_at_a_time, write_whole
 from epicrisis.state import NoSpace, Unreadable, no_space, where
 
@@ -196,6 +194,11 @@ def extract_source(
             elif limit is None or len(due) < limit:
                 due.append((document, wants_close_ups))
 
+        # Which of this step's checks this archive runs, read once for the whole run rather than
+        # per document: the answer cannot change in the middle of a run, and reading it per
+        # document would be a settings file opened once per page of the archive.
+        checked_by = rules_on(data_dir, load_rules(data_dir), EXTRACT, in_archive=output.name)
+
         def work(item) -> bool:
             document, close_ups_only = item
             if close_ups_only:
@@ -203,7 +206,8 @@ def extract_source(
                     stats.close_up_only += 1
                 carry_on = _close_up_pass(document, output, source, getattr(backend, "stages", (backend,))[-1], stats)
             else:
-                carry_on = _extract_document(document, output, source, backend, stats, force_close_ups=close_ups)
+                carry_on = _extract_document(document, output, source, backend, stats,
+                                             force_close_ups=close_ups, checked_by=checked_by)  # fmt: skip
             if progress:
                 with STATE_LOCK:
                     progress(stats)
@@ -264,122 +268,58 @@ def read_again(document: DocumentRef, source: Source, backend, close_ups: bool =
     return merge_document(document, parts, backend, sent_texts)
 
 
+# `mixed_script_words` was here, and is in `printed_values.py` now: it is a decision about
+# letters — whether one word holds two alphabets — and that module owns the fold of printed text
+# that every match in this program is made on. Here it meant that the one check asking the
+# question had to import upwards, out of a check and into the module of the step, and that
+# somebody looking in `printed_values.py` for "how does this program notice two alphabets in one
+# word" found nothing and would have written a second one.
 
-CYRILLIC = re.compile(r"[\u0400-\u04FF]")
-LATIN = re.compile(r"[A-Za-z]")
+# The thresholds these three once stood for are settings of the rules that replaced them —
+# `page_text_missing`, `page_text_short`, `page_numbers_missing` — where they can be read, changed
+# and explained. A constant in a module is a threshold nobody whose forms it is wrong for can
+# reach.
 
 
-def mixed_script_words(text: str | None) -> list[str]:
-    """Words holding both alphabets at once, as in "Кліnіка": a letter read from the wrong one.
+def transcription_problems(document: dict, sent_texts: dict[int, str], tabular_pages: tuple[int, ...] = (),
+                           checked_by=None) -> dict[str, int]:  # fmt: skip
+    """What this reading failed, by code and by count. Codes only, never content.
 
-    A name may hold words of each alphabet ("Клініка VITAMED"); one word holding both is a slip.
+    **Every check is a rule now.** This was eleven conditions written into one body with their
+    thresholds as module constants, and it is a loop over the registry: what runs is what the
+    archive has switched on, each check has a file saying what it looks at and how it can be
+    wrong, and a threshold that is wrong for somebody's forms is a number they can change. They
+    are the only checks in the program that cost money when they fire — each one, firing, sends
+    the document back to a stronger model — so being able to turn one off is the whole of it.
+
+    `checked_by` is the rules of this step that this instance has turned on. **None means the
+    rules as shipped**, all of them, which is what this function did when every check was written
+    into its body — so a caller that does not know which instance it is asking about gets the
+    behaviour this program comes with, rather than silently getting fewer checks than it thinks.
     """
-    return [word for word in re.findall(r"[^\W\d_]+", text or "") if CYRILLIC.search(word) and LATIN.search(word)]
+    from epicrisis.rules.subjects import Document
 
-
-MIN_PAGE_TEXT_CHARS = 20
-MIN_TEXT_SHARE = 0.5  # words transcribed against words sent, for pages that went as text
-MIN_NUMBER_SHARE = 0.9  # numbers of a text page found again in its transcription
-
-
-def transcription_problems(document: dict, sent_texts: dict[int, str], tabular_pages: tuple[int, ...] = ()) -> dict[str, int]:
-    """Checks a transcription can fail without a model. Counts by reason, never content.
-
-    Pages that went as text are compared with that text: a value or reference the page does not
-    contain was not copied as printed. Pages that went as images are compared with the model's
-    own transcription of the page. Codes only; the counts are kept in provenance.
-    """
     problems: dict[str, int] = {}
 
-    def add(reason: str) -> None:
-        problems[reason] = problems.get(reason, 0) + 1
-
-    # The signing doctor is not the institution. A small model takes the name under the stamp and
-    # writes it as the laboratory; a second reading with the strong model gets the letterhead.
-    if provider_looks_like_a_person(document.get("provider_as_printed"), document.get("title_as_printed")):
-        add("institution_looks_like_a_name")
-    for printed in ("provider_as_printed", "title_as_printed"):
-        if mixed_script_words(document.get(printed)):
-            add("word_in_two_alphabets")
-
-    own_texts = {item["page"]: squeezed(item["text"]) for item in document["page_texts"]}
-    # Completeness: a model can stop early and still write correct fields for what it did.
-    transcribed = {item["page"]: item["text"] for item in document["page_texts"]}
-    for page in document["pages"]:
-        text = transcribed.get(page) or ""
-        if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
-            add("page_text_missing")
-        elif page in sent_texts and len(sent_texts[page].split()) > 40 and len(text.split()) < MIN_TEXT_SHARE * len(sent_texts[page].split()):
-            add("page_text_short")
-        elif page in sent_texts:
-            numbers = number_tokens(sent_texts[page])
-            if len(numbers) >= 10:
-                as_read = squeezed(typewriter_digits(text))
-                found = sum(1 for number in numbers if squeezed(number) in as_read)
-                if found < MIN_NUMBER_SHARE * len(numbers):
-                    add("page_numbers_missing")
-    # A value that is nowhere in the text of the page it claims to come from. The text of a
-    # text-layer page is the page itself, not a reading of it, so a number that is not in it was
-    # not printed there — whether a model misread the layout or a page told it what to write.
-    # Only whole pages of real text are judged: a scan's text is the model's own transcription,
-    # and a page with little text says nothing either way.
-    for item in document["observations"]:
-        page = item["provenance"]["page"]
-        text = sent_texts.get(page)
-        printed = (item.get("value_as_printed") or "").strip()
-        if not text or len(text.split()) < 40 or not printed or item.get("value_kind") == "qualitative":
-            continue
-        if squeezed(typewriter_digits(printed)) not in squeezed(typewriter_digits(text)):
-            add("value_not_on_the_page")
-
-    pages_with_values = {item["provenance"]["page"] for item in document["observations"]}
-    # Reports, letters and prescriptions often print a table inside their text; only lab results
-    # must have values wherever classify saw a table.
-    for page in tabular_pages if document["doc_type"] == "lab_panel" else ():
-        if page not in pages_with_values:
-            add("table_page_without_values")
-    for item in document["observations"]:
-        page = item["provenance"]["page"]
-        source, label = (squeezed(sent_texts[page]), "page_text") if page in sent_texts else (own_texts.get(page, ""), "own_page_text")
-        page_text = sent_texts[page] if page in sent_texts else "\n".join(text["text"] for text in document["page_texts"] if text["page"] == page)
-        if squeezed(typewriter_digits(item["value_as_printed"])) not in squeezed(typewriter_digits(page_text)):
-            add(f"value_not_in_{label}")
-        # A reference may be printed over several lines or columns (norms for men and women, ages):
-        # every number of it must be on the page, not the joined text as one piece.
-        if item.get("reference_as_printed") and not numbers_in_text(item["reference_as_printed"], page_text):
-            add(f"reference_not_in_{label}")
-        # On text pages the comparison above is exact; letters there are printed, such as "Normal".
-        if page not in sent_texts and item.get("value_numeric") is not None and unexplained_letters(item["value_as_printed"]):
-            add("letters_in_numeric_value_on_image")
-        # A comparator is a sign or word printed with the value, never a comparison with the range.
-        if item.get("comparator") and not comparator_printed(item["value_as_printed"]):
-            add("comparator_not_printed")
-    # Headings matter where a row prints several values: they tell the result from the rest.
-    # Many forms print one value per row and no headings at all; that is not a problem.
-    #
-    # A row, not a page. This counted a name twice anywhere on the page, which is not a row with
-    # several values in it — it is a measurement printed in two places, which any long report
-    # does. On the archive read on 2 October it fired on four documents where no name repeated
-    # inside any row at all, and each of those was read a second time by the costliest model to
-    # answer a complaint about a table that was not there. What tells one row from another is the
-    # piece of the original line kept beside every value.
-    rows = Counter((item["provenance"]["page"], squeezed(item["provenance"].get("snippet")),
-                    squeezed(item["name_as_printed"])) for item in document["observations"])  # fmt: skip
-    if any(count > 1 for count in rows.values()) and not any(item.get("column_as_printed") for item in document["observations"]):
-        add("no_column_headings_in_multi_value_rows")
-    language = document.get("language")
-    births = [birth for text in [*sent_texts.values(), *(item["text"] for item in document["page_texts"])] for birth in birth_dates(text, language)]
-    for printed_date in ("date_of_study_as_printed", "date_of_report_as_printed"):
-        printed = read_printed_date(document.get(printed_date), language)
-        if any(same_date(printed, birth) for birth in births):
-            add("document_date_is_birth_date")
-    if document["unreadable"] and len(sent_texts) < len(document["pages"]):
-        add("unreadable_on_images")
+    # The checks that are rules. The code a rule reports under is its own id, so moving a check
+    # here changes no code, no count and nothing anybody has to read differently.
+    subject = Document(file_sha256=document.get("file_sha256", ""), pages=tuple(document["pages"]),
+                       item=document, sent_texts=sent_texts, tabular_pages=tuple(tabular_pages))  # fmt: skip
+    for rule in (load_rules().at(EXTRACT) if checked_by is None else checked_by):
+        hits = rule.check.run(subject, rule.settings)
+        if hits:
+            problems[rule.id] = problems.get(rule.id, 0) + len(hits)
     return problems
 
 
-def _extract_document(document: DocumentRef, output: Path, source: Source, backend, stats: ExtractStats, force_close_ups: bool = False) -> bool:
-    """Extract one document, moving to the next model when a check fails. Returns False when the run has to stop."""
+def _extract_document(document: DocumentRef, output: Path, source: Source, backend, stats: ExtractStats,
+                      force_close_ups: bool = False, checked_by=None) -> bool:  # fmt: skip
+    """Extract one document, moving to the next model when a check fails. Returns False when the run has to stop.
+
+    `checked_by` is this archive's own answer about which of the step's checks run, read once for
+    the whole run by the caller: a check turned off here is a check that does not send documents
+    back to a stronger model, which is the whole reason these became rules.
+    """
     stages = getattr(backend, "stages", (backend,))
     escalations = []
     try:
@@ -392,7 +332,7 @@ def _extract_document(document: DocumentRef, output: Path, source: Source, backe
                 escalations.append({"model": stage.model, "problems": {"call_failed": 1}})
                 continue
             merged = merge_document(document, parts, stage, sent_texts)
-            problems = transcription_problems(merged, sent_texts, document.tabular_pages)
+            problems = transcription_problems(merged, sent_texts, document.tabular_pages, checked_by=checked_by)
             if not problems or number == len(stages):
                 break
             escalations.append({"model": stage.model, "problems": problems})

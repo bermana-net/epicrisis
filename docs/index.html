@@ -386,15 +386,29 @@
     <h2>What it has been run on</h2>
     <p class="sub">Real medical records of real people, and whose they are is nobody's business.
       Nothing from them appears here: every picture on this page comes from
-      <code>epicrisis demo</code>, which invents its own people.</p>
+      <code>epicrisis demo</code>, which invents its own people. Every count of what those archives
+      hold is a floor and only ever goes up; the size of the test suite is exact, because this
+      repository can prove it.</p>
+    <!-- Floors, not counts, and that is not a matter of taste here. Every count in this block —
+         documents, values, clinic names, approved groups — is a measurement of real archives on one
+         machine: they are not in this repository, nothing in the suite can read them, and they move
+         every time another document is read. Published as an exact count such a number is stale
+         within the week — this block said "479 documents read" while both one-pagers said "500+",
+         which is two published numbers about one thing and the seventh entry of the constitution
+         calls that a defect. A floor on a quantity that only grows never becomes false. So these
+         may be raised, when somebody measures again and says in the commit what they measured and
+         how, and they may never be written as an exact count. The years covered and the languages
+         count nothing and need no floor; the suite is exact because pytest answers for it. Raising
+         a floor means raising it in all four places — here, the README and both one-pagers — and
+         tests/test_published_pages.py fails while any of the four disagrees. -->
     <div class="facts">
-      <div><div class="n">479</div><div class="k">documents read</div></div>
-      <div><div class="n">5 355</div><div class="k">values, as printed</div></div>
+      <div><div class="n">600+</div><div class="k">documents read</div></div>
+      <div><div class="n">6 000+</div><div class="k">values, as printed</div></div>
       <div><div class="n">1989–2026</div><div class="k">years covered</div></div>
       <div><div class="n">5</div><div class="k">languages</div></div>
-      <div><div class="n">200+</div><div class="k">institutions on the forms</div></div>
-      <div><div class="n">492</div><div class="k">approved test groups</div></div>
-      <div><div class="n">1571</div><div class="k">tests, no network, no model</div></div>
+      <div><div class="n">150+</div><div class="k">institution names on the forms</div></div>
+      <div><div class="n">500+</div><div class="k">approved test groups</div></div>
+      <div><div class="n">1851</div><div class="k">tests, no network, no model</div></div>
     </div>
   </div>
 </section>
@@ -410,7 +424,7 @@
           <li><b>Self-hosted.</b> Your computer or your own server. No account, no service, no telemetry.</li>
           <li><b>The dashboard listens on <code>127.0.0.1</code> only.</b> From anywhere else, through an SSH tunnel.</li>
           <li><b>Your scans are read-only.</b> Nothing is copied, moved or renamed. Everything the program derives lives under <code>data/</code>. Most of it is made again by code alone: the index and the checks in seconds, the walk of the folder in minutes. The readings &mdash; what each page is and what was printed on it &mdash; only by paying a model to read the documents again, and it will read them a little differently.</li>
-          <li><b>Five things under <code>data/</code> are your own work, and nothing rebuilds them:</b> your corrections, your verdicts on findings, the indicators you approved, the earlier readings kept when a later one displaced them, and your conversations. <code>epicrisis backup &lt;folder&gt;</code> copies exactly those, and nothing else, in one place. Do not delete <code>data/</code> without them.</li>
+          <li><b>Seven things under <code>data/</code> are your own work, and nothing rebuilds them:</b> your corrections, your verdicts on findings, the indicators you approved, the doctors and clinics you said were one, the earlier readings kept when a later one displaced them, your conversations, and the rules you wrote for your own laboratory's forms. <code>epicrisis backup &lt;folder&gt;</code> copies exactly those, and nothing else, in one place. Do not delete <code>data/</code> without them.</li>
           <li><b>Each person is a separate database.</b> A folder is one owner's; two owners' folders may not contain one another; ids are random, because folder names carry surnames.</li>
         </ul>
       </div>
@@ -428,7 +442,7 @@
           <li><b>Read-only tools only.</b> Nothing writes, nothing runs, nothing reads a file outside the index.</li>
           <li><b>An unguessable secret path.</b> Without it the server answers as though nothing were there.</li>
           <li><b>A private tunnel</b> (Tailscale Funnel) that admits only the connector's own network.</li>
-          <li><b>A six-digit code from your authenticator (RFC 6238).</b> <code>unlock</code> returns a pass good for four hours; every tool refuses without it; <code>lock_archive</code> ends it early. The secret behind that code is generated on your server, read once into your phone, and never travels through a conversation.</li>
+          <li><b>A six-digit code from your authenticator (RFC 6238).</b> <code>unlock</code> returns a pass good for four hours by default, and that window is a setting on the same page; every tool refuses without it; <code>lock_archive</code> ends it early. The secret behind that code is generated on your server, read once into your phone, and never travels through a conversation.</li>
           <li><b>An access log</b> of time, address, tool name and whether the call was let through — never the secret, never the question, never the answer. A log of a medical archive that holds the questions is a second copy of the archive.</li>
         </ul>
       </div>

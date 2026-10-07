@@ -64,7 +64,7 @@ def what_looks_misread(data_dir: Path, the_archive: str | None, *, limit: int = 
     """
     empty = {"missing": False, "every_rule_off": False, "documents": 0,
              "findings": 0, "rules": [], "shown": [], "more": 0, "limit": limit}  # fmt: skip
-    chosen = rules_on(data_dir, rule_files.load(data_dir), kinds.SUSPECTS)
+    chosen = rules_on(data_dir, rule_files.load(data_dir), kinds.SUSPECTS, in_archive=the_archive or "")
     if not chosen:
         # Said rather than drawn as an empty list: every rule off and no rule written are the
         # same page otherwise, and only one of the two has anything a person can do about it.

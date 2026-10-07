@@ -46,7 +46,53 @@ def validation_lines(data_dir: Path, source) -> list[str]:
             lines.append(f"validate {source.id} {where} copy_of {copy['file_sha256'][:16]}")
     for code, count in result["totals"].items():
         lines.append(f"total    {source.id} - {code} {count}")
+    # The extract step's own checks by name, which is what this ruler was blind to. Eleven of them
+    # arrive at `validate` and leave as three summaries, so a check that moved by one moved a
+    # summary by one and the diff said only that a number somewhere had changed. These are the
+    # lines that say which check it was. Codes and counts, nothing out of anybody's records.
+    #
+    # Taken from every document and not only from the ones that ended with a finding: four of
+    # these codes are covered by rules elsewhere and make no finding of their own, and those are
+    # exactly the ones a move into the registry is most likely to drop in silence.
+    found = {f"{document['file_sha256']}:{'.'.join(str(page) for page in document['pages'])}": document
+             for document in result["documents"]}  # fmt: skip
+    for key, checks in sorted(result.get("checks", {}).items()):
+        sha256, numbers = key.split(":")
+        where = f"{sha256[:16]} p{numbers}"
+        for code, count in sorted(checks.items()):
+            lines.append(f"check    {source.id} {where} {code} {count}")
+        lines += _the_summaries_add_up(source.id, where, checks, found.get(key, {}).get("findings", {}))
     return lines
+
+
+def _the_summaries_add_up(source_id: str, where: str, checks: dict, findings: dict) -> list[str]:
+    """The ruler checking itself: the codes it just printed, folded the way `validate` folds them,
+    against the summaries `validate` actually wrote.
+
+    Without this the new lines are a second opinion rather than a measurement — they would be
+    taken from the same run and could drift from the summaries beside them without either looking
+    wrong. The folding is reproduced here **from the sets validate declares**, not from a copy of
+    them, so a code moved between those sets is not quietly reproduced on both sides.
+
+    It raises rather than printing a note. A ruler that says "these do not add up" in a file
+    somebody diffs later is a ruler whose own disagreement travels as data.
+    """
+    from epicrisis.validate import COVERED_CHECK_PROBLEMS, INCOMPLETE_CHECK_PROBLEMS, OWN_FINDING_PROBLEMS
+
+    folded = {
+        "transcription_incomplete": sum(count for code, count in checks.items() if code in INCOMPLETE_CHECK_PROBLEMS),
+        "checks_still_failing": sum(count for code, count in checks.items() if code not in
+                                    COVERED_CHECK_PROBLEMS | INCOMPLETE_CHECK_PROBLEMS | OWN_FINDING_PROBLEMS),  # fmt: skip
+        **{code: checks.get(code, 0) for code in OWN_FINDING_PROBLEMS},
+    }
+    for code, counted in folded.items():
+        # A rule of the registry may add to one of these names as well, so the summary is allowed
+        # to stand higher than the checks alone — never lower, which would mean a check was
+        # counted into a summary that nothing here can see.
+        if findings.get(code, 0) < counted:
+            raise SystemExit(f"{source_id} {where}: {code} is {findings.get(code, 0)} and the checks "
+                             f"under it add up to {counted}. The snapshot cannot be trusted.")  # fmt: skip
+    return [f"folded   {source_id} {where} {code} {count}" for code, count in sorted(folded.items()) if count]
 
 
 def suspect_lines(data_dir: Path, source) -> list[str]:

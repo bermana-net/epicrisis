@@ -97,18 +97,15 @@ misplaced scale. Lower than two powers on purpose, because the shape this was wr
 row that started it.
 
 
-# What was measured
+# Why it ships off
 
-Nothing, on the three archives this project has. It was run over all three and reported **no rows
-at all** — including the row it was written for, a haematocrit of 0,48 printed beside a range of
-0,2–1,0 %, which is still in one of them.
-
-It is silent on its own example for a reason worth stating rather than tuning away. The checks run
-over an archive's own files, where there is no index and so no indicator, so a test is gathered by
-its folded printed name. That archive writes haematocrit under several printed names, and the
-largest family holding that row is three rows where this asks for five. Lowering the five would
-make it louder and less certain at once, which is the wrong trade for a check whose whole value is
-being believed.
+It is silent even on the row it was written for, and the reason is worth stating rather than
+tuning away. The checks run over an archive's own files, where there is no index and so no
+indicator, so a test is gathered by its folded printed name. Two laboratories that write
+haematocrit under two printed names split one test into families, and a family smaller than
+`ranges_agree` has no "rest of the test" to be weighed against. Lowering that threshold would
+make the check louder and less certain at once, which is the wrong trade for a check whose whole
+value is being believed.
 
 So it ships **off**. The code and its tests are sound; the reach is not there, and a rule that is
 on and finds nothing is a promise of a check that is not being made. What it needs is to gather a

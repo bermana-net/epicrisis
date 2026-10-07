@@ -205,7 +205,9 @@ def test_the_drawn_page_says_what_one_press_over_two_groups_would_join(two_group
 
     assert ("2 names that look like one — 2 of them groups you joined, 4 printed spellings in all"
             in drawn), "the row does not say what a press over it would join"  # fmt: skip
-    assert "A name below may be a group you have already joined" in drawn
+    # Said at the row it is about since 7 Oct 2026, not over the whole page: it used to stand at
+    # the top for every reader, including the ones with no such row in front of them.
+    assert "One of these is a group you joined before" in drawn
     ticked = re.search(r'<ul class="ticks">(.*?)</ul>', drawn, re.S)
     assert ticked, "no tick boxes on this page, so this test is about nothing"
     for spelling in (A_SHORTER_NAME, THE_SHORTER_NAME_AGAIN, MINE["provider"], MINE["provider"] + ","):

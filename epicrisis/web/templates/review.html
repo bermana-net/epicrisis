@@ -28,6 +28,10 @@
   <section class="rule" style="padding-top: 18px;">
     <h1>To check</h1>
     <p class="lead caps">What the validation found, without a model: values that do not match what is printed, dates, possible copies, parts that could not be read. Nothing here is changed automatically. Open a document to compare it with the original.</p>
+    {# Said once for the page, 7 Oct 2026: it stood inside each of the nine checks, word for word.
+       It has to be said — a person pressing "noise" is entitled to know it does not hide
+       anything — and saying it nine times on one screen is not saying it better. #}
+    <p class="caps muted">Your word &mdash; real or noise &mdash; marks and never hides: a finding you call noise stays on the page, because one mistaken click must not be able to lose a real one. What you say is counted beside the rule on the Settings page, which is how a rule that is never right can be found and removed.</p>
   </section>
 
   {% for source in sources %}
@@ -111,7 +115,11 @@
       <p class="caps muted">Each of them says what it looks at and how it can be wrong, beside its own switch. <a href="/settings?tab=rules">The rules and their switches</a>.</p>
       {% elif source.misread.documents %}
       <span class="caps signal">Lines that look misread: {{ source.misread.findings }} on {{ source.misread.documents }} document{{ "s" if source.misread.documents != 1 }}</span>
-      <p class="caps muted">A number many times away from every other reading of the same test, a unit nobody else on that test prints. Not errors: pages worth opening beside the original, heaviest first. Found in the index each time the page is asked for, without a model.</p>
+      {# The count and the way to the page, 7 Oct 2026. What this search looks for was said here
+         in one set of words and on the page itself in another, which is two definitions of one
+         thing in two places — and the page that owns it is the one that shows the lines. What a
+         person needs here is the number and the door. #}
+      <p class="caps muted">Not errors: pages worth opening beside the original, heaviest first.</p>
       <p><a class="btn small" href="/misread">Looks misread</a></p>
       {% else %}
       <span class="caps muted">Nothing looks misread in this archive.</span>
@@ -172,7 +180,11 @@
          saying "real" or "noise" does, and on a phone it disappeared along with the column
          headings, leaving two buttons and no word about them. Here it is beside the note that
          says what settles the check, which is where a person is already reading. #}
-      <p class="caps muted copies-note">{% if check.ask %}{{ check.ask }} {% endif %}Your word &mdash; real or noise &mdash; marks and never hides: a finding you call noise stays on the page, because one mistaken click must not be able to lose a real one. What you say is counted beside the rule on the Settings page, which is how a rule that is never right can be found and removed.</p>
+      {# What a person's word does is said once for the page, under the lead: it was the same
+         fifty-seven words inside each of nine checks, changing only in the sentence in front of
+         them. What stays here is that sentence — what settles *this* check — which differs from
+         check to check and is the thing somebody is reading at this moment. #}
+      {% if check.ask %}<p class="caps muted copies-note">{{ check.ask }}</p>{% endif %}
       <div class="doc-table">
         <div class="doc-row head caps review-row">
           <span>Date</span><span>Type</span><span>File</span><span>Findings</span><span>Was it real?</span>

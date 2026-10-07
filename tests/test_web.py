@@ -337,12 +337,52 @@ def test_consent_flow(client, data_dir):
 
 
 def test_consent_page_shows_volume_and_old_versions_ask_again(client, archive, data_dir):
+    """The number here is what a run would send, and it was what the archives hold.
+
+    An instance where everything has been read said "This run will send 138 pages from 138 files"
+    over a run that sends nothing at all — 0 calls, measured. This is the one number a person
+    reads in the place where they decide whether their pages leave the machine.
+    """
     add(client, archive)
     page = client.get("/consent").text
-    assert "This run will send 4 pages from 2 files, each in a request of its own" in page
-    # And that a page may go more than once, which is true of what is sent as well as of what it
-    # costs: a reading a check did not agree with is read again by a stronger model.
-    assert "some of them more than once" in page and "read again by a stronger model" in page
+    assert "A run now would send <b>4 pages</b> from 2 files" in page
+    assert "out of 4 pages in all" in page
+    # And that a page goes more than once, which is true of what is sent as well as of what it
+    # costs: once to say what kind of document it is, once to be read, and again by a stronger
+    # model where a check did not agree with the reading.
+    assert "at least twice over the whole reading" in page and "read again by a stronger model" in page
+
+    # With every page classified and every document read, the page says so rather than offering
+    # the archive's own size as the size of the next run.
+    source_id = json.loads((data_dir / "sources.json").read_text())[0]["id"]
+    output = data_dir / "sources" / source_id
+    # Off the same page list the page itself counts, so the test cannot claim a page the
+    # inventory does not hold.
+    from epicrisis.classify.run import all_refs
+    from epicrisis.records import read_records
+
+    records = list(read_records(output / "inventory.jsonl"))
+    classified = [{"file_sha256": ref.file_sha256, "page": ref.page, "route": ref.route,
+                   "doc_type": "other", "page_role": "first"} for ref in all_refs(records)]  # fmt: skip
+    (output / "classify.jsonl").write_text("".join(json.dumps(line) + "\n" for line in classified))
+
+    # Classified but not read: what is left to send is the pages of the documents, not the whole
+    # archive twice.
+    half_way = client.get("/consent").text
+    assert "A run now would send <b>4 pages</b>" in half_way
+
+    # And read as well, by the ledger the extract step itself skips documents by.
+    from epicrisis.classify.report import group_documents
+
+    (output / "ledger.jsonl").write_text("".join(json.dumps({
+        "step": "extract", "status": "done", "file_sha256": pages[0]["file_sha256"],
+        "pages": [page["page"] for page in pages], "model": "m", "prompt_version": 1,
+    }) + "\n" for pages in group_documents(classified)))  # fmt: skip
+
+    nothing_waiting = client.get("/consent").text
+
+    assert "Nothing is waiting" in nothing_waiting and "all 4 pages here have been read" in nothing_waiting
+    assert "A run now would send" not in nothing_waiting
 
     (data_dir / "consent.json").write_text(json.dumps({"claude-code-subscription": {"version": 1, "accepted_at": "x"}}))
     assert "Model processing is off" in client.get("/status").text
@@ -752,7 +792,13 @@ def test_extract_progress_on_dashboard(client, archive, data_dir):
     assert running.count('class="bar running"') == 1
     progress = client.get("/progress").json()
     assert progress["any_running"] is True and progress["rows"][0]["steps"][2]["label"] == "25%"
-    assert "Steps 04&ndash;05 run without a model." in running
+    # Named rather than numbered, 7 Oct 2026: there are five bars and three of them need no
+    # model — Inventory as much as Validate and Index, which the page says of Inventory itself
+    # two blocks further up. "04–05 of five" read as "only two of these are free".
+    assert "Inventory, Validate and Index run without a model." in running
+    # And the two steps that have no bar and do call a model are named, 7 Oct 2026: a person
+    # reading five bars had no way to know that two more things were sending pages anywhere.
+    assert "the search for a date where a document printed none" in running
     # Nothing offers to send pages to a model before a person has allowed it.
     assert "Allow model processing first" in running and "Read new documents" not in running
 
@@ -977,6 +1023,185 @@ def test_a_built_view_is_kept_until_its_files_change(client, archive, data_dir):
     output = data_dir / "sources" / source.id
     (output / "inventory.jsonl").touch()  # any of the files it is built from will do
     assert views._kept("documents", source, output) is None
+
+
+def test_the_pages_kept_are_of_the_archive_being_looked_at_and_of_no_other(client, archive, data_dir, tmp_path):
+    """What is kept between requests had no bound of any kind, and now has one that can be stated.
+
+    Not a leak, and it must not be read as one: the key is the archive's own output folder, so
+    nothing of one archive was ever answered out of another's. What there was instead was nothing
+    that would ever take an entry out again — one per view per archive, arriving as somebody
+    clicked and staying for the life of `serve`. An instance that had drawn both of these pages of
+    the three live archives held six of them: 1,554,435 bytes and 128,757 characters of text
+    printed on the documents of three different people, because somebody once looked there.
+
+    The dashboard shows one archive at a time and no page of it is about two, so the bound is the
+    archive being looked at: two entries, whatever is clicked and however long the server runs.
+    """
+    from epicrisis.sources import SourceRegistry, source_output_dir
+    from epicrisis.validate import validate_source
+    from epicrisis.web import documents as views
+
+    theirs = tmp_path / "Another archive"
+    (theirs / "2011").mkdir(parents=True)
+    make_text_pdf(theirs / "2011" / "labs.pdf", [SYNTHETIC_TEXT])
+    add(client, archive, "Vera Lindqvist")
+    add(client, theirs, "Anders Lindqvist")
+    mine, others = SourceRegistry(data_dir).list()
+
+    views._VIEWS.clear()
+    for source in (mine, others):
+        output = source_output_dir(data_dir, source.id)
+        validate_source(output)  # so that the findings page has a view of its own to keep
+        assert views.source_documents(source, output) is not None
+        assert views.review_view(source, output) is not None
+
+    assert {folder for _kind, folder in views._VIEWS} == {str(source_output_dir(data_dir, others.id))}
+    assert len(views._VIEWS) == 2, "the two pages of one archive is the whole of what is kept"
+    # And the archive nobody is looking at is gathered again when they go back to it, which is
+    # what this costs: 0.05 s, 0.26 s and 0.63 s on the three live archives, once per switch.
+    assert views._kept("documents", mine, source_output_dir(data_dir, mine.id)) is None
+
+
+def test_two_archives_gathered_at_the_same_moment_never_hold_both(client, archive, data_dir, tmp_path):
+    """The bound above holds when the two gathers are running at once, which is measured here.
+
+    The sibling test switches one archive for another, a request at a time, and that is how the
+    dashboard was used when the bound was written. Two at once is what the registry of connectors
+    made thinkable, and though no MCP call reaches this cache — the path that answers a connector
+    imports no module of `epicrisis.web` at all — two browser tabs on one machine reach it, and
+    `serve` answers each request on a thread of its own.
+
+    So the claim beside `_keep` is the one under test: the whole dictionary is built and put in
+    place rather than emptied where it stands, each gather filtering to its **own** archive, so
+    whatever order two of them finish in, what is published holds the views of one archive and
+    never of two. A watcher samples the dictionary throughout and every sample is checked.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from epicrisis.records import read_records
+    from epicrisis.sources import SourceRegistry, source_output_dir
+    from epicrisis.validate import validate_source
+    from epicrisis.web import documents as views
+
+    theirs = tmp_path / "Another archive"
+    (theirs / "2011").mkdir(parents=True)
+    make_text_pdf(theirs / "2011" / "labs.pdf", [SYNTHETIC_TEXT])
+    add(client, archive, "Vera Lindqvist")
+    add(client, theirs, "Anders Lindqvist")
+    both = SourceRegistry(data_dir).list()
+    folders = {source.id: source_output_dir(data_dir, source.id) for source in both}
+    for source in both:
+        output = folders[source.id]
+        # Each archive's own pages classified as documents, because a page of no documents is a
+        # page whose file list is empty and two empty sets cross invisibly.
+        (output / "classify.jsonl").write_text("".join(
+            json.dumps({"file_sha256": record["sha256"], "page": page, "route": "text",
+                        "doc_type": "lab_panel", "page_role": "first" if page == 1 else "continuation",
+                        "language": "uk", "date_on_page": None, "provider_on_page": None,
+                        "has_tabular_results": True, "legible": True, "confidence": 0.9}) + "\n"
+            for record in read_records(output / "inventory.jsonl") if "sha256" in record
+            for page in (1,)), encoding="utf-8")  # fmt: skip
+        validate_source(output)
+
+    # Both archives' files are given the same instant, which is what `demo` building three of them
+    # at once leaves behind, and an import of two folders on one evening. Without it the only thing
+    # keeping one archive's view out of the other's answer is that their files changed at different
+    # times, and that is luck rather than design: with the folder taken out of `_kept`'s key, equal
+    # instants make a crossed answer reachable, and the file sets below are what sees it.
+    one_instant = 1_700_000_000.0
+    for source in both:
+        for file in folders[source.id].iterdir():
+            if file.is_file():
+                os.utime(file, (one_instant, one_instant))
+
+    def files_in(view):
+        # By the files listed and not by `whose`, which is read off `sources.json` and would be
+        # right on a view gathered out of the wrong folder. These come out of the archive's own
+        # inventory, so a crossed answer cannot have them.
+        return {row["file"]["path"] for year in view["years"] for row in year["documents"]}
+
+    # What each archive's page says when nothing else is running, to compare every answer from the
+    # storm against. Gathered one at a time and on purpose: the comparison has to come from a
+    # reading that cannot itself have crossed.
+    views._VIEWS.clear()
+    alone = {source.id: files_in(views.source_documents(source, folders[source.id])) for source in both}
+    assert all(alone.values()), "neither page listed a file; the two sets below would prove nothing"
+    assert not alone[both[0].id] & alone[both[1].id], "the two archives share a file; pick another shape"
+
+    views._VIEWS.clear()
+    seen: list[set[str]] = []
+    done = threading.Event()
+
+    def watch():
+        while not done.is_set():
+            seen.append({folder for _kind, folder in dict(views._VIEWS)})
+
+    def gather(source):
+        output = folders[source.id]
+        assert files_in(views.source_documents(source, output)) == alone[source.id]
+        assert views.review_view(source, output) is not None
+        return source.id
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            asked = [both[turn % 2] for turn in range(24)]
+            assert sorted(pool.map(gather, asked)) == sorted(source.id for source in asked)
+    finally:
+        done.set()
+        watcher.join(timeout=5)
+
+    assert len(seen) > 1, f"the watcher took {len(seen)} samples; it was not watching"
+    crossed = [sample for sample in seen if len(sample) > 1]
+    assert not crossed, f"{len(crossed)} of {len(seen)} samples held two archives at once: {crossed[:3]}"
+    assert len({folder for _kind, folder in views._VIEWS}) == 1
+    assert len(views._VIEWS) <= 2, "two pages of one archive is the whole of what is kept"
+
+
+def test_one_gather_reads_each_transcription_once(setup, monkeypatch):  # noqa: F811
+    """The second these pages save, and why it was a second at all.
+
+    One file cut into many documents is the shape that makes it hurt, and the live archive of that
+    shape holds 257 documents in one text export. The page asked for that one file once per
+    document, to see how the archive writes its dates, and then once per file for everything else:
+    258 readings of it and 3.4 s of json to draw one card. The reading cannot differ — same bytes,
+    same file, same parse — so it is read once, and that card now takes 0.03 s.
+
+    Invented here rather than measured only on that archive: ten pages classified as five
+    documents, which is a shape no synthetic archive in this suite had.
+    """
+    from epicrisis import document_dates
+    from epicrisis.extract.run import extract_source
+    from epicrisis.web import documents as views
+    from test_extract import classify_line
+
+    data_dir, source, output, records = setup
+    lines = [classify_line(records["long_scan.pdf"], page, "first" if page % 2 else "continuation", "discharge")
+             for page in range(1, 11)]  # fmt: skip
+    lines += [classify_line(records["labs.pdf"], 1, "first", "lab_panel"),
+              classify_line(records["labs.pdf"], 2, "continuation", "lab_panel")]  # fmt: skip
+    lines += [classify_line(records["invoice.pdf"], 1, "first", "insurance")]
+    (output / "classify.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    extract_source(data_dir, source, FakeExtractBackend())
+
+    read = []
+    for module in (views, document_dates):
+        asked = module.load_extracted
+        monkeypatch.setattr(module, "load_extracted",
+                            lambda folder, sha256, asked=asked: read.append(sha256) or asked(folder, sha256))  # fmt: skip
+
+    views._VIEWS.clear()
+    view = views.source_documents(source, output)
+    assert view["document_count"] == 7, "the shape is seven documents in three files; it did not land"
+    assert read and len(read) == len(set(read)), f"{len(read)} readings of {len(set(read))} files"
+
+    read.clear()
+    card = views.document_card(source, output, records["long_scan.pdf"]["sha256"], 1)
+    assert card is not None
+    assert read and len(read) == len(set(read)), f"{len(read)} readings of {len(set(read))} files for one card"
 
 
 def test_starting_again_puts_the_reading_aside_and_keeps_the_folder(client, archive, data_dir):
@@ -3898,3 +4123,33 @@ def test_a_finding_the_page_cannot_draw_is_not_counted_in_its_heading(archive_in
     page = re.sub(r"\s+", " ", html_module.unescape(re.sub(r"<[^>]+>", " ", client.get("/review").text)))
     assert f"{before} of {checked} documents to check" in page
     assert f"{before + 1} of {checked} documents to check" not in page
+
+
+def test_a_rule_with_no_switch_is_described_by_its_own_line_and_not_by_the_shared_one(client, archive, data_dir):
+    """Five rules share one sentence about why there is no switch, and it said what four find.
+
+    "What this finds is a page of a document that came back with nothing on it" is true of the
+    four that report an empty page and false of the fifth, which is about a stored value that is
+    nowhere in the text of the page it came from. A person reading the fifth was told a page came
+    back empty where that is not what happened.
+
+    So the shared sentence says only what they have in common — this program reporting on its own
+    reading — and what each one finds is its own summary, drawn right above it, out of its own
+    file. One description, one place.
+    """
+    add(client, archive)
+    from epicrisis import rules
+
+    stays_on = [rule for rule in rules.load(data_dir) if rule.stays_on]
+    assert len(stays_on) == 5, "the set changed; this test is about the sentence they share"
+
+    page = client.get("/settings?tab=rules").text
+
+    assert "came back with nothing on it" not in page, (
+        "the shared sentence describes what four of the five find, over a fifth that finds "
+        "something else")  # fmt: skip
+    assert page.count("Always on.") == len(stays_on), "one such line per rule with no switch"
+    for rule in stays_on:
+        # Each one's own words about what it looks at, which is where that belongs.
+        assert rule.summary.split(".")[0][:40] in page, f"{rule.id} is drawn without its own line"
+        assert f'name="rule_on" value="{rule.id}"' not in page, f"{rule.id} still has a box"

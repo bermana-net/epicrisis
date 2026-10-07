@@ -83,7 +83,13 @@ class Document:
     file_sha256: str
     pages: tuple[int, ...]
     item: dict | None
-    sent_texts: dict[int, str] = None
+    # The text that went to the model for each page that went as text, where the step that built
+    # this subject had it. **The extract step does; the validate step does not**, so a check
+    # copied or moved from one to the other gets None here, finds nothing, and looks exactly like
+    # a check that is working. The annotation said `dict` and the default was None, which told the
+    # next reader the opposite of the truth; what it cannot do is make the two steps agree, and
+    # `kinds.SERVED` is where a step says what it hands out.
+    sent_texts: dict[int, str] | None = None
     tabular_pages: tuple[int, ...] = ()
     goes_to_extract: bool = False  # whether this document was one to transcribe at all
     date_flags: tuple[str, ...] = ()  # what document_dates.py could not settle about its date

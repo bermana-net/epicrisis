@@ -24,6 +24,11 @@
      address older than this server's memory of it is not an empty search: it is a question that has
      been forgotten. Answering it with "Type a word" would read as the words having found nothing. #}
   <p class="empty">The words this address stands for are not in it &mdash; a question is kept on this server and never written into a link. This one is not held any more: the server was restarted, or a great many questions have been asked since. Nothing else was lost; type the word again above.</p>
+  {% elif asked_of_another_archive %}
+  {# The same address, after the archive was switched. The words are held and are not shown: they
+     were typed about somebody else, and this page is about the person named in the bar above. Said
+     with its own cause rather than as the sentence above, which would blame a restart for a switch. #}
+  <p class="empty">That question was asked about another archive, so it is not repeated here &mdash; what somebody typed about one person's records is not printed on a page about another's. Type the word again above to ask it of this archive.</p>
   {% elif not query %}
   <p class="empty">Type a word. For instance: an institution, a diagnosis, the name of a test, a year.</p>
   {% else %}

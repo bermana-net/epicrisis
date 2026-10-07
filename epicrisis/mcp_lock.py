@@ -61,7 +61,16 @@ WRONG_CODES = 5  # attempts before the lock starts making whoever is guessing wa
 # server with `epicrisis mcp-lock clear`.
 WAITS_MINUTES = (1, 5, 15)
 SECRET_BYTES = 20  # the size RFC 4226 recommends for the shared secret
-WRONG_CODES_FILE = "mcp-lock-wrong-codes.json"  # the run of wrong codes, kept across a restart
+# The run of wrong codes, kept across a restart — one file per lock, in a folder of their own.
+#
+# They used to sit loose in the data directory as `mcp-lock-wrong-codes.json.<link>`, and the
+# server that writes them runs under a unit that may write the access log and nothing else beside
+# it. So every one of these writes failed, `_keep_wrong` set `writes = False`, and the growing
+# delay for wrong codes lived in one process's memory: it survived nothing, and a restart was a
+# fresh start for whoever was guessing. A folder can be named in the unit; a file per link, whose
+# name nobody knows in advance, cannot.
+WRONG_CODES_FOLDER = "mcp-locks"
+WRONG_CODES_FILE = "mcp-lock-wrong-codes.json"  # the instance's own, inside that folder
 
 
 class Locked(Exception):
@@ -101,6 +110,109 @@ def read_secret(path: Path | None = None) -> str | None:
     return secret or None
 
 
+def where_the_wait_is_kept(data_dir: Path, link: str | None = None) -> Path:
+    """The file holding one lock's run of wrong codes: the instance's, or one link's.
+
+    One place answers this for the server that writes them and for the command that clears them.
+    They were built in two: the server named `<file>.<link>` and the command knew only the file
+    without a link, so `mcp-lock clear` cleared the wait of an instance nobody was knocking on and
+    left every link's wait standing. A person locked out of their own archive ran the documented
+    way out and it did nothing — which is the shape of the finding that gave this program its
+    recovery role.
+    """
+    folder = Path(data_dir) / WRONG_CODES_FOLDER
+    return folder / (f"{link}.json" if link else WRONG_CODES_FILE)
+
+
+def make_the_place_for_waits(data_dir: Path) -> Path | None:
+    """Make the folder the runs of wrong codes live in, or give back nothing where that failed.
+
+    **Nothing in this program made it, and the one place that needed it could not.** The MCP unit
+    is sandboxed — `ProtectSystem=strict`, with the data directory not writable and this one
+    folder named in `ReadWritePaths` — and that line carries a dash, so that a folder which does
+    not exist yet cannot take the whole server down (it did once, 226/NAMESPACE, for the two
+    minutes it took to find out why). The dash also makes the folder's absence silent: with no
+    mount, `_keep_wrong` gets EROFS, sets `writes = False`, and the growing delay after wrong
+    codes lives in one process's memory — surviving nothing, and saying nothing anywhere.
+
+    So it is made from the side that can: the dashboard and the commands run with the data
+    directory writable. Called where a link is issued, because a link is what will need one, and
+    where the dashboard starts, so an instance that has not issued one yet is still ready.
+
+    Nothing is raised. A folder that cannot be made is a server that still answers codes and still
+    makes people wait, within one process — and the place that cares says so out loud instead.
+    """
+    folder = Path(data_dir) / WRONG_CODES_FOLDER
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        folder.chmod(0o700)
+        belongs_to_the_folder(folder / WRONG_CODES_FILE)
+    except OSError:
+        return None
+    return folder
+
+
+def the_waits_can_be_kept(data_dir: Path) -> bool:
+    """Whether a run of wrong codes written now would still be there after a restart.
+
+    Asked by the server as it starts, so that the one thing standing between somebody's archive
+    and a patient guesser is not quietly a thing that lives until the next restart. §7.
+    """
+    folder = Path(data_dir) / WRONG_CODES_FOLDER
+    return folder.is_dir() and os.access(folder, os.W_OK)
+
+
+def every_wait_kept(data_dir: Path) -> list[Path]:
+    """Every such file there is, the instance's and every link's. A file is not a wait."""
+    folder = Path(data_dir) / WRONG_CODES_FOLDER
+    return sorted(file for file in folder.glob("*.json")) if folder.is_dir() else []
+
+
+def whoever_is_waiting(data_dir: Path, now: float | None = None) -> list[Path]:
+    """The files of the locks that are keeping somebody waiting **now**, which is a question about
+    what is in them.
+
+    A file is not a wait, and counting files answered a different question from the one the page
+    asked: a run of wrong codes that was answered correctly leaves `[]` behind, and a run from last
+    week has aged out of the window entirely. Measured on the owner's own machine — one file,
+    two bytes, holding `[]` — while the settings page said "1 link is in a wait after wrong codes"
+    and offered him the command to clear it.
+
+    Asked of the same two things the lock itself asks, and nothing else: how many wrong codes are
+    still inside the window, and how long the step for that many says to wait. §7 — a count that
+    disagrees with the thing it counts is a defect.
+    """
+    at = time.time() if now is None else now
+    waiting = []
+    for file in every_wait_kept(data_dir):
+        lock = Lock(secret=None, remembers=file)
+        lock._recall_wrong(at)
+        if lock._wait_over(at) > 0:
+            waiting.append(file)
+    return waiting
+
+
+def let_the_server_read(file: Path) -> None:
+    """Hand a secret to the group the server runs as, so the service can check codes against it.
+
+    Here rather than in `cli.py`, where it was, because this module is the one place a secret file
+    is created and the registry of connectors creates one per link. Two copies of this would be
+    two answers to "who may read a secret of this program", and the second one written would be
+    the one that forgot the group.
+
+    Quiet where it cannot: a test writes these under a temporary folder as whoever runs pytest,
+    and there is no root and no such group there. The mode from `write_secret` already keeps the
+    file shut to everybody else, so failing to widen it errs towards closed.
+    """
+    import grp
+    import pwd
+
+    try:
+        os.chown(file, pwd.getpwnam("root").pw_uid, grp.getgrnam("ubuntu").gr_gid)
+    except (KeyError, PermissionError, OSError):
+        pass
+
+
 def write_secret(secret: str, path: Path | None = None) -> Path:
     """Write the secret where only root and the group running the server can read it.
 
@@ -132,11 +244,28 @@ class Lock:
     """The state of the lock in one running server: who is open, and who has been guessing."""
 
     secret: str | None = None
+    # Where this lock's own secret is kept, for the one case below where it has to be read again.
+    # **A lock reads its own file and never the instance's.** It used to fall back to the
+    # instance-wide secret whenever its own was missing, which was written for the lock of the
+    # whole server — where that file *is* the instance's — and inherited by the lock of a link,
+    # where it meant something else entirely: a link whose code secret could not be read accepted
+    # the code that once opened the whole instance, and refused the code it had itself printed for
+    # whoever holds it. Everything else in this program fails closed; that one failed open.
+    secret_file: Path | None = None
     minutes: int = PASS_MINUTES
     open_until: float = 0.0  # while the whole server is open, for instances that ask for that
-    opened_for: str = ""  # the archive that was open when that window was opened
-    # pass -> (when it stops working, the archive it was given for). A pass opens one person's
-    # archive, not this address: see require().
+    # pass -> (when it stops working, the archive it has been used for or "")
+    #
+    # **One patient to a session, which is what a pass is.** The archive is not written when the
+    # pass is given out — a code opens the lock and picks nobody — but on the first call that
+    # names one, and after that this pass answers about that archive and no other. Another means
+    # closing this one and taking a new code, which is the whole of the rule: the records of two
+    # people never meet, and a model's context is somewhere they could.
+    #
+    # Not the same thing as what used to be here. That wrote the archive at unlock time, from
+    # whatever the dashboard had open, and tore the pass up when somebody pressed Show — a rule
+    # about the dashboard, which no longer reaches a connector at all. This is a rule about the
+    # conversation: it binds to what was *asked for*, once, by whoever is holding the pass.
     passes: dict[str, tuple[float, str]] = field(default_factory=dict)
     used: set[tuple[str, int]] = field(default_factory=set)  # a code counts once
     wrong: list[float] = field(default_factory=list)
@@ -199,7 +328,7 @@ class Lock:
             self.writes = False
 
     def unlock(self, code: str, now: float | None = None, minutes: int | None = None,
-               scope: str = "conversation", archive: str = "") -> dict:  # fmt: skip
+               scope: str = "conversation") -> dict:  # fmt: skip
         """Take a code, give back a pass. Raises Locked on a wrong code or too many tries.
 
         The scope is the instance's own setting, and it is read here rather than only where a
@@ -209,8 +338,12 @@ class Lock:
         now = time.time() if now is None else now
         minutes = self.minutes if minutes is None else minutes
         if not self.secret:
-            # A secret made after the server started is picked up here, without a restart.
-            self.secret = read_secret()
+            # A secret made after the server started is picked up here, without a restart — its
+            # own, named when this lock was built. Where nothing named one, this is the lock of
+            # the instance and the default file is the instance's, which is what it was always
+            # reading; where a link named one, a missing file now means no lock rather than the
+            # instance's lock.
+            self.secret = read_secret(self.secret_file)
         if not self.secret:
             raise Locked("This archive has no lock set up; a code cannot be checked.")
         self._recall_wrong(now)
@@ -232,12 +365,11 @@ class Lock:
                 self._keep_wrong()
                 ticket = secrets.token_urlsafe(18)
                 until = now + minutes * 60
-                self.passes[ticket] = (until, archive)
+                self.passes[ticket] = (until, "")  # nobody yet: the first call names them
                 # An instance set to open as a whole opens here too; one set to open a conversation
                 # at a time leaves this at nothing, and the pass is the only way in.
                 if scope == "server":
                     self.open_until = max(self.open_until, until)
-                    self.opened_for = archive
                 return {"pass": ticket, "open_for_minutes": minutes, "until": _clock(until)}
         # A code that is right for this secret and wrong only for this clock is not a guess, so it
         # does not spend one of the owner's five tries. Counted, the five honest attempts of
@@ -282,7 +414,6 @@ class Lock:
             closed = len(self.passes)
             self.passes.clear()
             self.open_until = 0.0
-            self.opened_for = ""
             return {"locked": True, "passes_closed": closed}
         if ticket and ticket in self.passes:
             del self.passes[ticket]
@@ -290,7 +421,7 @@ class Lock:
         return {"locked": True, "passes_closed": 0}
 
     def require(self, ticket: str | None, enabled: bool, now: float | None = None,
-                scope: str = "conversation", archive: str = "") -> None:  # fmt: skip
+                scope: str = "conversation", about: str = "") -> None:  # fmt: skip
         """Let a call through, or stop it. Raises Locked with what to do about it.
 
         With scope "conversation" only the pass opens a call, so an opening stays with whoever
@@ -298,28 +429,39 @@ class Lock:
         is easier to live with and gives away the point of the lock to anyone who reaches the
         server in that window with the secret in hand.
 
-        A pass opens one person's archive. Whoever is holding it was told whose records they were
-        reading, and that sentence has to stay true: when the archive being shown is changed on
-        the dashboard, every pass given for the one before it stops working there and then. The
-        session ends rather than quietly continuing over somebody else's records.
+        **And it holds one patient to a session.** `about` is the archive this call names, which
+        `mcp_server.answering` has already checked against what the link reaches. The first call
+        to name one writes it on the pass; a later call naming another is refused, and the refusal
+        says what to do — close this pass and take a new code. A conversation therefore holds the
+        records of one person, and the one place two could have met is a model's own context.
+
+        That is not the rule this used to keep. The old one wrote the archive at unlock time, out
+        of whatever the dashboard had open, and tore the pass up when somebody pressed Show: a
+        rule about the dashboard, which reaches no connector now. This one is about the
+        conversation, and it binds to what was asked for rather than to what was on a screen.
         """
         if not enabled:
             return
         now = time.time() if now is None else now
         self._forget_old(now)
-        if scope == "server" and self.open_until > now and self.opened_for == archive:
-            return
         given = self.passes.get(ticket or "")
+        if scope == "server" and self.open_until > now:
+            # Everything is open for the length of the window, which is what this setting means
+            # and what the page says it means. **The one person to a conversation still holds**
+            # wherever there is a conversation to hold it on: a call carrying a pass that has
+            # already read somebody is refused for anybody else, exactly as under the other
+            # setting. This return stood above that check, so choosing "everything" quietly
+            # switched off a rule of the constitution — and the server went on telling the model,
+            # in its own instructions, that one conversation holds one person. A call with no
+            # pass at all has no conversation and is let through: that is the setting, and it is
+            # the half the page warns about.
+            if ticket and given and given[0] > now:
+                self._hold_to_one_person(ticket, given, about)
+            return
+
         if given and given[0] > now:
-            if given[1] == archive:
-                return
-            del self.passes[ticket or ""]
-            raise Locked(
-                "The archive shown by this server was changed to somebody else's while you were "
-                "reading. This pass opened the one before it and has been closed, so that nothing "
-                "of one person is read as another's. Ask for a six-digit code again to open the "
-                "archive that is open now."
-            )
+            self._hold_to_one_person(ticket, given, about)
+            return
         raise Locked(
             "This archive is locked, which is normal and not a failure. Do not give up and do not "
             "answer from memory. Ask the person you are talking to for the six digits their "
@@ -343,8 +485,33 @@ class Lock:
         self.wrong = []
         self._keep_wrong()
 
+    def _hold_to_one_person(self, ticket: str | None, given: tuple, about: str) -> None:
+        """One conversation holds one person: bind this pass to the first archive asked about.
+
+        Written once and called from both settings, because it belongs to neither of them. What a
+        code opens — this conversation or the whole server for a while — is a question about who
+        may call at all; this is a question about what one conversation may hold, and the first
+        entry of the constitution does not have a setting.
+        """
+        if about and given[1] and given[1] != about:
+            raise Locked(
+                "This pass has been reading one person's records and is for that one only. "
+                "To read another: call lock_archive on this pass, then unlock with a fresh "
+                "six-digit code and ask about the other archive first. **The code comes from "
+                "the same authenticator entry as the first one** — there is one code for this "
+                "way in, not one for each person — so the person you are talking to has it "
+                "already and nobody else has to be asked for anything. The records of two "
+                "people do not go into one conversation: that is the rule here and not a "
+                "fault of the question."
+            )
+        if about and not given[1]:
+            # The first call to name somebody. Written here rather than at unlock, because a
+            # code opens the lock and picks nobody: who the conversation is about is decided
+            # by the first question asked in it.
+            self.passes[ticket or ""] = (given[0], about)
+
     def _forget_old(self, now: float) -> None:
-        self.passes = {ticket: given for ticket, given in self.passes.items() if given[0] > now}
+        self.passes = {ticket: held for ticket, held in self.passes.items() if held[0] > now}
         self.open_until = self.open_until if self.open_until > now else 0.0
         if self.wrong and self._wait_over(now) <= 0 and now - self.wrong[-1] > WAITS_MINUTES[-1] * 60:
             self.wrong = []

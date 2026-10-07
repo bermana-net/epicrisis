@@ -2,6 +2,10 @@
 {% block title %}Page {{ page }}{% endblock %}
 {% block page %}
 
+{# Which page of the menu this is. The original of one scan, reached from a document: it belongs where the
+   document does. #}
+{% set current = "documents" %}
+
   {% include "_header.html" %}
 
   <section class="rule" style="padding-top: 18px;">

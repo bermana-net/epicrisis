@@ -1,0 +1,58 @@
+# The read-only MCP tools over HTTP: what an assistant somewhere else reaches, behind a secret
+# path and a tunnel. Copy this to /etc/systemd/system/, put this machine's paths in place of the
+# ones below, then `systemctl daemon-reload && systemctl enable --now epicrisis-mcp`.
+#
+# **Why a unit at all.** A server started by hand is a server that is not there after a reboot,
+# and the person who notices is whoever you gave a link to — in another country, at a patient's
+# bedside, with no way to tell "my access was taken away" from "their machine came back up
+# without the server". That is not a thing to leave to somebody remembering.
+[Unit]
+Description=Epicrisis Companion: read-only MCP tools over HTTP, behind a secret path
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=
+WorkingDirectory=/home/ubuntu/epicrisis
+# No secret here: every live link in the registry is served, so one issued on the page answers
+# without a restart and a revoked one stops the same way. The name the tunnel answers on is a
+# setting of the instance, and naming it here as well would be a second answer to one question.
+ExecStart=/home/ubuntu/epicrisis/.venv/bin/epicrisis mcp --http --data-dir /home/ubuntu/epicrisis/data --host 127.0.0.1 --port 8051
+Restart=on-failure
+RestartSec=5
+
+# The archive is read here and nowhere written; the rest of the machine is out of reach.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+# The one file it writes: the record of who called it.
+ReadWritePaths=/home/ubuntu/epicrisis/data/mcp-access.jsonl
+# And the folder holding the run of wrong codes, one file per link. Without it every
+# such write failed and the growing delay for wrong codes lived in one process's
+# memory: it survived nothing, and a restart was a fresh start for whoever was guessing.
+# The dash: a folder that is not there yet must not take the server down with it. It was
+# written without one and the service refused to start at all (226/NAMESPACE) the moment
+# the path was named before the folder existed — the whole way in, down, because a
+# throttle had nowhere to write.
+ReadWritePaths=-/home/ubuntu/epicrisis/data/mcp-locks
+
+[Install]
+WantedBy=multi-user.target

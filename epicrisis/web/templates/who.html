@@ -2,6 +2,12 @@
 {% block title %}Doctors and clinics{% endblock %}
 {% block page %}
 
+{# Which page of the menu this is. Without it the menu highlighted nothing here — and worse, the
+   header keeps a page in the menu by comparing it with this name, so where the menu is drawn
+   short this one dropped out from under the person standing on it. An undefined name compared
+   with a string is simply false, so Jinja said nothing. #}
+{% set current = "who" %}
+
   {% include "_header.html" %}
 
   {# Why the last press changed nothing, said where the press was made. Without it, one spelling
@@ -41,23 +47,19 @@
        it. It is never applied by itself. Joining names is a claim about one person being one
        person, and two doctors of one surname and one initial work in two clinics of every city. #}
     <h2>Look like one and the same</h2>
+    {# One line of action at the top, 7 Oct 2026. Three paragraphs stood here — a hundred and
+       eighty words of caps before a person saw the first name — and two of them were about
+       particular rows and a particular press. They are beside those now. What is left is the
+       sentence that has to be read before anything else: nothing here has happened yet. #}
     <p class="note caps">Proposed, not done. Every spelling is ticked; untick any that is not the
-      same one, choose which spelling to keep, and press the button. The ticked ones then answer
-      as one, here and on every page that asks about them, and the group below can be separated
-      again by one press. What you untick is not lost: it is offered again next time, as a smaller
-      family or as a pair.</p>
+      same one, choose which spelling to keep, and press the button. What you untick is not lost:
+      it is offered again next time, as a smaller family or as a pair.</p>
     {# And what is being offered when one of the names in a family is a group already. Two groups
        standing for one doctor used to stay apart for ever: a group appears here as its label, and
        the filter that hid a family whose every name was settled hid exactly that pair, so nothing
        on this page ever asked. What the press does is said in the heading of the row and the
        spellings under each group stand beside it, because a label on its own shows nothing and §4
        lets a page offer a pair only where a reader can see that it is wrong. #}
-    {% if proposals | selectattr("under") | first %}
-    <p class="note caps">A name below may be a group you have already joined, standing under the
-      spelling you kept, with the rest of its spellings beside it. Joining two of those joins every
-      spelling under both &mdash; and &ldquo;Separate them&rdquo; afterwards leaves every one of
-      those spellings standing on its own again, not the two groups you had.</p>
-    {% endif %}
     {# What the counting can and cannot tell apart, said here because nothing else can say it, and
        said differently for the two kinds because they are offered on two different rules.
 
@@ -74,17 +76,6 @@
        pairs the three archives here offer. What a reader has to look at instead is whether the
        longest spelling is a different place, and the forms print the branch and the city beside
        the name, so it is there to be read. #}
-    {% if kind == "doctor" %}
-    <p class="note caps">A name that stands inside another is not the same name. Only a speciality
-      or a title printed in front of a name is offered here &mdash; a surname with a second
-      surname or another initial after it is never put to you, because nothing printed anywhere
-      says whether those are one person.</p>
-    {% else %}
-    <p class="note caps">A name that stands inside another is not the same name. A branch, a city
-      or a version of the software reads the same way to the counting as another place of a similar
-      name &mdash; look at the longest spelling in a family before you press, and untick it if it
-      is somewhere else.</p>
-    {% endif %}
     <dl class="makers">
       {% for family in proposals %}
       <div class="reasoned">
@@ -113,6 +104,15 @@
                 {% if family.under.get(name) %}<span class="caps muted">{{ family.under[name] | join(" · ") }}</span>{% endif %}</li>
               {% endfor %}
             </ul>
+            {# Said at the row it is about and not over the whole page: one of these names is a
+               group already joined, standing under the spelling that was kept. It stood at the
+               top for every reader, including the ones with no such row in front of them. #}
+            {% if family.under %}
+            <p class="note caps">One of these is a group you joined before, with the rest of its
+              spellings beside it. Joining it joins all of them &mdash; and &ldquo;Separate
+              them&rdquo; afterwards leaves every spelling on its own again, not the two groups
+              you had.</p>
+            {% endif %}
             {# Which of five spellings is the name is a question only the person reading them can
                answer, so the page asks it rather than choosing in silence — and the first answer
                it offers says out loud what it will choose if they leave it alone. The shortest,
@@ -125,6 +125,17 @@
               <option value="">keep the shortest of the ones ticked</option>
               {% for name in family.names %}<option value="{{ name }}">keep &ldquo;{{ name }}&rdquo;</option>{% endfor %}
             </select>
+            {# What to look at before pressing, beside the press. §4 lets a page offer a pair only
+               where a reader can see that it is wrong, and this is the sentence that tells them
+               where to look — so it belongs at the button and not at the top of a page they
+               scrolled past. #}
+            <p class="note caps">{% if kind == "doctor" %}A name that stands inside another is not the
+              same name. Only a speciality or a title printed in front of a name is offered &mdash; a
+              surname with a second surname or another initial after it is never put to you, because
+              nothing printed anywhere says whether those are one person.{% else %}A name that stands
+              inside another is not the same name. A branch, a city or a version of the software reads
+              to the counting like another place of a similar name &mdash; look at the longest spelling
+              here before you press, and untick it if it is somewhere else.{% endif %}</p>
             <button class="btn small joining" type="submit">Join the ones ticked</button>
             {# "Not these" stood under what a model offered and nowhere else, so a family the word
                count had counted could only be joined or left alone — and left alone it came back
@@ -152,6 +163,42 @@
       offers it again — not this page and not a model — until you ask to be asked again.</p>
     <dl class="makers">
       {% for group in thought %}
+      <div class="reasoned">
+        <dt>{{ group.names | join(" · ") }}</dt>
+        <dd>
+          {% if group.why %}<p class="note">{{ group.why }}</p>{% endif %}
+          <form method="post" action="/who/{{ archive }}/join" class="inline">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            {% for name in group.names %}<input type="hidden" name="names" value="{{ name }}">{% endfor %}
+            <input type="hidden" name="label" value="{{ group.label }}">
+            <button class="btn small" type="submit">Join as &ldquo;{{ group.label }}&rdquo;</button>
+          </form>
+          <form method="post" action="/who/{{ archive }}/decline" class="inline">
+            <input type="hidden" name="kind" value="{{ kind }}">
+            {% for name in group.names %}<input type="hidden" name="names" value="{{ name }}">{% endfor %}
+            <button class="btn small quiet" type="submit">Not these</button>
+          </form>
+        </dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
+
+    {% if carried %}
+    {# Joins this person made by hand, on an instance that kept one file of joins for every
+       archive and wrote down nowhere which archive was open when a press was made. More than one
+       archive here prints these names, so carrying them in as "joined by you" would stand one
+       person's decision, unmarked, in another person's archive — the first entry's own example
+       of itself. They are offered instead, under a heading that says who they came from, and
+       one press puts the join back in the archive it belongs to. Nothing was lost: the names,
+       the label and the reason are all here. #}
+    <h2>Carried in from before each archive kept its own joins</h2>
+    <p class="note caps">Nothing below is joined. You made these joins yourself, on a version that
+      kept one file of them for every archive; more than one archive here prints these names, so
+      which of them you were looking at is written down nowhere. Join it where it belongs, or say
+      no to it here.</p>
+    <dl class="makers">
+      {% for group in carried %}
       <div class="reasoned">
         <dt>{{ group.names | join(" · ") }}</dt>
         <dd>
@@ -267,7 +314,16 @@
            names are in no such field, so that link would answer "no documents" about a doctor
            the page has just said signed several — a count disagreeing with another count on the
            same page. The search reads the text, which is where the name is. #}
-        <dt><a href="/search?q={{ one.name | urlencode }}">{{ one.name }}</a>
+        {# A press and not a link, and the difference is the name itself. The search answers a
+           POST for a reason written at that route: an address is kept in a browser's history,
+           synced from there to a vendor's servers, offered in the address bar to whoever sits at
+           the machine next, and written into the log of any tunnel in front of this dashboard.
+           This link put a **doctor's name** into one, which is the one thing that route exists to
+           keep out of addresses. #}
+        <dt><form method="post" action="/search" class="as-a-button">
+            <input type="hidden" name="q" value="{{ one.name }}">
+            <button class="as-a-word" type="submit">{{ one.name }}</button>
+          </form>
           <span class="caps muted">in the text only</span></dt>
         <dd class="caps">{{ one.documents }} document{{ "" if one.documents == 1 else "s" }}
           &middot; under &ldquo;{{ one.labels | join("&rdquo;, &ldquo;" | safe) }}&rdquo;</dd>

@@ -483,7 +483,13 @@ def test_the_page_prints_the_sentence_and_the_line_it_was_read_from(two_archives
     assert f"Лікуючий лікар {SIGNED_INSIDE}. [підпис]" in drawn.text
     # To the search and never to the doctor filter of the index, which holds no such name and
     # would answer "no documents" about a doctor the page has just said signed one.
-    assert "/search?q=" in drawn.text
+    #
+    # **And as a press, never as an address.** The search answers a POST so that what is being
+    # looked for stays out of a browser's history, out of what that history syncs to a vendor,
+    # and out of the log of any tunnel in front of this dashboard — and this link carried a
+    # doctor's surname into one. The name is still the heading; what changed is the verb.
+    assert "/search?q=" not in drawn.text, "a name is being put into an address"
+    assert f'<input type="hidden" name="q" value="{SIGNED_INSIDE}">' in drawn.text
     assert f'/?doctor={SIGNED_INSIDE.replace(" ", "%20")}' not in drawn.text
     # And nothing of the other person's archive, on the page this reading added a list to.
     for word in (THEIRS_TOO["doctor"], THEIRS_TOO["provider"], THEIRS_TOO["test"]):

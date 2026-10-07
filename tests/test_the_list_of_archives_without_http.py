@@ -14,6 +14,7 @@ over HTTP could not tell apart from a reading somebody forgot. Both are asked he
 import ast
 import inspect
 import json
+from datetime import UTC, datetime
 import os
 
 import pytest
@@ -165,8 +166,13 @@ def test_a_lock_in_the_way_is_named_and_the_reading_is_not_moved(an_instance):
     (output / layout.INVENTORY).write_text('{"sha256": "a", "path": "a page.txt"}\n', encoding="utf-8")
     # A lock held by this very process, which is alive by definition while the test runs. Named
     # for the step whose absence from the old list of three was the finding: the date search.
+    #
+    # Taken now, and the date is not written down here. It was, once, as the day this test was
+    # written — and `runs.holder` ignores a lock more than ABANDONED_AFTER_HOURS old, so the test
+    # stopped testing a held lock the moment that day was yesterday and failed on its own at
+    # midnight, with nothing in the program changed. A test about a lock held *now* has to say now.
     held = output / "datesearch.lock"
-    held.write_text(json.dumps({"pid": os.getpid(), "started_at": "2026-10-04T00:00:00+00:00"}),
+    held.write_text(json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()}),
                     encoding="utf-8")  # fmt: skip
 
     pressed = the_list.read_again_from_nothing(registry, added.id, understood="yes")

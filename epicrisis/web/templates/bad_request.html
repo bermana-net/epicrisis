@@ -2,6 +2,10 @@
 {% block title %}Not a page{% endblock %}
 {% block page %}
 
+{# Which page of the menu this is. No page of the menu: this is an address that could not be read, and
+   highlighting one would say a person is somewhere they are not. #}
+{% set current = "" %}
+
   {% include "_header.html" %}
 
   <section class="rule" style="padding-top: 18px;">

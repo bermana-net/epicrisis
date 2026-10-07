@@ -24,9 +24,9 @@ draws what the page says.
 # What it will not do
 
 It will not read a printed reference range as a date. That is the whole difficulty: "4.11-5.89"
-is a glucose range, and to a loose reader it is the eleventh of April 1989. On one archive here a
-loose reader found eight such "quotations", every one of them a real laboratory value that this
-rule would then have moved decades from where it was measured.
+is a glucose range, and to a loose reader it is the eleventh of April 1989. The first reader
+written here was that loose, and what it called quotations were printed ranges — every one of them
+a real laboratory value that this rule would then have moved decades from where it was measured.
 
 So a date must be one of two shapes and nothing else.
 
@@ -61,13 +61,16 @@ form printed on the fifth and signed on the twelfth is one visit, not two studie
 
 # What it does not settle
 
-Whether a quotation should be drawn at all. On the archive this was written against, twenty-six of
-twenty-eight quotations were a copy of a laboratory form the archive already holds, and two were
-the only surviving record of a measurement whose own form was never scanned. Which of those a
-chart shows is not this rule's business; this rule says when the thing was measured.
+Whether a quotation should be drawn at all. Most of what it finds is a doctor retelling a
+laboratory form the archive already holds, and some of it is the only surviving record of a
+measurement whose own form was never scanned. Which of those a chart shows is not this rule's
+business; this rule says when the thing was measured.
 
-# Measured
+# Why it exists
 
-On the three archives here: twenty-eight values carry a date of their own, all of them in one
-archive. The middle of them is quoted 308 days from the document carrying it; the furthest, 1 526
-days — a measurement drawn more than four years from where it was taken.
+A doctor retells a measurement months or years after it was taken, so a chart that dates the
+retelling by the note draws the point where the note is and not where the measurement was. The
+distance is the whole defect, and it is a distance of seasons and of years rather than of days:
+far enough to put a reading in the wrong decade of a history, to invent a rise that never
+happened and to hide one that did. It is also invisible on the page — the note prints the date and
+the chart simply does not use it — which is why this is a rule and not a thing to notice.

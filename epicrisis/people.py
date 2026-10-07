@@ -17,7 +17,7 @@ whichever they like: it is their archive and their doctor.
 import functools
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from epicrisis import journal, layout, sources
@@ -83,6 +83,12 @@ class Group:
     #: word count offers and for anything a person settled themselves — there the reason is visible
     #: in the names.
     why: str = ""
+    #: Carried out of the instance-wide people.json of one day, into an archive that nobody said
+    #: the press was about. Never settled: see carry_the_old_file_in, which is the only thing that
+    #: sets it. It is on the record rather than only in `why` so that the page can put these under
+    #: a heading of their own — the heading over a proposal says who offered it, and "a model
+    #: thinks these are one" is false about every one of them.
+    carried: bool = False
 
     def as_dict(self) -> dict:
         stored = {"kind": self.kind, "label": self.label, "names": sorted(self.names, key=in_name_order)}
@@ -92,6 +98,8 @@ class Group:
             stored["refused"] = True
         if self.why:
             stored["why"] = self.why
+        if self.carried:
+            stored["carried"] = True
         return stored
 
 
@@ -194,8 +202,15 @@ def load(data_dir: Path, source_id: str) -> list[Group]:
     return [Group(kind=one.get("kind", "doctor"), label=a_printed_name(one.get("label", "")),
                   names=sorted(dict.fromkeys(a_printed_name(name) for name in one.get("names", [])),
                                key=in_name_order),
-                  settled=bool(one.get("settled", True)) and not one.get("refused"),
-                  refused=bool(one.get("refused", False)), why=str(one.get("why", "")))
+                  # A carried group is never settled either, and for the same reason: of the two
+                  # readings, "a person here said these are one" is the one that must not be the
+                  # answer in a file that says in the next field that nobody here was asked.
+                  settled=(bool(one.get("settled", True)) and not one.get("refused")
+                           and not one.get("carried")),
+                  refused=bool(one.get("refused", False)), why=str(one.get("why", "")),
+                  # Where it came from, which is a fact about the record and not a fourth state:
+                  # a carried group that has since been refused is still one somebody carried.
+                  carried=bool(one.get("carried", False)))
             for one in stored if one.get("names")]  # fmt: skip
 
 
@@ -495,7 +510,10 @@ def decline(data_dir: Path, source_id: str, kind: str, names: list[str]) -> list
     # The label and the reason a model gave are kept, because the page shows the refusal and a
     # person reading it a month later is owed the sentence they said no to.
     groups.append(Group(kind=kind, label=asked.label if asked else wanted[0], names=wanted,
-                        settled=False, refused=True, why=asked.why if asked else ""))  # fmt: skip
+                        settled=False, refused=True, why=asked.why if asked else "",
+                        # And where it came from, which outlives the answer: a refusal of a group
+                        # the migration offered is still a group the migration offered.
+                        carried=bool(asked and asked.carried)))  # fmt: skip
     save(data_dir, source_id, groups)
     _settled(data_dir, source_id, "names were said not to be one", kind, len(wanted))
     return groups
@@ -677,6 +695,54 @@ def worth_joining(kind: str, names: list[str]) -> list[tuple[str, str]]:
     return sorted(set(found))
 
 
+#: What a group carried into an archive nobody said it was about says for itself, on the page, in
+#: place of the reason a model would have given. Said in full rather than as "carried in", because
+#: the question a person is being asked here is which of two archives a press of theirs was made
+#: in, and nothing on this machine knows the answer.
+CARRIED_FROM_THE_INSTANCE = (
+    "Joined by hand on an instance that kept one file of joins for every archive, before each "
+    "archive kept its own. More than one archive here prints these names, so which archive that "
+    "press was made in is written down nowhere, and nobody has said it was this one."
+)
+
+
+def _names_each_archive_prints(data_dir: Path) -> dict[str, set[str]] | None:
+    """Every doctor and institution each archive's index prints — or None if one would not read.
+
+    None and not a short answer, and that is the whole reason this is a function of its own. The
+    carry below has to know how many archives a group could be about **before** it writes into the
+    first of them, and a survey missing one archive makes a group that two archives print look
+    like a group only one does. That is the reading that settles somebody else's join for them.
+    """
+    import sqlite3
+
+    printed_by: dict[str, set[str]] = {}
+    for index in sorted(Path(data_dir).glob("index-*.sqlite")):
+        source_id = index.name[len("index-"):-len(".sqlite")]
+        try:
+            # immutable, because this reads a live archive and must not take a lock on it or
+            # leave a journal file beside it.
+            with sqlite3.connect(f"file:{index}?mode=ro&immutable=1", uri=True) as db:
+                printed = {row[0] for row in db.execute(
+                    "SELECT provider FROM documents WHERE provider IS NOT NULL")}
+                printed |= {row[0] for row in db.execute(
+                    "SELECT doctor FROM documents WHERE doctor IS NOT NULL")}
+        except sqlite3.Error:
+            return None
+        printed_by[source_id] = printed
+    return printed_by
+
+
+def _offered_instead(group: Group) -> Group:
+    """One carried group as a question rather than as an answer, saying where it came from."""
+    return replace(group, settled=False, carried=True,
+                   # Whatever was already said of them first: a group the old file held as a
+                   # model's proposal keeps the model's own sentence, and the sentence about the
+                   # carry stands behind it. Beside the names, both of them, which is where the
+                   # third entry says the voice of a sentence belongs.
+                   why=" ".join(part for part in (group.why, CARRIED_FROM_THE_INSTANCE) if part))
+
+
 def carry_the_old_file_in(data_dir: Path) -> dict[str, int]:
     """Move an instance-wide people.json into the archives whose documents name those people.
 
@@ -686,6 +752,26 @@ def carry_the_old_file_in(data_dir: Path) -> dict[str, int]:
     archives that actually print one of its spellings. A group naming somebody no archive here
     mentions is carried nowhere and the old file is kept, because losing a person's own work to a
     migration is the failure this whole module is about.
+
+    **A group only one archive could be about arrives settled; a group two archives could be
+    about arrives as a question.** Two archives in one city print the same laboratory, and this
+    machine's own old file holds one such group out of nineteen. The press that joined those names
+    was made once, on one page, about one archive — and which one is written down nowhere, because
+    on the day that file existed nothing recorded whose archive was open. Writing it into both as
+    "joined by you" is a decision one person made standing, unmarked, in another person's archive,
+    which is the first entry's own example of itself. So the second reading is the one that is
+    refused: where exactly one archive prints a name of the group, that archive is the only page
+    the press can have been made on and the join goes in as it was made; where more than one does,
+    every one of them is offered the group instead, under CARRIED_FROM_THE_INSTANCE, and one press
+    makes it a join in the archive it really belongs to.
+
+    Nothing of the person's work is lost by that, which is the eighth entry's half of this: the
+    names, the label and the reason are all in the archive, the group stands on the page it would
+    have stood on, and the difference is one press — against the alternative of a label standing
+    over a clinic on documents nobody asked about. A refusal is carried as a refusal and only
+    marked: it stops a question being asked rather than renaming anything, it stands under its own
+    heading with "Ask me again" beneath it, and turning one into a proposal would be this program
+    asking a question its owner had already answered.
 
     Called once at startup by the page and once by `epicrisis people`, which is the command this
     file is about. It does nothing on the second call, and nothing at all on an instance that never
@@ -698,10 +784,6 @@ def carry_the_old_file_in(data_dir: Path) -> dict[str, int]:
     migration nobody can check. See still_beside_the_instance() for the other half of that
     sentence: what has not been carried in, which is what a person needs in order to act.
     """
-    import sqlite3
-
-    from epicrisis.index.build import index_path
-
     old = Path(data_dir) / FILE_NAME
     if not old.exists():
         return {}
@@ -714,18 +796,23 @@ def carry_the_old_file_in(data_dir: Path) -> dict[str, int]:
                     settled=bool(one.get("settled", True)) and not one.get("refused"),
                     refused=bool(one.get("refused", False)),
                     why=str(one.get("why", ""))) for one in stored if one.get("names")]  # fmt: skip
+    printed_by = _names_each_archive_prints(data_dir)
+    if printed_by is None:
+        # An index this cannot read is an archive whose share cannot be settled — and, now that
+        # the question is how many archives print a name rather than whether this one does, it is
+        # also an archive that could be the second home of every group in the file. Nothing is
+        # written at all, rather than the readable archives being carried in against a survey
+        # that is short of one: the old file stays, and the next start tries again.
+        journal.record(data_dir, {"event": "an index would not read while the old people.json was "
+                                           "being carried in"})  # fmt: skip
+        return {}
+    # How many archives here print any of a group's names, counted over every index before the
+    # first byte is written. One is the archive the press was made on; more than one is nobody's.
+    homes = {id(one): sum(1 for printed in printed_by.values() if set(one.names) & printed)
+             for one in groups}  # fmt: skip
     carried: dict[str, int] = {}
     found_a_home = set()
-    for index in sorted(Path(data_dir).glob("index-*.sqlite")):
-        source_id = index.name[len("index-"):-len(".sqlite")]
-        try:
-            with sqlite3.connect(f"file:{index}?mode=ro", uri=True) as db:
-                printed = {row[0] for row in db.execute(
-                    "SELECT provider FROM documents WHERE provider IS NOT NULL")}
-                printed |= {row[0] for row in db.execute(
-                    "SELECT doctor FROM documents WHERE doctor IS NOT NULL")}
-        except sqlite3.Error:
-            return carried  # an index this cannot read is an archive whose share cannot be settled
+    for source_id, printed in printed_by.items():
         theirs = [one for one in groups if set(one.names) & printed]
         if not theirs:
             continue
@@ -750,9 +837,13 @@ def carry_the_old_file_in(data_dir: Path) -> dict[str, int]:
                 continue  # a file nobody can read is not one to judge a group against
             found_a_home.update(id(one) for one in theirs if frozenset(one.names) in already)
             continue
+        # Settled where this is the one archive that could be meant, offered where it is not.
+        # `theirs` holds the groups as the old file wrote them throughout, so that `id(one)`
+        # below still names the group and not the copy made for the write.
+        writing = [one if homes[id(one)] == 1 else _offered_instead(one) for one in theirs]
         try:
             with editing(data_dir, source_id):
-                save(data_dir, source_id, theirs)
+                save(data_dir, source_id, writing)
         except Busy:
             # Somebody is editing that archive's own file at this moment. Its groups are left
             # un-homed, which keeps the old file where it is, and the next start carries them in.
@@ -765,6 +856,16 @@ def carry_the_old_file_in(data_dir: Path) -> dict[str, int]:
             continue
         found_a_home.update(id(one) for one in theirs)
         carried[source_id] = len(theirs)
+        # Which of them went in as joins and which only as questions, counted and never named: a
+        # spelling here is the name of a doctor on somebody's documents. The page shows the state
+        # a group is in now; this is the only record that it was this program and not its owner
+        # that put it there, and it outlives the press that turns a question into a join. The
+        # dashboard writes one line for the whole move and this writes one per archive — the same
+        # arithmetic at two grains, and the command line writes only this one.
+        offered = sum(1 for one in writing if one.carried)
+        journal.record(data_dir, {"event": "the old people.json was carried into an archive",
+                                  "archive": source_id, "joined": len(writing) - offered,
+                                  "offered": offered})  # fmt: skip
     # The old file goes aside only when every group it held is now inside an archive. One group
     # naming somebody no archive here mentions is enough to keep it: losing a person's own work to
     # a migration is the failure this module exists for.

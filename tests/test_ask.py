@@ -76,7 +76,7 @@ def test_mcp_tools_are_read_only_and_answer(archive_index):
     assert names == {
         "archive_overview", "search_documents", "list_documents", "value_names", "value_history",
         "get_document", "documents_to_check", "list_indicators", "flagged_values",
-        "unlock", "lock_archive",
+        "unlock", "lock_archive", "archive_name",
     }  # fmt: skip
     result = asyncio.run(server.call_tool("value_history", {"name": "цистатин"}))
     assert "0,85" in str(result) and labs[:8] in str(result)
@@ -245,7 +245,7 @@ def test_settings_switch_what_answers_may_contain(archive_index):
     from epicrisis.ask import system_prompt
     from epicrisis.settings import answer_mode
 
-    data_dir, _, _ = archive_index
+    data_dir, only_archive, _ = archive_index
     client = TestClient(create_app(data_dir, background_jobs=False), base_url="http://localhost:8050")
 
     assert answer_mode(data_dir) == "as_printed"
@@ -269,14 +269,20 @@ def test_settings_switch_what_answers_may_contain(archive_index):
     assert 'value="with_meaning" checked' in page.replace('" checked', '" checked')
     assert "not a medical device" in page
 
-    # Bringing a test to one scale is a rule of its own, off unless asked for.
+    # Bringing a test to one scale is a rule of its own, off unless asked for. The switch on this
+    # page is answered for the archive being shown — "about=instance" is the other address, and
+    # the two are told apart here as the page tells them apart.
     from epicrisis import rules
     from epicrisis.settings import rule_on
 
     to_scale = rules.load(data_dir).get("one_scale_for_a_test")
+    shown = {"ask_page": "on", "mode": "with_meaning", "rule_on": "one_scale_for_a_test",
+             "shown": ["one_scale_for_a_test", "ask_page"]}  # fmt: skip
     assert rule_on(data_dir, to_scale) is False
-    client.post("/settings", data={"ask_page": "on", "mode": "with_meaning", "rule_on": "one_scale_for_a_test",
-                                   "shown": ["one_scale_for_a_test", "ask_page"]})  # fmt: skip
+    client.post("/settings", data=shown)
+    assert rule_on(data_dir, to_scale, in_archive=only_archive.id) is True
+    assert rule_on(data_dir, to_scale) is False, "one archive's answer is not every archive's"
+    client.post("/settings", data={**shown, "about": "instance"})
     assert rule_on(data_dir, to_scale) is True
     assert 'value="one_scale_for_a_test" checked' in client.get("/settings").text
 
@@ -358,23 +364,39 @@ def test_a_question_carries_the_chat_only_when_the_box_is_ticked(archive_index, 
 def test_over_http_the_archive_answers_only_behind_the_secret(archive_index):
     from epicrisis.mcp_server import http_app, new_path_secret
 
+    from epicrisis import connectors
+    from epicrisis.mcp_server import SERVED_AT
+
     data_dir, _, labs = archive_index
-    secret = new_path_secret()
+    # The secret is the registry's now, not the server's: every live link is served, which is why
+    # one issued on the page answers without a restart. And the link is given the archive it is
+    # for: a link that reaches nobody answers nothing, which is its own test elsewhere.
+    from epicrisis.sources import SourceRegistry
+
+    here = tuple(one.id for one in SourceRegistry(data_dir).list())
+    made, _code = connectors.issue(data_dir, name="a link", archives=here,
+                                   secrets_folder=data_dir / "secrets")  # fmt: skip
+    secret = made.path
     call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "value_history", "arguments": {"name": "цистатин"}}}  # fmt: skip
     headers = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
 
     # The app keeps a task group alive, so it is started as a context manager, as a server would.
-    with TestClient(http_app(data_dir, secret), base_url="http://localhost:8051", client=("127.0.0.1", 9000)) as client:
+    with TestClient(http_app(data_dir), base_url="http://localhost:8051", client=("127.0.0.1", 9000)) as client:
         assert client.post("/mcp", json=call, headers=headers).status_code == 404
         assert client.post(f"/mcp/{'0' * 64}", json=call, headers=headers).status_code == 404
         assert client.get("/").status_code == 404
+        # The path the application underneath is mounted at is not a way in: it matches no link,
+        # so it is refused exactly as an invented path is. Only the dispatcher reaches it, and
+        # only after a secret has matched.
+        assert client.post(SERVED_AT, json=call, headers=headers).status_code == 404
 
         answer = client.post(f"/mcp/{secret}", json=call, headers=headers)
         assert answer.status_code == 200 and "0,85" in answer.text and labs[:8] in answer.text
 
-    with pytest.raises(ValueError):
-        http_app(data_dir, "too-short")
+        # And a link taken back is a wrong path and nothing more.
+        connectors.revoke(data_dir, made.id, secrets_folder=data_dir / "secrets")
+        assert client.post(f"/mcp/{secret}", json=call, headers=headers).status_code == 404
 
 
 def test_the_timeline_shows_the_archive_four_ways_and_search_finds_a_document(archive_index):

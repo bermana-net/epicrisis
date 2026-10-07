@@ -11,9 +11,9 @@ does = "marks"
 at = "suspects"
 # Off, because nothing it finds makes a number wrong. A form read with no title is harder to find
 # by name and nothing else: every value on it, its unit and its printed range are whatever the
-# page said. It found 28 documents on the archive it was measured against, and 28 rows that change
-# no reading are 28 rows between a person and the ones that do. Switch it on when the thing being
-# worked on is finding documents rather than trusting their numbers.
+# page said. A row that changes no reading is a row between a person and the ones that do, and an
+# archive of scans hands this a queue of them. Switch it on when the thing being worked on is
+# finding documents rather than trusting their numbers.
 on_by_default = false
 
 [settings]

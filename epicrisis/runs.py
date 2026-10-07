@@ -306,3 +306,47 @@ def temporary_name(path: Path) -> Path:
     """
     path = Path(path)
     return path.with_name(f"{path.name}.{os.getpid()}.tmp")
+
+
+def what_a_dead_run_left(path: Path) -> list[Path]:
+    """Half-written files beside this one whose writer is gone. Named, never deleted here.
+
+    The name a writer writes under carries its pid, so that two of them cannot share one — and
+    the pid is what makes the leftovers findable afterwards. A run that fails inside its own
+    process cleans up after itself; one that is killed, or stopped by a full disk at the wrong
+    moment, or ended by the machine going down, cannot. Nothing in this program looked for what
+    those left, so a killed build of an index left ninety kilobytes under a pid nobody would
+    reuse, in a folder where the next attempt could not touch it.
+
+    That is not tidiness. The comment in `index/build` says what it costs: "a build stopped by a
+    full disk left ninety kilobytes of half an index behind, named with the pid so the next
+    attempt could not reuse it, and every attempt to free space and try again started from a disk
+    that was fuller than the last: the program burying the way out a person was told to take."
+    The fix written then covered a failure inside the process only.
+
+    A pid that is still running is left alone, and so is one this process cannot ask about: a
+    writer that is alive is a write in progress, and two runs at once are what the locks are for.
+    """
+    path = Path(path)
+    left = []
+    for found in path.parent.glob(f"{path.name}.*.tmp"):
+        pid = found.name[len(path.name) + 1 : -len(".tmp")]
+        try:
+            os.kill(int(pid), 0)
+        except (ProcessLookupError, ValueError, TypeError):
+            left.append(found)  # nobody is writing this, and nobody will
+        except PermissionError:
+            continue  # alive, owned by somebody else
+    return left
+
+
+def take_away_what_a_dead_run_left(path: Path) -> int:
+    """Remove those, and say how many. Safe to call before any write of `path`."""
+    gone = 0
+    for found in what_a_dead_run_left(path):
+        try:
+            found.unlink()
+        except OSError:
+            continue
+        gone += 1
+    return gone

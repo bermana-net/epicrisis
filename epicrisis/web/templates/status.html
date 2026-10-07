@@ -29,7 +29,7 @@
        saying so; and a disk with no room left made every button answer with the words Internal
        Server Error while these numbers stood unchanged. #}
     {% if gone_folders %}
-    <div class="notice caps"><span class="alert">{% for one in gone_folders %}The folder of the archive of {{ one.whose }} is not where it was, or cannot be read by this server{% if not loop.last %}; {% endif %}{% endfor %}. Nothing has been lost: everything read from it is kept here, beside this instance, and the corrections are too. Check whether the disk it is on is mounted. If the folder has moved, point this archive at the new place &mdash; <code>{{ cli }} sources set-path {{ gone_folders[0].id }} /the/new/folder --data-dir {{ data_dir }}</code> &mdash; which keeps every reading and every correction. Adding the folder again instead makes a second archive of the same person and reads it all from nothing.</span></div>
+    <div class="notice caps"><span class="alert">{% for one in gone_folders %}The folder of the archive of {{ one.whose }} is not where it was, or cannot be read by this server{% if not loop.last %}; {% endif %}{% endfor %}. Nothing has been lost: everything read from it is kept here, and the corrections too. Check whether the disk is mounted. If the folder moved: <code>{{ cli }} sources set-path {{ gone_folders[0].id }} /the/new/folder --data-dir {{ data_dir }}</code> &mdash; that keeps every reading and every correction, while adding the folder again makes a second archive of the same person and reads it all from nothing.</span></div>
     {% endif %}
     {% if settings_unreadable %}
     <div class="notice caps"><span class="alert"><code>settings.json</code> is there and cannot be read, so this instance is running on its defaults: the switches on the Settings page are showing defaults rather than what is in the file, and the lock on the network is closed rather than open, because that is the safe way to fail. Repair it, or copy back <code>settings.json.previous</code> beside it &mdash; the version before the last change. Moving the file aside instead starts every switch from its default, and each has to be answered again.</span></div>
@@ -42,7 +42,17 @@
        thing that module is written against. Nothing said so anywhere until this line: no page, no
        command and no README. #}
     {% if people_waiting %}
-    <div class="notice caps"><span class="alert">A <code>people.json</code> still stands beside this instance, at <code>{{ people_file }}</code>, holding {{ people_waiting }} group{{ "" if people_waiting == 1 else "s" }} of doctors and clinics somebody joined by hand. Nothing is read from there &mdash; a file beside the instance is a file every archive would see, which is why it moved inside them &mdash; and it is carried in at every start of this dashboard, into the archives whose documents print those names. It is still here because at least one of those groups has not been carried anywhere: it names nobody this server has an index for, or it belongs to an archive that already has a <code>people.json</code> of its own. Everything in it that an archive here does name is already inside that archive. Read those documents, or add the archive that prints those names, and the rest moves by itself. Deleting this file loses that work: nothing makes it again.</span></div>
+    {# The longest text in this interface, and about a state a person meets once. The line that
+       cannot wait — somebody's own work is in that file and deleting it loses it — stays out
+       here; why it has not moved and what moves it is a question, and a question belongs under a
+       summary that asks it. #}
+    <div class="notice caps"><span class="alert">A <code>people.json</code> still stands beside this instance, at <code>{{ people_file }}</code>, holding {{ people_waiting }} group{{ "" if people_waiting == 1 else "s" }} of doctors and clinics somebody joined by hand. <b>Deleting this file loses that work: nothing makes it again.</b>
+      <details class="fix-row">
+        <summary class="caps">Why it is still here, and what moves it</summary>
+        <div class="lock-how-to">
+          <p class="caps">Nothing is read from there &mdash; a file beside the instance is a file every archive would see, which is why it moved inside them &mdash; and it is carried in at every start of this dashboard, into the archives whose documents print those names. It is still here because at least one of those groups has not been carried anywhere: it names nobody this server has an index for, or it belongs to an archive that already has a <code>people.json</code> of its own. Everything in it that an archive here does name is already inside that archive. Read those documents, or add the archive that prints those names, and the rest moves by itself.</p>
+        </div>
+      </details></span></div>
     {% endif %}
     {% if disk.little %}
     <div class="notice caps"><span class="alert">There is little room left on the disk this instance writes to: {{ (disk.free / 1048576)|round|int }} MB free of {{ (disk.total / 1073741824)|round(1) }} GB. Nothing written here is damaged by a full disk &mdash; every file is written whole and renamed into place &mdash; but nothing new can be written either, and reading documents needs room.</span></div>
@@ -106,7 +116,7 @@
     <p><a class="btn" href="/settings">Settings</a></p>
     {% else %}
     <h2>Next: read the documents</h2>
-    <p>{{ everyone.pages|thousands }} pages are waiting{% if everyone.archives > 1 %}, across all {{ everyone.archives }} archives on this server{% endif %}. Reading them sends each page to a model and is the slowest and costliest step there is &mdash; minutes for a few files, hours for decades of them. It can be stopped and continued; what is already read is skipped.</p>
+    <p>{{ everyone.pages|thousands }} pages are waiting{% if everyone.archives > 1 %}, across all {{ everyone.archives }} archives on this server{% endif %}. Reading them sends each page to a model and is the slowest and costliest step there is &mdash; {% if everyone.about_how_long %}<b>{{ everyone.about_how_long }}</b> on what this instance has already read itself, which is an estimate and not a promise{% else %}minutes for a few files, hours for decades of them{% endif %}. It can be stopped and continued; what is already read is skipped.</p>
     <form method="post" action="/update"><button class="btn" type="submit">Read the documents</button></form>
     {% endif %}
   </section>
@@ -179,7 +189,13 @@
       {% endfor %}
     </div>
     <div class="later caps update-row">
-      <span>Steps 04&ndash;05 run without a model.</span>
+      {# What the five bars do not show. Reading new documents runs two more steps that call a
+         model — the search for a date on a document that printed none, and the reading of what a
+         table was measured in — and neither has a bar here, because neither keeps the kind of
+         per-archive state the bars are drawn from. Said rather than drawn: the seventh entry asks
+         the program to say what it does, and a bar that is always grey would say less than this
+         line does. #}
+      <span>Inventory, Validate and Index run without a model. Two steps between them have no bar here and do call one: the search for a date where a document printed none, and the reading of what each table was measured in.</span>
       {% if update_running %}<span class="signal">Processing new files&hellip;</span>
       {% elif not model_consent %}<a class="btn small" href="/consent">Allow model processing first</a>
       {% elif not model_ready %}<span class="alert">The program that talks to the model is not installed on this server, so the reading steps cannot run.</span>
@@ -195,7 +211,7 @@
       <div><dt class="caps">Last call</dt><dd class="mono">{{ mcp.last.at.replace("T", " ")[:16] if mcp.last else "never" }}{% if mcp.last %} · {{ mcp.last.tool or mcp.last.call or "—" }}{% endif %}</dd></div>
       <div><dt class="caps">From</dt><dd class="mono">{{ (mcp.last["x-forwarded-for"] or mcp.last["from"]) if mcp.last else "—" }}{% if mcp.last and mcp.last.agent %} · {{ mcp.last.agent[:40] }}{% endif %}</dd></div>
       <div><dt class="caps">Calls recorded</dt><dd>{{ mcp.counts.calls }}{% if mcp.counts.refused %} · {{ mcp.counts.refused }} refused{% endif %}</dd></div>
-      <div><dt class="caps">Lock</dt><dd>{% if mcp.lock %}on · a code opens it for four hours at a time{% elif mcp.secret %}off · a code is set up, <a href="/settings">turn it on</a>{% else %}off · no code set up{% endif %}</dd></div>
+      <div><dt class="caps">Lock</dt><dd>{% if mcp.lock %}on · a code opens {{ "the conversation it was given in" if mcp.scope == "conversation" else "everything" }} for {{ mcp.minutes }} minutes{% elif mcp.secret %}off · a code is set up, <a href="/settings">turn it on</a>{% else %}off · no code set up{% endif %}</dd></div>
       <div><dt class="caps">Last day</dt><dd>{{ mcp.day.calls }} calls answered · busiest {{ mcp.day.busy_minutes }} minutes: <span{% if mcp.day.unusual %} class="signal"{% endif %}>{{ mcp.day.busiest }}</span>{% if mcp.day.unusual %} <span class="caps signal">look at this</span>{% endif %}</dd></div>
       {# Turned away at the address is a stranger sweeping the internet and means nothing. Turned
          away at the path came from an address this server answers and asked for something that

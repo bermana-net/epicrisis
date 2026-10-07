@@ -20,14 +20,15 @@ apart_by_days = 60
 
 The date the reading gave each page of a document, and nothing else on the page. A form carries a
 birth date, a date of collection and a date of a report; a rule over every date printed anywhere
-fires on a third of an archive of ordinary scans and says nothing.
+fires on much of an archive of ordinary scans and says nothing.
 
 A scan has pages because somebody printed it on paper, and the pages of one form belong together
 whatever dates they carry. **A text file has no pages at all** — this program cuts it into them —
 and that is where this earns its keep: where the cut fell inside a run of visits, a visit of one
 year and a visit of another are stored as one document, and the whole of it is dated by the first.
-Before the archive of October 2026 was cut at the lines its own export draws, six of its twenty
-documents covered more than two months and one covered 1666 days. After it, none.
+An export of a clinic's own system is years of visits in a single file, so a document of it that
+spans seasons is a cut in the wrong place every time, and cutting the file where its own export
+draws its lines is what makes these go quiet.
 
 
 # How it can be wrong

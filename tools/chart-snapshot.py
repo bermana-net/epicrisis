@@ -46,20 +46,27 @@ SETTINGS = "settings.json"
 RULES = "rules"
 
 
-def draw(series, data_dir: pathlib.Path, values, indicator):
+def draw(series, data_dir: pathlib.Path, values, indicator, source_id: str = ""):
     """One test's charts, however the tree being measured asks to be told about the rules.
 
-    Both shapes are kept because this ruler is run against two trees at once, and the older of
-    them took the three switches one by one where the newer takes the rules themselves.
+    Every shape is kept because this ruler is run against two trees at once: the oldest of them
+    took the three switches one by one, the next took the rules themselves for the whole
+    instance, and the newest answers the rules per archive. A ruler that asked the newest tree
+    the instance's question would report a chart as unmoved in an archive whose own answer is
+    exactly what moved it — blind in the direction the change is walking.
     """
     from epicrisis import rules
     from epicrisis.settings import rules_on
 
+    def placing():
+        if "in_archive" in rules_on.__code__.co_varnames:    # answered per archive
+            return rules_on(data_dir, rules.load(data_dir), "charts", in_archive=source_id)
+        return rules_on(data_dir, rules.load(data_dir), "charts")
+
     if "placing" in series.charts.__code__.co_varnames:      # the rules
-        return series.charts(values, indicator=indicator,
-                             placing=rules_on(data_dir, rules.load(data_dir), "charts"))
+        return series.charts(values, indicator=indicator, placing=placing())
     return series.charts(values, indicator=indicator, to_scale=True, from_range=True, by_numbers=True,
-                         scale_rules=rules_on(data_dir, rules.load(data_dir), "charts"))
+                         scale_rules=placing())
 
 
 def band_of(series, item) -> str:
@@ -146,7 +153,8 @@ def chart_lines(tree: pathlib.Path, data_dir: pathlib.Path, read: list[pathlib.P
     for letter, path in zip((chr(65 + n) for n in range(len(read))), read):
         with closing(read_only(path)) as db:
             for row in db.execute("SELECT id FROM indicators"):
-                for chart in draw(series, data_dir, query.whole_history(db, row["id"]), row["id"]):
+                for chart in draw(series, data_dir, query.whole_history(db, row["id"]), row["id"],
+                                  path.name[len("index-"):-len(".sqlite")]):
                     numbers = sorted(f"{item['value_numeric']:.6g}" for item in chart["rows"]
                                      if item.get("value_numeric") is not None)  # fmt: skip
                     # Every band this chart would draw, sorted, so the line does not move when the

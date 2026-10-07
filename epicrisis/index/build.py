@@ -33,7 +33,7 @@ from epicrisis.records import read_records
 from epicrisis.printed_values import fold
 from epicrisis.sources import Source, source_output_dir
 from epicrisis.validate import load_validation
-from epicrisis.runs import one_at_a_time, put_in_place, temporary_name
+from epicrisis.runs import one_at_a_time, put_in_place, take_away_what_a_dead_run_left, temporary_name
 from epicrisis.state import NoSpace
 from epicrisis.invocation import CLI
 
@@ -296,6 +296,17 @@ def _build_index(path: Path, data_dir: Path, sources: list[Source]) -> dict:
     """
     temporary = temporary_name(path)
     temporary.unlink(missing_ok=True)
+    # And what a run that never reached its own `except` left: a build killed, or stopped by the
+    # machine going down, leaves its half-index under its own pid for ever. Measured: an index of
+    # this archive is six megabytes, and every killed build left up to that much behind with
+    # nothing in the program looking for it. Its own name is cleared on the line above; this is
+    # about the names of runs that are gone.
+    left = take_away_what_a_dead_run_left(path)
+    if left:
+        from epicrisis import journal
+
+        journal.record(data_dir, {"event": "a half-written index left by a killed run was taken away",
+                                  "files": left})  # fmt: skip
     try:
         with closing(sqlite3.connect(temporary)) as connection:
             built = _fill_index(connection, data_dir, sources)

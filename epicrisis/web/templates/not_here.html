@@ -2,6 +2,9 @@
 {% block title %}{{ heading or "Not in this archive" }}{% endblock %}
 {% block page %}
 
+{# Which page of the menu this is. No page of the menu, as above. #}
+{% set current = "" %}
+
   {% include "_header.html" %}
 
   <section class="rule" style="padding-top: 18px;">

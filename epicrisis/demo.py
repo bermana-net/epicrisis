@@ -26,8 +26,9 @@ import hashlib
 import json
 import random
 import re
+import shlex
 
-from epicrisis import layout
+from epicrisis import invocation, layout
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -748,12 +749,85 @@ def _write_life(life: Life, into: Path, data_dir: Path, seed: int, say) -> tuple
 DEMO_MARKER = "this-archive-is-invented.json"
 
 
+def a_folder_that_would_do(name: str) -> Path:
+    """A folder to offer instead of one that will not do, which is a folder of a person's own.
+
+    The home of whoever runs this, where everything else in this program keeps an archive — unless
+    the account has no home of its own that a person's folder may be in. Served by root, Path.home()
+    is /root, which is one of the server's own folders: offering it would be refusing a folder and
+    naming another that would be refused in the same breath, which is what the folder picker did
+    once and is worse than saying nothing. Then /tmp, which is the folder the README's own line uses.
+    """
+    from epicrisis.sources import belongs_to_the_server
+
+    home = Path.home()
+    return (home if not belongs_to_the_server(home) else Path("/tmp")) / name
+
+
+def _the_line_that_builds_it(into: Path) -> str:
+    """The command to type, with the folder quoted.
+
+    The folder offered is named after the one that was asked for, so it carries whatever that was
+    called: a demo refused at "/home/me/my demo" was offered a line that breaks in two at the
+    space. Advice that cannot be typed is not advice — `invocation.py` is written about that.
+    """
+    return invocation.run(f"demo --into {shlex.quote(str(into))}")
+
+
+def why_it_cannot_be_built_here(into: Path) -> str:
+    """Why this folder cannot hold the three invented archives, in words, or "" where it can.
+
+    Asked before the first page of the first life is drawn, and that is the whole of the fix. The
+    archives this builds go on the list of archives like anybody's, so the list refused a folder of
+    the server's own — but it refused it on the way in, by which time one invented person's scans
+    and the data directory were on disk: forty-three files and 6.6 MB under /var/tmp, under a Rich
+    traceback of sixty-nine lines naming cli.py and the inside of the registry. The seventh entry
+    of the constitution wants which folder will not do, what is safe and what puts it right; what
+    `epicrisis demo --into /var/tmp/demo` gave instead was a stack trace and litter, to the first
+    person to run anything after cloning.
+
+    Two folders cannot hold it, and both are answered here rather than by the step that trips over
+    them. The server's own, which the registry would refuse later — asked of `sources.py`, which
+    decides what counts as one, so that this refusal and that one cannot come to differ. And a path
+    that is already a file, where the data directory under it could not be made at all: that one
+    left no litter, only a NotADirectoryError with the path printed twice.
+    """
+    from epicrisis.sources import the_server_folder_it_is_in
+
+    if its_own := the_server_folder_it_is_in(into):
+        instead = a_folder_that_would_do(into.name or "demo")
+        return (
+            f"{into} is inside {its_own}, which belongs to the server rather than to a person. The "
+            f"three archives this builds go on the list of archives like anybody's, and that list "
+            f"takes no folder of the server's — so the instance would be built and then could not "
+            f"be opened. Nothing has been written. Build it in a folder of your own: "
+            f"{_the_line_that_builds_it(instead)}"
+        )
+    if into.exists() and not into.is_dir():
+        # Not a folder named after the file: the name that is there is the name of something else.
+        instead = a_folder_that_would_do("demo")
+        return (
+            f"There is a file at {into}, and this builds a folder. That file has not been touched "
+            f"and nothing has been written. Name a folder instead, one that is empty or not there "
+            f"yet: {_the_line_that_builds_it(instead)}"
+        )
+    return ""
+
+
 def build(into: Path, seed: int = 7, say=lambda text: None) -> dict:
-    """Write the whole instance: the scans of three lives, their transcription, checks and index."""
+    """Write the whole instance: the scans of three lives, their transcription, checks and index.
+
+    The folder is looked at first and nothing is written if it will not do: see
+    `why_it_cannot_be_built_here`. It is refused here rather than in `cli.py` so that whatever
+    builds a demo — a test, a tool, the page shooter — is refused in the same words and leaves the
+    same nothing behind.
+    """
     from epicrisis.index.build import build_index
-    from epicrisis.sources import SourceRegistry
+    from epicrisis.sources import SourceError, SourceRegistry
 
     into = Path(into).resolve()
+    if why := why_it_cannot_be_built_here(into):
+        raise SourceError(why)
     data_dir = into / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 

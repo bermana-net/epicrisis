@@ -23,6 +23,11 @@ which is what makes it usable as a hook before a push.
 
 Whole phrases, not words: a document titled "Full blood count" shares every word with the tests
 of this project, and a check that shouts about "blood" is a check nobody runs twice.
+
+One word is the exception, and it is a person's surname. A name is pasted without the initials
+that stood beside it on the form, so compared whole it matches nothing — see `a_name_in_words`,
+which says which fields are read in words, which are not, and what each of them was measured to
+cost on the archives this check was written against.
 """
 
 import argparse
@@ -36,12 +41,50 @@ import sys
 import unicodedata
 
 SHORTEST = 9  # a phrase shorter than this is a word, and a word is not a leak
+# Except one word, and this is the exception: a person's surname. It is the plainest "who" an
+# archive holds, it is what somebody debugging pastes without the initials that stood after it,
+# and the surnames of these archives are not nine characters long. Of the 69 words this script
+# now reads out of the doctor column of the three archives here, 6 are five characters, 35 are
+# six to eight, and 28 are nine or more: left under SHORTEST, two surnames in three would not be
+# looked for at all. Five is where the measurement stops, and not a round number — at four the
+# same scan picks up the name of a city off a provider's address, and at three a degree and a
+# postcode. It is the length the owner and the archive fields were already split at.
+SHORTEST_NAME = 5
+# What a form prints beside a name and never in place of one, matched against one word of a
+# field: one to three single letters with dots between them or without — "г.п.", "в.", "j" — and
+# the degrees written the same way, "к.м.н.". This is what tells the name in a signature from the
+# furniture printed round it, and it is the only thing that does. A speciality is printed in the
+# same field, in the same case, and is as long a word as any surname: capital letters tell them
+# apart on exactly 2 of the 11 words this repository holds out of that column, which is not a
+# signal, and the one spelling this file compares by has no case left in it anyway.
+AN_INITIAL = re.compile(r"^\W*[^\W\d_](?:\.[^\W\d_]){0,2}\.?\W*$")
 # How long a line out of a document has to be before it counts as somebody's rather than any
 # form's. Short lines are headings and labels that every form of that kind prints; a line this long
 # carries a sentence, and a sentence out of a medical record belongs to one person.
+#
+# Asked of the line **as printed**, and not of the folded spelling compared below. This is the one
+# length here that is a judgement about somebody's document rather than about how loosely a phrase
+# matches: the soft sign, the hard sign and the apostrophe come out in the fold, so the day the
+# fold learnt to pair the two alphabets, 165 lines of these three archives fell under this gate
+# and under the one after it and stopped being looked for at all. A guard made to find more that
+# quietly looks for less in the same change is the worst of the two failures, and no count of new
+# matches would ever have shown it.
 A_LINE_OF_A_DOCUMENT = 40
 # And how much of it has to be letters. Forms are full of rules, dots and boxes drawn in ASCII.
 WORDS_OF_A_LINE = 25
+# Every field one connector's line in connectors.json is known to hold. One of them is typed by
+# a person and may be anybody's name — see below, where it is read. The rest carry no part of a
+# name by construction: two random ids, a path secret, a date each, and a list of archive ids.
+# A field this script has never heard of is read the way an unknown field on a keeper is: said
+# out loud rather than cleared, because the next thing somebody adds to that line may be the one
+# that walks into a docstring.
+WHAT_A_CONNECTOR_HOLDS = ("id", "path", "name", "archives", "keeper", "issued_at", "revoked_at",
+                          "until")  # fmt: skip
+# Every field one keeper's line in keepers.json is known to hold. None of them is anybody's name:
+# a signature is four random bytes, the archives are four random bytes each, and `issued_at` is a
+# moment. Anything else on that line is something this script has not been told about, and it
+# says so rather than clearing a file it does not understand.
+WHAT_A_KEEPER_HOLDS = ("id", "issued_at", "archives")
 # Phrases a person publishes on purpose — an author's own name in a licence and a copyright line.
 # One per line, "#" for a comment. Whoever writes a name in here is saying they mean to publish it.
 ALLOWED_FILE = "published-on-purpose.txt"
@@ -65,6 +108,26 @@ SECRET_FILES = (
     ("the secret in the served path", "/etc/epicrisis/mcp-token"),
     ("an environment file", ".env"),
 )
+# And the folders of secrets, where there is one file per thing rather than one file. A connector
+# issued last week has a secret this script was never told the name of, so the names are read off
+# the disk instead of written here. Without this the two files above were the whole of what was
+# looked for, and the day the registry issued its first link the check went quiet about every
+# secret after the first two — which is the shape of the hole the doctor column was.
+SECRET_FOLDERS = (("a connector's code secret", "/etc/epicrisis/connectors"),)
+# And the one secret of a link that is **not** a file at all: the path it is served on, which
+# lives in the registry beside everything else about that link. It was looked for nowhere.
+#
+# The two halves of a link are not alike. The code secret is shown once and kept on disk, so the
+# folder above finds it. The address is drawn on the editor page every single time, because that
+# page exists for copying it and handing it to somebody — and a thing that is meant to be copied
+# is a thing that ends up in a note, a message, a screenshot, a pasted log. One of those in a
+# tracked file is a live credential in a public repository, and a published commit is not
+# withdrawn by deleting it afterwards.
+#
+# It was hidden today by an accident worth writing down: this instance's only link carried in the
+# single secret from before the registry, so its path **is** the content of /etc/epicrisis/mcp-token
+# and was found through that file. The first link issued on the page would have had no such cover.
+WHERE_THE_PATHS_ARE = "connectors.json"
 
 
 def _real_matches(shape: str, text: str) -> bool:
@@ -77,22 +140,105 @@ def _letters(text: str) -> int:
     return sum(1 for letter in text if letter.isalpha())
 
 
+# The Ukrainian and Russian letters this archive's five languages print for one another, and the
+# two signs that are not a sound. The same table as printed_values._FOLD, letter for letter, and
+# a test holds the two in step: tests/test_nothing_of_yours.py asks both folds the same question
+# about every letter of both alphabets, so a letter added to the program's table and not to this
+# one fails the suite rather than quietly narrowing the guard.
+#
+# Written out here rather than imported, because this script is run against repositories that are
+# not this program — its own tests build one in a temporary folder — and a guard that silently
+# folds less where it cannot import is a guard that reports "Clean" about an archive it compared
+# half of. _words_the_program_keeps may fall back to nothing, because a shorter list of words to
+# wave through can only make this check shout more; a shorter fold makes it shout less.
+PAIRED = str.maketrans({"і": "и", "ї": "и", "є": "е", "ё": "е", "ы": "и", "э": "е", "ґ": "г",
+                        "й": "и", "ъ": "", "ь": ""})  # fmt: skip
+# Every shape a form, a keyboard or an export prints for an apostrophe, taken out before the NFKD
+# below for the reason printed_values.NO_APOSTROPHE gives: ´ decomposes to a space and a mark, so
+# after the marks come off there is nothing left to remove.
+NO_APOSTROPHE = str.maketrans("", "", "'’‘ʼʻʽˈ`´′")
+
+
 def fold(text: str) -> str:
-    """One spelling for comparing: no case, no accents, one space where there were several.
+    """One spelling for comparing, the same one the program searches by.
+
+    Three things, each bought by a leak this line let past:
 
     The accents were promised by this line and not taken off by it: NFKD only pulls a letter
     apart from its mark, and nothing here was dropping the mark. So "José" in an archive and
     "Jose" in a commit were two strings to this check and one string to the program — and this
     archive is in Spanish and Greek among five languages, which is exactly the shape §5 is
-    written about: "A plausible surname in the right language is usually a real one."
+    written about: "A plausible surname in the right language is usually a real one." Measured
+    when that was found: of seven pairs that differ only by an accent, this answered "not the
+    same" to five that printed_values.fold calls one.
 
-    Measured when it was found: of seven pairs that differ only by an accent, this answered
-    "not the same" to five that printed_values.fold calls one. Taking the marks off can only
-    make this check find more, never less, which is the direction a guard is allowed to move in.
+    The Ukrainian and Russian letters were the other half of the same hole, and it stood open for
+    a day. A surname written in an archive by a Ukrainian laboratory and pasted into a docstring
+    off a Russian form is one name, and two strings to a fold that does not pair і with и. The
+    proof was unpleasant: both collisions mended the day before — an invented clinic in a rule
+    file and an invented patient in a test — were found by the program's own fold and not by this
+    guard, which looked straight at them and said "Clean". An archive in five languages, two of
+    them these two, cannot be guarded by a fold that knows only one.
+
+    The apostrophe goes the same way and for the same reason, and the program had already decided
+    it: "Дем'яненко" and "Демьяненко" are one name to every search here.
+
+    All three can only make this check find more, never less, which is the direction a guard is
+    allowed to move in. They do shorten a phrase, though — the soft sign and the apostrophe come
+    out of it — and the one place where length is a judgement about somebody's document rather
+    than about matching now asks the line as printed. See `A_LINE_OF_A_DOCUMENT` below.
     """
-    pulled_apart = unicodedata.normalize("NFKD", str(text)).casefold()
+    without = str(text).casefold().translate(NO_APOSTROPHE)
+    pulled_apart = unicodedata.normalize("NFKD", without)
     without_marks = "".join(mark for mark in pulled_apart if not unicodedata.combining(mark))
-    return re.sub(r"\s+", " ", without_marks).strip()
+    # The collapsing of whitespace stands last, after the decomposing and not before it: ´ pulls
+    # apart into a space and a mark, so a run of spaces exists that was not in the text at all.
+    return re.sub(r"\s+", " ", without_marks.translate(PAIRED)).strip()
+
+
+def a_name_in_words(said: str, all_of_it_is_a_name: bool) -> set[str]:
+    """The words of one field that a person is named by, out of the folded whole of it.
+
+    "Whole phrases, not words" is the first rule at the top of this file, and a person's surname
+    is the one word it was never meant to cover. It is the plainest "who" an archive holds; it is
+    what somebody debugging pastes into a docstring, a test or a commit message, with the initials
+    that stood beside it on the form left off; and compared whole, "нежуренко г.п." matches
+    nothing at all. The doctor column of these three archives holds 98 values and 103 words of
+    five letters or more, and before this function not one of those words was looked for on its
+    own. The column was added last, which is the failure the comment on it further down this file
+    already warns about. ("Нежуренко" is invented and was looked for in all three archives here
+    before it was written, as every name in this file and its tests was.)
+
+    **The fields differ in how much of them is the name, and that is the whole of why this is not
+    one line.** An archive's owner is nothing but a person's name, so every word of it long enough
+    to be a surname is one. A doctor or a provider is the name with what a form prints round it —
+    a speciality, a degree, a department, the kind of institution — and taking every word of those
+    refuses a push over the word for "surgeon". Measured on the three archives here, against all
+    the tracked files of this repository: every word of the doctor column is 103 words, of which
+    this repository holds 11, and 9 of those name a kind of person rather than a person — a
+    speciality, a title, and "medica" sitting inside the English word "medical" in 63 files. Not
+    one is anybody's surname. The provider column is worse: 307 words, 50 of them in here, and 35
+    of those 50 are outside every vocabulary this program keeps, so no reader of the report could
+    do anything about them. A gate that is red whatever anybody does is the gate people learn to
+    pass with --no-verify on the day it is right.
+
+    A form prints initials beside a name and never beside a speciality. So in a field that holds
+    more than the name, the words of the name are the ones standing next to initials: 69 words out
+    of the doctor column and 27 out of the provider column, and this repository holds none of
+    either. 91 of the 98 doctor values here carry initials, and 24 of 179 provider values do —
+    which is the handful where a laboratory's field was filled in with a signature, the thing
+    `suspects.provider_looks_like_a_person` exists for.
+    """
+    parts = said.split()
+    initials = [bool(AN_INITIAL.match(part)) for part in parts]
+    words = set()
+    for at, part in enumerate(parts):
+        if len(part) < SHORTEST_NAME or initials[at]:
+            continue
+        beside = (at > 0 and initials[at - 1]) or (at + 1 < len(parts) and initials[at + 1])
+        if all_of_it_is_a_name or beside:
+            words.add(part)
+    return words
 
 
 def _unreadable(gaps: list[str], what: str, where: str, trouble: Exception, advice: str) -> None:
@@ -149,6 +295,10 @@ def out_of_the_archive(data_dir: pathlib.Path) -> tuple[dict[str, str], list[str
     caller adds to the rest.
     """
     phrases: dict[str, str] = {}
+    # Which of those phrases is one word of somebody's name, and so is looked for however short it
+    # is. Kept apart from the rest rather than mixed into them, because the length a phrase has to
+    # reach is the one thing SHORTEST decides and there is now one exception to it.
+    in_words: set[str] = set()
     gaps: list[str] = []
     sources = data_dir / "sources.json"
     listed: list = []
@@ -164,13 +314,111 @@ def out_of_the_archive(data_dir: pathlib.Path) -> tuple[dict[str, str], list[str
                         f"{sources.name} will not be read", trouble,
                         "put that file right, or restore the copy kept beside it, before publishing")  # fmt: skip
     for source in listed:
-        for field, what in (("owner", "the name of a person"), ("name", "the name of an archive")):
+        for field, what, a_person_is_named_there in (
+            ("owner", "the name of a person", True),
+            # An archive's label is the owner's own words for which archive this is — "the folder
+            # from the hospital", "the cardboard box" — and nobody is named by it. Its words are
+            # taken, as they always were, and they go on having to be as long as any other phrase
+            # to count: the label of one archive here is built on the English word "archive",
+            # which 193 of the 238 readable tracked files of this repository hold. A surname is
+            # the exception to SHORTEST; a common noun somebody labelled a folder with is not.
+            ("name", "the name of an archive", False),
+        ):  # fmt: skip
             whole = fold(source.get(field) or "")
             phrases[whole] = what
-            for part in whole.split():
-                if len(part) >= 5:
-                    phrases[part] = what  # a surname on its own is the name of a person
+            for part in a_name_in_words(whole, all_of_it_is_a_name=True):
+                phrases[part] = what  # a surname on its own is the name of a person
+                if a_person_is_named_there:
+                    in_words.add(part)
         phrases[fold(pathlib.Path(source.get("path") or "").name)] = "the name of an archive's folder"
+    # Who this instance is for. There is no name in this file any more, and that is the point of
+    # still reading it. A keeper is a signature and a list of archive ids — random bytes, both of
+    # them, carrying no part of anybody's name — so there is nothing in here to look for, and what
+    # is checked is that this is still so. A field on a keeper's line that this script has never
+    # heard of may hold a name, and a file nobody looks at is a file whose contents walk into a
+    # fixture, a docstring or a commit message without anybody noticing where they came from.
+    keepers = data_dir / "keepers.json"
+    kept: list = []
+    if keepers.exists():
+        try:
+            kept = json.loads(keepers.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as trouble:
+            _unreadable(gaps, "the name of a person",
+                        f"{keepers.name} will not be read", trouble,
+                        "put that file right, or restore the copy kept beside it, before publishing")  # fmt: skip
+    for keeper in kept:
+        unknown = sorted(set(keeper) - set(WHAT_A_KEEPER_HOLDS))
+        if unknown:
+            gaps.append(
+                f"a keeper in {keepers.name} carries {', '.join(unknown)}, which this check has "
+                f"never heard of and so did not look for anywhere in this repository. That field "
+                f"may hold somebody's name: teach this script what is in it, or take it out, "
+                f"before publishing")
+    # The name this instance answers on, which until now lived on a command line and in no file
+    # at all. It is not a secret — the secret is the path, and a tunnel answers on this name
+    # publicly — but it is the address somebody knocks on to reach these archives, and the
+    # convention it arrives into is already written down: README.md writes it as `<name.ts.net>`
+    # and this repository holds the real one nowhere. Compared whole, as every phrase here is, so
+    # the word "epicrisis" inside it matches nothing on its own.
+    settings_file = data_dir / "settings.json"
+    if settings_file.exists():
+        try:
+            said = json.loads(settings_file.read_text(encoding="utf-8")).get("public_host") or ""
+        except (ValueError, OSError, AttributeError) as trouble:
+            _unreadable(gaps, "the name this instance answers on",
+                        f"{settings_file.name} will not be read", trouble,
+                        "put that file right, or restore the copy kept beside it, before publishing")  # fmt: skip
+        else:
+            if said:
+                phrases[fold(said)] = "the name this instance answers on"
+    # The links this instance has issued. Two things to look for and they are not alike.
+    #
+    # The name is typed by a person and may be anybody's: "Нежуренко, уролог" is exactly what
+    # somebody writes on a link. (That surname is the invented one this file already uses, and it
+    # is invented because the first draft of this comment carried a real one out of the archive —
+    # which this check then refused the push over, two minutes after being taught to look.) So it is read the way the doctor column is read and **not** the way an
+    # archive's owner is — measured on this repository against ten names somebody might plausibly
+    # type: taking every word of five letters or more refused seven of the ten, every one of them
+    # on an ordinary word (urologist, cardiologist, laboratory, underwriter, fathers and the
+    # Russian and Ukrainian for the first two), which is the gate that is red whatever anybody
+    # does. Taking only the words that stand beside initials refused one, and that one was a real
+    # finding: an invented surname this repository holds in a test of its own.
+    #
+    # **And what is left over, because this does not cover all of it.** The 58 words the program
+    # keeps in order to recognise a kind of person or place are waved through, which is where
+    # "уролог" went. A speciality it does not keep — `urologist`, `кардиолог`, neither of which
+    # this archive's forms print — typed beside initials is still taken as a word of the name, and
+    # this repository holds "urologist". The way out is the one that already exists and has a
+    # reader: name the link without the speciality, or write the word into
+    # published-on-purpose.txt, which holds "обстеження" for exactly this reason.
+    #
+    # **What that gives up, said out loud:** that same name with no initials beside the surname
+    # contributes no word, so a paste of the surname alone walks past. The whole phrase is still
+    # compared whole, as every phrase here is. It is the same gap the doctor column has, bought at
+    # the same price and for the same reason.
+    connectors_file = data_dir / "connectors.json"
+    issued: list = []
+    if connectors_file.exists():
+        try:
+            issued = json.loads(connectors_file.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as trouble:
+            _unreadable(gaps, "the name somebody gave a connector",
+                        f"{connectors_file.name} will not be read", trouble,
+                        "put that file right, or restore the copy kept beside it, before publishing")  # fmt: skip
+    for one in issued:
+        said = fold(one.get("name") or "")
+        if said:
+            phrases[said] = "the name somebody gave a connector"
+            for part in a_name_in_words(said, all_of_it_is_a_name=False):
+                phrases[part] = "the name somebody gave a connector"
+                in_words.add(part)
+        unknown = sorted(set(one) - set(WHAT_A_CONNECTOR_HOLDS))
+        if unknown:
+            gaps.append(
+                f"a connector in {connectors_file.name} carries {', '.join(unknown)}, which this "
+                f"check has never heard of and so did not look for anywhere in this repository. "
+                f"That field may hold somebody's name: teach this script what is in it, or take "
+                f"it out, before publishing")
     for index in sorted(data_dir.glob("index*.sqlite")):
         # The file before the tables in it. An index copied while it was being written is a file
         # sqlite opens and then refuses — "file is not a database", "database disk image is
@@ -209,14 +457,32 @@ def out_of_the_archive(data_dir: pathlib.Path) -> tuple[dict[str, str], list[str
             # and never retold when the archive learnt to keep the person beside it. A name on a
             # signature line is the plainest "who" an archive holds. Whatever is added to the index
             # next, it belongs in this list on the same day.
-            for what, sql in (
-                ("the name of an institution", "SELECT DISTINCT provider FROM documents WHERE provider IS NOT NULL"),
-                ("the name of a doctor", "SELECT DISTINCT doctor FROM documents WHERE doctor IS NOT NULL"),
-                ("a line of diagnosis", "SELECT DISTINCT text FROM diagnoses"),
-                ("the name of a medication", "SELECT DISTINCT text FROM medications"),
+            #
+            # The third column of this list is whether a person can be *named* in that field, and
+            # so whether it is read in words as well as whole — see `a_name_in_words`, which says
+            # what each field costs when it is. A doctor is a person and a provider is sometimes a
+            # signature; a diagnosis and a medication are neither. Splitting those two was measured
+            # rather than argued: the diagnoses of these archives hold 1163 words of five letters
+            # or more and this repository holds 83 of them, the medications hold 438 and this
+            # repository holds 20 — "after", "history", "level", "treatment", "forma", "почки",
+            # "скарг", "утром", the words any form of that kind prints and any program that reads
+            # such forms must be free to write. Both lines are looked for whole, as they always
+            # were, and a line of diagnosis is long enough that whole is what a paste of it is.
+            for what, a_person_can_be_named_there, sql in (
+                ("the name of an institution", True,
+                 "SELECT DISTINCT provider FROM documents WHERE provider IS NOT NULL"),
+                ("the name of a doctor", True,
+                 "SELECT DISTINCT doctor FROM documents WHERE doctor IS NOT NULL"),
+                ("a line of diagnosis", False, "SELECT DISTINCT text FROM diagnoses"),
+                ("the name of a medication", False, "SELECT DISTINCT text FROM medications"),
             ):  # fmt: skip
                 for (value,) in _asked(db, sql, what, index, gaps):
-                    phrases[fold(value)] = what
+                    said = fold(value)
+                    phrases[said] = what
+                    if a_person_can_be_named_there:
+                        for part in a_name_in_words(said, all_of_it_is_a_name=False):
+                            phrases[part] = what
+                            in_words.add(part)
             # And the text of the documents themselves, line by line, where a line is long enough to
             # be somebody's rather than any form's. This is where a paste comes from: a person
             # debugging copies the line that puzzles them, and that line is a sentence out of a
@@ -226,13 +492,17 @@ def out_of_the_archive(data_dir: pathlib.Path) -> tuple[dict[str, str], list[str
                 for (value,) in _asked(db, f"SELECT text FROM {table} WHERE text IS NOT NULL",
                                        f"a line of a document, out of {table}", index, gaps):  # fmt: skip
                     for line in str(value).splitlines():
-                        said = fold(line)
                         # Letters, and enough of them. A row of dashes is forty characters long and
                         # is nobody's: two of them matched the font licences of this repository and
                         # one matched its own history, which is a guard being wrong twice in its
                         # first run and teaching the reader to skim the report.
-                        if len(said) >= A_LINE_OF_A_DOCUMENT and _letters(said) >= WORDS_OF_A_LINE:
-                            phrases.setdefault(said, "a line of a document")
+                        #
+                        # Both asked of the line as the form printed it, for the reason written
+                        # beside A_LINE_OF_A_DOCUMENT: the fold takes characters out, and a line
+                        # long enough to be somebody's does not stop being so because the spelling
+                        # it is compared by is shorter than it.
+                        if len(line) >= A_LINE_OF_A_DOCUMENT and _letters(line) >= WORDS_OF_A_LINE:
+                            phrases.setdefault(fold(line), "a line of a document")
             for (value,) in _asked(db, "SELECT DISTINCT sha256 FROM files",
                                    "the hash of a file in an archive", index, gaps):  # fmt: skip
                 phrases[fold(value)] = "the hash of a file in an archive"
@@ -259,10 +529,26 @@ def out_of_the_archive(data_dir: pathlib.Path) -> tuple[dict[str, str], list[str
                             f"{found} will not be read", trouble,
                             f"put that file right, and until then read every line below knowing "
                             f"that what {ALLOWED_FILE} allows is not allowed in this run")  # fmt: skip
+    # A name published on purpose is published in words as well. "Artem Berman" stands in the
+    # licence of this project, in its copyright line and on its page, and a check that reads a
+    # name as words has to read this list the same way or it refuses the push over the surname in
+    # a licence file — half of a decision its owner has already made and written down. The same
+    # five characters as everywhere else, so that "the" and "of" out of a longer phrase wave
+    # nothing through.
+    allowed |= {word for phrase in set(allowed) for word in phrase.split()
+                if len(word) >= SHORTEST_NAME}
     kind_not_place = _words_the_program_keeps()
     return {phrase: what for phrase, what in phrases.items()
-            if len(phrase) >= SHORTEST and phrase not in allowed
-            and not (what in ("the name of an institution", "the name of a doctor")
+            if (len(phrase) >= SHORTEST or phrase in in_words) and phrase not in allowed
+            and not (what in ("the name of an institution", "the name of a doctor",
+                              # A link named "Nezhurenko H.P., urologist" puts the speciality
+                              # beside initials, so the doctor column's rule takes it as a word
+                              # of the name — which is right for a signature on a form and wrong
+                              # here, where somebody is labelling a credential. Measured on the
+                              # live instance: naming one link that way refused the push twice,
+                              # once on the surname (which is in this repository, in a test of
+                              # its own) and once on the word for "urologist" in Russian.
+                              "the name somebody gave a connector")
                      and phrase in kind_not_place)}, gaps  # fmt: skip
 
 
@@ -357,24 +643,99 @@ def _secrets_in(text: str) -> set[str]:
     return pieces
 
 
-def secrets_of_this_server(repo: pathlib.Path, everything: str, data_dir: pathlib.Path | None = None) -> list[str]:
-    """The secrets this machine actually holds, looked for whole and hashed.
+def the_secrets_this_machine_holds(repo: pathlib.Path, data_dir: pathlib.Path | None = None):
+    """Every secret of this server, by what it is and what is in it, read once for both checks.
 
-    Beside the repository and beside the data directory both. An environment file is read from
-    beside the data directory first — engines.key_for looks there, and so do the pages that name it
-    — and an instance that keeps its data elsewhere had its key compared against nothing at all.
+    Gathered here rather than inside the check that happened to need it first, because there are
+    two of them now: whether a secret is in the repository, and whether one is in the journal of
+    this instance. Each was reading its own idea of "a secret" before, and the journal's idea was
+    "any run of sixteen characters" — which refused a push over `TemplateSyntaxError` and the path
+    of a template, while the actual secrets on the machine were compared against the journal by
+    nothing at all. Both halves of that were wrong, and one list fixes both.
+
+    Yields (what it is, where it was, the piece). A file that will not read yields a line of
+    trouble instead, because a secret this check could not read is a secret it did not look for.
     """
-    trouble = []
     beside = [repo] + ([data_dir, data_dir.parent] if data_dir else [])
+    # The paths of the links this instance serves on, which are secrets and are in no file of
+    # their own. Live ones only: a revoked path opens nothing, and the registry keeps its line on
+    # purpose so that the journal and the access log go on naming something. Refusing a push over
+    # a string that no longer opens anything would teach somebody to pass --no-verify.
+    for what, where, piece in _the_paths_of_live_links(data_dir):
+        yield (what, where, piece, None)
+    files = []
+    # The folders first, because what is in them is named by whatever the registry issued and not
+    # by this file: one code secret per connector, under a name this script never wrote down.
+    for what, folder in SECRET_FOLDERS:
+        here = pathlib.Path(folder)
+        for file in sorted(here.glob("*")) if here.is_dir() else []:
+            if file.is_file():
+                files.append((f"{what} ({file.name})", file))
     for what, path in SECRET_FILES:
         here = pathlib.Path(path)
         file = next((one for one in ([here] if here.is_absolute() else [place / path for place in beside])
                      if one.exists()), None)  # fmt: skip
-        if file is None:
+        if file is not None:
+            files.append((what, file))
+    for what, file in files:
+        try:
+            held = file.read_text(encoding="utf-8", errors="replace")
+        except OSError as trouble:
+            yield (what, file, None, trouble)
             continue
-        for piece in _secrets_in(file.read_text(encoding="utf-8", errors="replace")):
-            if fold(piece) in everything or hashlib.sha256(piece.encode()).hexdigest() in everything:
-                trouble.append(f"{what} appears in this repository")
+        for piece in _secrets_in(held):
+            yield (what, file, piece, None)
+
+
+def _the_paths_of_live_links(data_dir: pathlib.Path | None):
+    """Every live link's served path, named by the link it belongs to.
+
+    The id is in the name of the finding for the same reason it is on a code secret's: four random
+    bytes carrying no part of anybody's name, already in the journal and the access log, and
+    without it a person is told a secret escaped and not which link to take back.
+
+    A registry that will not read yields nothing and says nothing — the check that reads this file
+    for names is the one that refuses a push over it, and two refusals for one broken file would
+    send somebody looking for two problems.
+
+    **Live here means "not taken back", which is wider than the registry's own `live`.** A link
+    whose last day has gone by answers nothing today and answers again the moment its owner types
+    a later day, with the same path: that path is still a secret and must still not be published.
+    Only a revoked link's path is harmless, and only because its code secret is off the machine.
+    """
+    if data_dir is None:
+        return
+    file = data_dir / WHERE_THE_PATHS_ARE
+    try:
+        issued = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for one in issued if isinstance(issued, list) else []:
+        path = one.get("path") if isinstance(one, dict) else None
+        if path and not (one.get("revoked_at") or "").strip():
+            yield (f"a connector's served path ({one.get('id', 'unnamed')})", file, path)
+
+
+def secrets_of_this_server(repo: pathlib.Path, everything: str, data_dir: pathlib.Path | None = None) -> list[str]:
+    """Whether a secret this machine holds is in the repository, whole or hashed.
+
+    Beside the repository and beside the data directory both. An environment file is read from
+    beside the data directory first — engines.key_for looks there, and so do the pages that name
+    it — and an instance that keeps its data elsewhere had its key compared against nothing.
+
+    A connector's id is written out beside the finding on purpose: it is four random bytes
+    carrying no part of anybody's name, it is already in the journal and in the access log, and
+    without it a person is told a secret escaped and not which link to revoke. Nothing of the
+    secret itself is printed, here as everywhere.
+    """
+    trouble: list[str] = []
+    for what, file, piece, could_not_read in the_secrets_this_machine_holds(repo, data_dir):
+        if could_not_read is not None:
+            _unreadable(trouble, what, f"{file} will not be read", could_not_read,
+                        "put that file right, or revoke that link, before publishing")  # fmt: skip
+            continue
+        if fold(piece) in everything or hashlib.sha256(piece.encode()).hexdigest() in everything:
+            trouble.append(f"{what} appears in this repository")
     return trouble
 
 
@@ -635,7 +996,20 @@ def the_journal_of_this_instance(data_dir: pathlib.Path, phrases: dict[str, str]
         # Said by kind and counted, never quoted — the same rule as everywhere else in here.
         return [f"{len(found)} thing(s) out of the archive are in {journal.name} of this instance: "
                 + ", ".join(sorted(set(found))[:4])]  # fmt: skip
-    return [f"a secret has the shape of one in {journal.name} of this instance"] if _secrets_in(written) else []
+    # The secrets this machine actually holds, and the shapes that are secrets wherever they are.
+    #
+    # It used to be `_secrets_in(written)` — any run of sixteen characters — and that was wrong in
+    # both directions at once. It refused a push over `TemplateSyntaxError` and the path of a
+    # template, which is exactly what this file is written to record: the type of the fault and
+    # the place in the source. And it never compared the journal with the secrets on the machine
+    # at all, so the one thing it was named for could have been sitting in there.
+    for what, _file, piece, could_not_read in the_secrets_this_machine_holds(data_dir.parent, data_dir):
+        if could_not_read is None and piece in written:
+            return [f"{what} is in {journal.name} of this instance"]
+    for what, shape in NEVER_PUBLISHED:
+        if _real_matches(shape, written):
+            return [f"{what} is in {journal.name} of this instance"]
+    return []
 
 
 def look(repo: pathlib.Path, data_dir: pathlib.Path) -> tuple[list[str], int]:

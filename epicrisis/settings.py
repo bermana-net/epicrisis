@@ -25,6 +25,7 @@ whether the value may be written down as well as the name.
 import copy
 import functools
 import json
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -39,6 +40,43 @@ from epicrisis.runs import copy_whole, one_at_a_time, write_whole
 # reason layout.py exists is that a name written in two places is a file somebody stops reading.
 SETTINGS_FILE = layout.SETTINGS
 ANSWER_MODES = ("as_printed", "with_meaning", "direct")
+
+# Asked of a reader or a writer below in place of an archive's id: the answer this instance gives,
+# which every archive that has not been answered about separately runs by.
+#
+# It is the default of `in_archive` because the three-argument call has always meant exactly this
+# — "does this instance run this rule" — and goes on meaning it. That is a real answer and the
+# page has to be able to show it and change it: it is what a new archive inherits, and it is where
+# the two rules this instance's owner switched off by hand already stand. Naming an archive asks
+# the other question. The first entry's bullet about doors with no default is about a door into
+# **an archive**, which answers about somebody; this one answers about everybody, and a caller
+# that forgets gets the widest answer rather than a stranger's.
+#
+# A word of this program's own and not an empty string, so that a line of the journal and a field
+# of this file can hold it without reading as "nothing". No archive id can collide with it: ids
+# are eight hexadecimal characters.
+THE_WHOLE_INSTANCE = "the whole instance"
+# Where a rule's per-archive answers sit inside its entry, beside the instance's own `on` and
+# `settings`. One file, beside the instance, keyed by the random id of an archive.
+#
+# **Why beside the instance and not inside each archive's folder**, which is the first entry's
+# usual answer and is not this one. That bullet is about anything holding a string printed on
+# somebody's document: a file one archive cannot open is a file it cannot leak. What is held here
+# is a rule's id — the name of a file in `epicrisis/rules/shipped` or in this instance's own rules
+# folder — an archive's random id, a true or a false, and the numbers a kind ships as thresholds.
+# None of those is printed on anybody's form, and every one of them is already in this file today:
+# the first entry's own test is "does it name a person, or does it name a form?", and a check for
+# whether a column that should hold a clinic holds a person's name instead is a question about how
+# forms print things, which is the side that is shared on purpose.
+#
+# And one positive reason, which is `keepers.py`'s, written out there for the same shape: "which
+# archives have this rule off" must not be a question that takes one reading per archive, because
+# a half that would not read would **shorten** the answer rather than refuse it — a rule would
+# come back on in an archive whose folder was unreadable, silently. One file, one lock, one write
+# per change, the version before it kept beside it, and a reader that raises rather than answering
+# "empty" (§8). The settings page draws every rule with the instance's answer and this archive's
+# side by side, and there is no atomic read across two files.
+ARCHIVES = "archives"
 
 # Which of the choices in this file each built thing is built out of, and the one key of this file
 # that is not a choice at all but the note of when those last changed.
@@ -86,6 +124,12 @@ NOTED_UNDER = "built_from"
 # and with the same test.
 SAID_IN_FULL = ("answer_mode", "engine", "read_materials", "mcp_lock", "mcp_lock_scope",
                 "mcp_lock_minutes", "ask")  # fmt: skip
+# `public_host` is deliberately not on that list. It is not a secret — the secret is the path, and
+# this name is one a tunnel answers on publicly — but the journal is the one file this project
+# says may be shown to anybody, and an address somebody can knock on is not a thing to hand out
+# for nothing. The journal says the setting changed and not what to, which is the same shape the
+# README already keeps: it writes the name as `<name.ts.net>` and this repository holds the real
+# one nowhere.
 _NEVER_SET = object()  # a setting this file has never held is not the same as one holding None
 
 # The change open in this thread, if one is: see editing() below. One per folder, because an
@@ -323,24 +367,51 @@ def _rules_changed(stored: dict, now: dict) -> list[dict]:
     said = []
     for rule_id, entry in now.items():
         was, became = _as_kept(stored.get(rule_id)), _as_kept(entry)
-        if was.get("on") != became.get("on") and "on" in became:
-            # Which rules ship on and which ship off is in the rule files, and this module does
-            # not load them — see READ_BY_A_STEP, where the same door was shut for the same
-            # reason. So a rule whose switch this file had never held is marked as answered for
-            # the first time rather than reported as having been changed from its own default.
-            said.append({"event": "a rule was switched " + ("on" if became["on"] else "off"),
-                         "rule": rule_id, **({} if "on" in was else {"first_answer": True})})  # fmt: skip
-        moved = {name: value for name, value in (became.get("settings") or {}).items()
-                 if (was.get("settings") or {}).get(name, _NEVER_SET) != value}  # fmt: skip
-        shipped = [name for name in (was.get("settings") or {})
-                   if name not in (became.get("settings") or {})]  # fmt: skip
-        if moved or shipped:
-            numbers = {name: value for name, value in moved.items()
-                       if isinstance(value, bool | int | float)}  # fmt: skip
-            said.append({"event": "a rule's thresholds were changed", "rule": rule_id,
-                         **({"thresholds": numbers} if numbers else {}),
-                         **({"not_said": sorted(set(moved) - set(numbers))} if len(numbers) < len(moved) else {}),
-                         **({"as_shipped": sorted(shipped)} if shipped else {})})  # fmt: skip
+        said += _one_rule_changed(rule_id, was, became)
+        # And the same two sentences about each archive answered separately, with the archive
+        # named the way "the archive shown was switched" already names one: the random id, which
+        # is random exactly so that a line of this file names nobody.
+        before, after = was.get(ARCHIVES) or {}, became.get(ARCHIVES) or {}
+        for source_id in sorted(before | after):
+            if source_id in before and source_id not in after:
+                # Its own answer taken away rather than changed. Said as what it is, because the
+                # answer it falls back to is this instance's and that moves: a line claiming the
+                # rule was switched to whatever the instance says today would be a line that
+                # stops being true the next time somebody changes the instance's switch.
+                said.append({"event": "an archive stopped answering a rule for itself",
+                             "rule": rule_id, "archive": source_id})  # fmt: skip
+                continue
+            said += [{**line, "archive": source_id} for line in _one_rule_changed(
+                rule_id, _as_kept(before.get(source_id)), _as_kept(after.get(source_id)))]  # fmt: skip
+    return said
+
+
+def _one_rule_changed(rule_id: str, was: dict, became: dict) -> list[dict]:
+    """The lines for one rule's switch and thresholds, read twice: for the instance and per archive.
+
+    One function because they are one sentence asked of two scopes, and the only difference is the
+    `archive` the caller puts on the line. Written out twice, the per-archive half would be the
+    place where "a rule was switched off" came to be spelled a second way.
+    """
+    said = []
+    if was.get("on") != became.get("on") and "on" in became:
+        # Which rules ship on and which ship off is in the rule files, and this module does
+        # not load them — see READ_BY_A_STEP, where the same door was shut for the same
+        # reason. So a rule whose switch this file had never held is marked as answered for
+        # the first time rather than reported as having been changed from its own default.
+        said.append({"event": "a rule was switched " + ("on" if became["on"] else "off"),
+                     "rule": rule_id, **({} if "on" in was else {"first_answer": True})})  # fmt: skip
+    moved = {name: value for name, value in (became.get("settings") or {}).items()
+             if (was.get("settings") or {}).get(name, _NEVER_SET) != value}  # fmt: skip
+    shipped = [name for name in (was.get("settings") or {})
+               if name not in (became.get("settings") or {})]  # fmt: skip
+    if moved or shipped:
+        numbers = {name: value for name, value in moved.items()
+                   if isinstance(value, bool | int | float)}  # fmt: skip
+        said.append({"event": "a rule's thresholds were changed", "rule": rule_id,
+                     **({"thresholds": numbers} if numbers else {}),
+                     **({"not_said": sorted(set(moved) - set(numbers))} if len(numbers) < len(moved) else {}),
+                     **({"as_shipped": sorted(shipped)} if shipped else {})})  # fmt: skip
     return said
 
 
@@ -451,6 +522,63 @@ def _read_by(kept: dict, step: str) -> dict:
     return {name: kept[name] for name in READ_BY_A_STEP[step] if name in kept}
 
 
+def _as_one_archive_reads(kept: dict, step: str, in_archive: str) -> dict:
+    """What one step reads **for one archive**: the instance's answers with that archive's on top.
+
+    The answer a step is built from is per archive — one check is useful on two archives and noise
+    on the third, and so is a threshold — but what was written down as "the settings this step was
+    built from" was the whole `rules` table, every archive's answers in one lump. So a threshold
+    typed for one archive of 23 documents put the badge "this index is older than the files it is
+    built from" over all three, and two of the three were checked and rebuilt for nothing.
+    Measured: 0 badges before the change, 3 after, on archives of 43, 72 and 23 documents.
+
+    Each archive's own answers are lifted in and the `archives` table dropped, so this holds
+    nothing about anybody else: that is what makes two archives' notes able to differ. An
+    instance-wide change still moves every archive that has not overridden it, because what is
+    lifted in here is the instance's answer wherever the archive has none of its own.
+    """
+    read = {}
+    for name, value in _read_by(kept, step).items():
+        if name != "rules" or not isinstance(value, dict):
+            read[name] = value
+            continue
+        rules = {}
+        for rule_id, answer in value.items():
+            answer = {"on": answer} if isinstance(answer, bool) else dict(answer or {})
+            # The table of other archives' answers comes out in every case, the instance's view
+            # included: what the instance answers does not change when one archive overrides it,
+            # and a view that carried the table would say it did — for every archive at once,
+            # which is the false alarm this is about.
+            theirs = answer.pop(ARCHIVES, None) or {}
+            its_own = theirs.get(in_archive) if in_archive != THE_WHOLE_INSTANCE else None
+            effective = {**answer, **(its_own if isinstance(its_own, dict) else {})}
+            # A rule with nothing left after that is a rule this reader was never answered
+            # about, and it must read as absent rather than as an empty answer. Otherwise the
+            # first answer stored for **another** archive puts an empty entry in every archive's
+            # view, which is a change, which is the false alarm this is all about.
+            if effective:
+                rules[rule_id] = effective
+        if rules:
+            read[name] = rules
+    return read
+
+
+def _the_archives_named_in(kept: dict, step: str) -> set[str]:
+    """Every archive this file holds an answer of its own about, for the step named.
+
+    Only these can differ from the instance, so only these need a note of their own — an archive
+    nobody has answered about separately reads the instance's answers and the instance's moment.
+    """
+    named: set[str] = set()
+    for name, value in _read_by(kept, step).items():
+        if name != "rules" or not isinstance(value, dict):
+            continue
+        for answer in value.values():
+            if isinstance(answer, dict):
+                named |= set((answer.get(ARCHIVES) or {}).keys())
+    return named
+
+
 def _note_in(kept: dict, step: str) -> dict | None:
     """The note one step left in this file, where there is one written in the shape it is written in.
 
@@ -480,24 +608,48 @@ def _noted(before: dict, after: dict) -> dict:
     """
     noted = {}
     for step in READ_BY_A_STEP:
-        was, now = _read_by(before, step), _read_by(after, step)
-        kept = _note_in(before, step) or {"read": was, "changed_at": 0.0}
-        changed = was != now or kept.get("read") != was
-        noted[step] = {"read": now, "changed_at": time.time() if changed else _moment(kept.get("changed_at"))}
+        kept = _note_in(before, step) or {}
+        noted[step] = _one_note(before, after, step, THE_WHOLE_INSTANCE, kept)
+        # And one note per archive that has an answer of its own, because what a step is built
+        # from is per archive: a threshold typed for one archive aged all three without this.
+        # Both sides' archives, so that an answer taken away moves the note it belonged to.
+        its_own = kept.get(ARCHIVES) if isinstance(kept.get(ARCHIVES), dict) else {}
+        for archive in _the_archives_named_in(before, step) | _the_archives_named_in(after, step):
+            note = _one_note(before, after, step, archive, its_own.get(archive) or {})
+            noted[step].setdefault(ARCHIVES, {})[archive] = note
     return noted
 
 
-def changed_for(data_dir: Path, step: str) -> float:
+def _one_note(before: dict, after: dict, step: str, in_archive: str, kept: dict) -> dict:
+    """What one reader of this file reads now, and when that last changed for them."""
+    was = _as_one_archive_reads(before, step, in_archive)
+    now = _as_one_archive_reads(after, step, in_archive)
+    stood = kept.get("read", was)
+    changed = was != now or stood != was
+    return {"read": now, "changed_at": time.time() if changed else _moment(kept.get("changed_at"))}
+
+
+def changed_for(data_dir: Path, step: str, *, in_archive: str = THE_WHOLE_INSTANCE) -> float:
     """When a choice this step is built from last changed here, as a moment to compare against.
 
     Zero where none ever has — a new instance, or one whose settings have never named anything this
     step reads. Nothing built is behind a choice that was never made.
+
+    `in_archive` because the choice is per archive. Asked about one archive, the answer is that
+    archive's own note where it has one, and the instance's where it has not — and never the
+    moment somebody answered something about **another** archive, which is what this said before:
+    one threshold typed for one archive of 23 documents put "this index is older than the files it
+    is built from" over all three.
     """
     stored = _settings(data_dir)
     kept = _note_in(stored, step)
     if kept is None:
         return 0.0
-    if kept.get("read") != _read_by(stored, step):
+    if in_archive != THE_WHOLE_INSTANCE:
+        its_own = (kept.get(ARCHIVES) or {}).get(in_archive)
+        if isinstance(its_own, dict):
+            kept = its_own
+    if kept.get("read") != _as_one_archive_reads(stored, step, in_archive):
         # The file says something the note does not account for: edited by hand, or restored from a
         # copy of another moment. When that happened is not written down anywhere, so the file's own
         # time is the best there is — the old answer, which cries wolf rather than keeping quiet.
@@ -523,12 +675,48 @@ def _kept_for(data_dir: Path, rule_id: str):
     return {"on": kept} if isinstance(kept, bool) else (kept or {})
 
 
-def rule_on(data_dir: Path, rule) -> bool:
-    """Whether this instance runs this rule. Its own default until somebody says otherwise.
+def answered_about(data_dir: Path, rule_id: str, in_archive: str) -> dict:
+    """What one archive stored about one rule **of its own**, which is usually nothing.
+
+    Empty where this archive has never been answered about separately, and that is the answer the
+    readers below want: an empty dict falls through to what this instance answers, and a dict with
+    an "on" in it is an archive whose owner said something different about one of their three
+    boxes of forms. Asked by the page as well, so that a switch can say which of the two it is
+    showing rather than drawing both the same.
+
+    THE_WHOLE_INSTANCE is not an archive and has nothing of its own: the instance's own answer is
+    `_kept_for`, one function up, and answering it here too would be the one decision in two
+    places.
+    """
+    if in_archive == THE_WHOLE_INSTANCE or not in_archive:
+        return {}
+    kept = (_kept_for(data_dir, rule_id).get(ARCHIVES) or {}).get(in_archive)
+    return kept if isinstance(kept, dict) else {}
+
+
+def rule_on(data_dir: Path, rule, *, in_archive: str = THE_WHOLE_INSTANCE) -> bool:
+    """Whether this rule runs — in one archive, or over this instance. Its own default otherwise.
 
     One switch per rule, kept by the rule's id, so that a rule added later arrives with its own
     answer and an answer stored for a rule that has since been deleted simply stops mattering.
+    And one switch per rule **per archive**, over the top of it, because one check is useful on
+    two archives and noise on the third. Measured on the three archives on this machine,
+    `institution_looks_like_a_name` finds 24 of 439 documents, 4 of 40 and 255 of 257: the last
+    archive is one hospital's export, whose forms print the doctor's name where others print the
+    clinic's, and the one switch that would quieten those 255 took the 24 and the 4 with it.
+
+    Three layers, narrowest first, each falling through to the next where it says nothing: what
+    this archive was answered, what this instance was answered, what the rule's own file ships.
+
+    Above all three: a check that reports a hole in the archive has no switch, and this is the one
+    place that is read — every caller asks here, so an answer stored for such a rule by a hand or
+    by an older version of this program cannot put it out. See `Kind.stays_on`.
     """
+    if rule.stays_on:
+        return True
+    its_own = answered_about(data_dir, rule.id, in_archive)
+    if "on" in its_own:
+        return bool(its_own["on"])
     kept = _kept_for(data_dir, rule.id)
     if "on" in kept:
         return bool(kept["on"])
@@ -538,28 +726,73 @@ def rule_on(data_dir: Path, rule) -> bool:
     return rule.on_by_default
 
 
-def rule_settings(data_dir: Path, rule) -> dict:
-    """The rule's own settings, with whatever this instance changed, and nothing else.
+def rule_settings(data_dir: Path, rule, *, in_archive: str = THE_WHOLE_INSTANCE) -> dict:
+    """The rule's own settings, with what this instance changed and then what this archive did.
 
     A name the rule does not have is dropped rather than carried: a setting stored under a name
     the kind has since renamed would otherwise travel for ever, doing nothing, looking like a
     thing that works.
+
+    Per archive for the same reason as the switch, and decided with it rather than after it: a
+    threshold is how far from the others a number has to be before it is worth looking at, and
+    that is a fact about how one archive's forms print, exactly as the switch is. Half of it per
+    archive and half of it instance-wide would be the same mismatch this was written to close —
+    the count beside a switch was already of the open archive while the switch was not.
     """
-    changed = _kept_for(data_dir, rule.id).get("settings") or {}
+    changed = dict(_kept_for(data_dir, rule.id).get("settings") or {})
+    changed |= answered_about(data_dir, rule.id, in_archive).get("settings") or {}
     return {**rule.settings, **{name: value for name, value in changed.items() if name in rule.settings}}
 
 
-def as_chosen(data_dir: Path, rule):
-    """The rule as this archive runs it: its file, with this archive's settings over the top."""
-    return replace(rule, settings=rule_settings(data_dir, rule))
+def as_chosen(data_dir: Path, rule, *, in_archive: str = THE_WHOLE_INSTANCE):
+    """The rule as it is run here: its file, with this instance's settings and this archive's."""
+    return replace(rule, settings=rule_settings(data_dir, rule, in_archive=in_archive))
 
 
 @while_editing
-def set_rule_on(data_dir: Path, rule_id: str, enabled: bool) -> None:
+def set_rule_on(data_dir: Path, rule_id: str, enabled: bool, *,
+                in_archive: str = THE_WHOLE_INSTANCE) -> None:  # fmt: skip
+    """Answer the switch — for one archive, or for the instance, which is every other archive.
+
+    Refused for a rule that has no switch, rather than written and then ignored by the reader
+    above: a stored answer nothing reads is the kind of thing somebody finds in a file, believes,
+    and spends an afternoon on.
+    """
+    from epicrisis.rules import load as load_rules
+
+    rule = load_rules(data_dir).get(rule_id)
+    if rule is not None and rule.stays_on:
+        raise ValueError(f"“{rule.name}” reports a hole in the archive and has no switch: what it "
+                         "finds is this program saying it did not finish reading a page, which is "
+                         "not something to call noise. Its thresholds are yours to set.")  # fmt: skip
     kept = _settings(data_dir).get("rules", {})
-    was = kept.get(rule_id)
-    was = {"on": was} if isinstance(was, bool) else (was or {})
-    _write_settings(data_dir, {"rules": {**kept, rule_id: {**was, "on": enabled}}})
+    was = _as_kept(kept.get(rule_id))
+    if in_archive == THE_WHOLE_INSTANCE:
+        now = {**was, "on": enabled}
+    else:
+        its_own = dict(was.get(ARCHIVES) or {})
+        its_own[in_archive] = {**(its_own.get(in_archive) or {}), "on": enabled}
+        now = {**was, ARCHIVES: its_own}
+    _write_settings(data_dir, {"rules": {**kept, rule_id: now}})
+
+
+@while_editing
+def let_the_instance_answer(data_dir: Path, rule_id: str, in_archive: str) -> None:
+    """Take one archive's own answer about one rule away, so the instance's stands again.
+
+    The other half of answering per archive, and the seventh entry's half: a switch a person can
+    set for one archive and never put back is a dead end, and an answer of its own that looks
+    identical to the instance's is a thing nobody can tell they still have. Asked for by name
+    rather than by storing a third value for "the same as the instance", because what the instance
+    answers moves and an archive that said "the same as it was in October" would be saying it
+    about a number that has since changed.
+    """
+    kept = _settings(data_dir).get("rules", {})
+    was = _as_kept(kept.get(rule_id))
+    its_own = {name: entry for name, entry in (was.get(ARCHIVES) or {}).items() if name != in_archive}
+    now = {**was, ARCHIVES: its_own} if its_own else {name: value for name, value in was.items()
+                                                      if name != ARCHIVES}  # fmt: skip
+    _write_settings(data_dir, {"rules": {**kept, rule_id: now}})
 
 
 # What a threshold of each shape wants, said the way a person says it rather than the way Python
@@ -589,22 +822,36 @@ def what_a_rule_cannot_use(rule, values: dict) -> dict[str, str]:
         if name not in values:
             continue
         try:
-            _as_shipped(default, values[name])
+            read = _as_shipped(default, values[name])
         except (TypeError, ValueError):
             cannot[name] = IN_WORDS.get(type(default), "a value of the shape this rule ships")
+            continue
+        # The shape as well as the type, asked of the kind so that the file and this page refuse
+        # the same numbers. 0 characters, a share of 0, a count of -5: each is a number the type
+        # accepts and the check can never act on, and each was stored in silence.
+        refuses = rule.check.refuses(name, read)
+        if refuses:
+            cannot[name] = refuses
     return cannot
 
 
 @while_editing
-def set_rule_settings(data_dir: Path, rule, values: dict) -> None:
-    """What this archive chose for one rule, where it differs from what the rule ships with.
+def set_rule_settings(data_dir: Path, rule, values: dict, *,
+                      in_archive: str = THE_WHOLE_INSTANCE) -> None:  # fmt: skip
+    """What was chosen for one rule here, where it differs from what already stood.
 
-    A value equal to the default is not stored: typing the shipped number back in is how a
-    person undoes a change, and it should leave nothing behind saying they ever made one.
+    A value equal to what already stood is not stored: typing the number back in is how a person
+    undoes a change, and it should leave nothing behind saying they ever made one. What "already
+    stood" is depends on which question is being answered — for the instance it is the rule's own
+    file, and for one archive it is what the instance answers, so that typing the instance's
+    number into an archive's field puts that archive back under the instance rather than pinning
+    it to today's value for ever.
 
     Every threshold named in values is written or none of them is. A caller with several in hand
     asks what_a_rule_cannot_use first, so that the good ones are not lost with the bad one.
     """
+    standing = (rule.settings if in_archive == THE_WHOLE_INSTANCE
+                else rule_settings(data_dir, rule))  # fmt: skip
     wanted = {}
     for name, default in rule.settings.items():
         if name not in values:
@@ -613,17 +860,40 @@ def set_rule_settings(data_dir: Path, rule, values: dict) -> None:
             wanted[name] = _as_shipped(default, values[name])
         except (TypeError, ValueError):
             raise ValueError(f"{name} should be {IN_WORDS.get(type(default), 'what this rule ships')}") from None
-        if wanted[name] == default:
+        # The last place it could still get in: a caller that did not ask
+        # `what_a_rule_cannot_use` first, which is every caller but the settings page.
+        refuses = rule.check.refuses(name, wanted[name])
+        if refuses:
+            raise ValueError(f"{name} wants {refuses}")
+        if wanted[name] == standing[name]:
             del wanted[name]
     kept = _settings(data_dir).get("rules", {})
-    was = kept.get(rule.id)
-    was = {"on": was} if isinstance(was, bool) else (was or {})
-    _write_settings(data_dir, {"rules": {**kept, rule.id: {**was, "settings": wanted}}})
+    was = _as_kept(kept.get(rule.id))
+    if in_archive == THE_WHOLE_INSTANCE:
+        now = {**was, "settings": wanted}
+    else:
+        its_own = dict(was.get(ARCHIVES) or {})
+        its_own[in_archive] = {**(its_own.get(in_archive) or {}), "settings": wanted}
+        now = {**was, ARCHIVES: its_own}
+    _write_settings(data_dir, {"rules": {**kept, rule.id: now}})
 
 
-def rules_on(data_dir: Path, loaded, step: str) -> list:
-    """The rules one step runs here: its own, as this archive set them, minus the ones turned off."""
-    return [as_chosen(data_dir, rule) for rule in loaded.at(step) if rule_on(data_dir, rule)]
+def rules_on(data_dir: Path, loaded, step: str, *, in_archive: str = THE_WHOLE_INSTANCE) -> list:
+    """The rules one step runs: its own, as they were answered here, minus the ones turned off.
+
+    `in_archive` is how a step that is about one archive asks, and every one of them has the
+    archive in hand already — `validate` has the output folder, the page of findings and the page
+    of charts have the archive the route declared, a tool call has the one `showing()` read. The
+    default answers about the instance, which is what the settings page shows as the answer every
+    archive inherits.
+
+    **One caller still asks the instance's question about an archive**, and it is named here
+    rather than left to be found: `cli.py`'s `suspects`, which has `showing` in hand two lines
+    above. `tests/test_rules.py` holds that list and fails when it grows, so the next caller
+    added is caught by having been added.
+    """
+    return [as_chosen(data_dir, rule, in_archive=in_archive)
+            for rule in loaded.at(step) if rule_on(data_dir, rule, in_archive=in_archive)]  # fmt: skip
 
 
 # What a chart does with units, and what a value with no unit is placed beside, used to be three
@@ -715,6 +985,40 @@ def set_mcp_lock_minutes(data_dir: Path, minutes: int) -> None:
     if not 1 <= int(minutes) <= 7 * 24 * 60:
         raise ValueError("a window runs from a minute to a week")
     _write_settings(data_dir, {"mcp_lock_minutes": int(minutes)})
+
+
+#: What a name the tunnel answers on may be made of. A host name and nothing else: no scheme, no
+#: path, no port, no space. Refused rather than tidied, because every one of those is somebody
+#: pasting a different thing than was asked for — a whole URL out of a browser's address bar is
+#: the common one — and a link composed from it would be a link that does not work, handed over
+#: as though it did.
+A_HOST_NAME = re.compile(r"^(?=.{1,253}$)[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+                         r"(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$")  # fmt: skip
+
+
+def the_name_the_tunnel_answers_on(data_dir: Path) -> str:
+    """The public name of this instance, or an empty string where nobody has said one.
+
+    Until now this lived only on a command line — `mcp --http --public-host` — which meant the
+    instance did not know its own address and no page could write a link that works. It is kept
+    here rather than worked out from the request, because a request through a tunnel carries
+    whatever the tunnel was told to send, and a link handed to somebody else has to be the name
+    its owner meant.
+
+    Empty is an answer and not a missing value: a page with no name to use says so instead of
+    printing half an address. §7.
+    """
+    said = _settings(data_dir).get("public_host", "")
+    return said if isinstance(said, str) and A_HOST_NAME.match(said) else ""
+
+
+@while_editing
+def set_the_name_the_tunnel_answers_on(data_dir: Path, name: str) -> None:
+    """Write it down, or clear it with an empty string."""
+    said = (name or "").strip().rstrip(".")
+    if said and not A_HOST_NAME.match(said):
+        raise ValueError("a name the tunnel answers on is a host name: no https://, no path, no port")
+    _write_settings(data_dir, {"public_host": said})
 
 
 def ask_enabled(data_dir: Path) -> bool:

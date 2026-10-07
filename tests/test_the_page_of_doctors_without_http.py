@@ -17,6 +17,7 @@ place every page that writes goes through, so nothing here is proved against a l
 
 import ast
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -234,6 +235,34 @@ def test_the_press_that_was_drawn_where_it_lands_does_store(two_archives):
     assert people.settled(people.load(data_dir, MINE["id"]), "institution") == []
 
 
+def test_a_carried_group_stands_under_its_own_heading_and_not_a_model_s(two_archives):
+    """A group the migration could not place is not a model's proposal and not a join of this
+    archive's, and the page has one heading for each of those three. Put in the model's list it
+    would read "a model thinks these are one" over a decision this person made themselves, which
+    is the third entry's defect in the one place where it is also the first entry's: the archive
+    it stands in is not the archive the press was made in.
+    """
+    data_dir, _archives, second_spelling = two_archives
+    people.save(data_dir, MINE["id"], [
+        people.Group(kind="institution", label=MINE["provider"],
+                     names=[MINE["provider"], second_spelling], settled=False, carried=True,
+                     why=people.CARRIED_FROM_THE_INSTANCE),
+    ])  # fmt: skip
+
+    clinics = who.who_view(data_dir, MINE["id"], kind="institution")
+
+    assert [one.names for one in clinics["carried"]] == [sorted([MINE["provider"], second_spelling])]
+    assert clinics["thought"] == [], "not a model's, and the heading over it says whose it is"
+    assert clinics["groups"] == [], "and not joined by anybody in this archive"
+    assert clinics["carried"][0].why == people.CARRIED_FROM_THE_INSTANCE
+    # Nor is the family offered a second time underneath: it is already a question on this page.
+    assert clinics["proposals"] == []
+    # The template has a block of its own for them, with the two presses a question needs.
+    drawn = (Path(who.__file__).parent / "templates" / "who.html").read_text(encoding="utf-8")
+    assert "{% if carried %}" in drawn
+    assert "Carried in from before each archive kept its own joins" in drawn
+
+
 def test_a_press_that_joins_nothing_says_so_instead_of_looking_like_a_join(two_archives):
     """One spelling ticked out of five looked exactly like a join that had worked.
 
@@ -394,3 +423,86 @@ def test_a_press_is_handed_the_one_door_the_routes_use(two_archives):
     who.joined(data_dir, archives, MINE["id"], the_open_archive=watched, kind="institution",
                names=[MINE["provider"], second_spelling])  # fmt: skip
     assert asked == [(MINE["id"], MINE["id"])], "the press did not go through the door it was handed"
+
+
+def test_no_page_puts_what_is_being_looked_for_into_an_address():
+    """The one thing the search route exists to keep out of addresses was being put in one.
+
+    `/search` answers a POST, and the reason is written at that route: an address is kept in a
+    browser's history, synced from there to a vendor's servers, offered in the address bar to
+    whoever sits at the machine next, and written into the log of any tunnel in front of this
+    dashboard. The page of doctors linked each name found in the text to `/search?q=<the name>` —
+    a GET, with a person's surname in it.
+
+    Read off the templates rather than off a rendered page: the names this is about are the ones
+    found **in the text only**, which no archive built by these tests has, so a page with such a
+    name on it is a page no test here can draw. What can be held to it is the markup, and the
+    thing to catch is somebody writing that link again.
+
+    Found by the interface role on 7 Oct 2026.
+    """
+    from pathlib import Path
+
+    templates = Path(__file__).resolve().parent.parent / "epicrisis" / "web" / "templates"
+    drawn = {file.name: file.read_text(encoding="utf-8") for file in templates.rglob("*.html")}
+    assert len(drawn) > 10, "the templates moved"
+
+    offenders = [name for name, text in drawn.items() if "/search?q=" in text]
+    assert offenders == [], f"a page puts what is looked for into an address: {offenders}"
+    # And what replaced it on the page of doctors is a press carrying the same word.
+    assert 'action="/search"' in drawn["who.html"] and 'name="q"' in drawn["who.html"]
+
+
+def test_the_printed_line_a_name_was_read_from_is_not_clipped():
+    """The one line on this page that must be readable in full, and it was cut.
+
+    `.makers dd { white-space: nowrap }` was written for the short line under each name — "41
+    documents · 2013–2025" — and it caught the printed line of the document as well. Under a body
+    that hides horizontal overflow, that does not push a line off the side: it cuts it, with no
+    way to reach the rest.
+
+    The line is not decoration. The template says so where it is drawn: it is what makes a wrong
+    reading visible to anybody who reads it, which is the third of §4's conditions for letting a
+    page offer a claim about a person's name at all.
+
+    Read off the stylesheet, because the page that draws these lines needs an archive whose
+    documents name doctors only inside their text, and no archive built by these tests has one.
+    """
+    from pathlib import Path
+
+    styles = (Path(__file__).resolve().parent.parent / "epicrisis" / "web" / "static" / "app.css").read_text(encoding="utf-8")
+
+    assert ".makers dd.note { white-space: normal;" in styles, "the printed line is nowrap again"
+    # And the rule it is an exception to still stands, because the short lines want it.
+    assert ".makers dd { margin: 0; color: var(--muted); white-space: nowrap; }" in styles
+    # The exception has to come after the rule it narrows: at equal weight, order decides.
+    assert styles.index(".makers dd.note") > styles.index(".makers dd { margin: 0")
+
+
+def test_every_page_of_the_menu_says_which_page_it_is():
+    """A page that does not name itself falls out of the menu under the person standing on it.
+
+    The header keeps a page in the menu by comparing it with `current` — "whatever page a person
+    typed their way to stays in the menu, so they can see where they are and get back out of it" —
+    and an undefined name compared with a string is simply false, so Jinja said nothing and two
+    pages dropped out wherever the menu is drawn short.
+    """
+    import re
+    from pathlib import Path
+
+    templates = Path(__file__).resolve().parent.parent / "epicrisis" / "web" / "templates"
+    header = (templates / "_header.html").read_text(encoding="utf-8")
+    named = set(re.findall(r'\("/[^"]*",\s*"([a-z]+)"', header))
+    assert {"who", "card", "timeline"} <= named, "the menu no longer names its pages this way"
+
+    for file in sorted(templates.glob("*.html")):
+        text = file.read_text(encoding="utf-8")
+        if "{% include \"_header.html\" %}" not in text:
+            continue
+        found = re.search(r'{%\s*set current = "([a-z]*)"\s*%}', text)
+        assert found, f"{file.name} draws the menu and does not say which page it is"
+        # An empty name is a page that is deliberately none of them — an address that could not
+        # be read, something that is not here, something that went wrong. Written down rather
+        # than left out, so that a page which simply forgot is still caught by this.
+        assert found.group(1) in named or found.group(1) == "", \
+            f"{file.name} names a page the menu does not have: {found.group(1)}"  # fmt: skip

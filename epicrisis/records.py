@@ -19,6 +19,15 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def today() -> str:
+    """This day in UTC, as `YYYY-MM-DD`: how anything counted in whole days is compared.
+
+    Cut from `now()` rather than asked of the clock a second time, so that a day and a moment in
+    this program can never disagree about which day it is.
+    """
+    return now()[:10]
+
+
 def append_line(path: Path, line: dict) -> None:
     """Add one record to a file of them, making the folder if it is not there yet."""
     from epicrisis.runs import belongs_to_the_folder  # runs stamps its locks with now(), above

@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from epicrisis import indicators, people
 from epicrisis.index.build import SCHEMA, SCHEMA_VERSION, index_path
 from epicrisis.indicator_proposals import propose_indicators
+from epicrisis.printed_values import fold
 from epicrisis.web.app import create_app
 
 #: What each archive prints, and nothing of one is a substring of anything of the other. The
@@ -91,6 +92,16 @@ def _an_archive(data_dir: Path, mine: dict, at: Path | None = None) -> None:
                       (document, mine["medication"]))  # fmt: skip
         index.execute("INSERT INTO page_texts (document_id, page, text) VALUES (?, 1, ?)",
                       (document, mine["line"]))  # fmt: skip
+        # The row `search` answers out of, folded the way the builder folds it. Without it this
+        # archive held documents that no words matched, and `search_documents` answered "found 0"
+        # for both people — so the tool was in the sweep below and could not have carried anything
+        # either way. A cache keyed on the words alone, planted in that tool, leaked one archive's
+        # snippet into the other's answer and no test moved. This line is what moved them.
+        index.execute(
+            "INSERT INTO search (rowid, title, provider, names, body) VALUES (?, ?, ?, ?, ?)",
+            (document, fold(mine["test"]), fold(mine["provider"]), fold(mine["test"]),
+             fold("\n".join([mine["line"], mine["diagnosis"], mine["medication"]]))),
+        )  # fmt: skip
     index.close()
 
 
@@ -116,6 +127,11 @@ def _printed_a_second_way(data_dir: Path, mine: dict) -> str:
                                       transcribed, primary_copy)
                VALUES (?, ?, 1, '[1]', 'lab_panel', 'uk', ?, ?, '2012-08-10', 'day', 1, 1)""",
             (mine["id"], mine["id"][::-1] * 8, mine["test"], spelling),
+        )  # fmt: skip
+        index.execute(
+            "INSERT INTO search (rowid, title, provider, names, body) VALUES (?, ?, ?, ?, NULL)",
+            (index.execute("SELECT last_insert_rowid()").fetchone()[0], fold(mine["test"]),
+             fold(spelling), fold(mine["test"])),
         )  # fmt: skip
     index.close()
     return spelling
@@ -359,6 +375,61 @@ def test_a_decision_made_in_one_archive_does_not_rename_anything_in_another(two_
     client.post(where, data=fields, follow_redirects=True)
     settled = people.settled(people.load(two_archives, THEIRS["one"]["id"]), "institution")
     assert [one.label for one in settled] == [THEIRS["one"]["provider"]], "the join did not happen at all"
+
+
+def test_a_question_typed_in_one_archive_is_not_repeated_on_a_page_about_another(two_archives):
+    """The words a person types, which are theirs as much as the answer is.
+
+    The sweep above cannot reach this and could not have: it asks for pages by GET with the
+    archive standing still, and what this is about is a POST made in one archive and a GET made
+    in another. `POST /search` was the one route of this program about somebody's records that
+    declared no archive at all — it writes nothing and reads nothing of anybody's, so nothing
+    looked missing until the words themselves turned out to be somebody's.
+
+    The question travels in the body of the post and the address carries a key, because an address
+    is kept in a browser's history and read by whatever tunnel stands in front of this dashboard.
+    The key was handed out without the archive in it, so the same address opened after a switch
+    printed somebody's question — a doctor's surname, a diagnosis — at the top of a page carrying
+    another person's name in the bar. The results never crossed: they come from the index of
+    whichever archive is open. The words did.
+
+    Three ordinary acts and nothing mocked: search in one archive, switch with the picker that
+    stands in the bar of every page, press back in the tab that is still open.
+    """
+    client = TestClient(create_app(two_archives, background_jobs=False), base_url="http://localhost:8050",
+                        raise_server_exceptions=False)  # fmt: skip
+
+    asked = client.post("/search", data={"q": THEIRS["one"]["doctor"]}, follow_redirects=False)
+    assert asked.status_code == 303
+    address = asked.headers["location"]
+    assert THEIRS["one"]["doctor"] not in address, "the words of a question are in the address"
+
+    # The words do come back in the archive they were typed about, or everything below is an
+    # assertion about a page that answers nothing.
+    its_own = client.get(address, follow_redirects=True).text
+    assert THEIRS["one"]["doctor"] in its_own, "the question is not answered in its own archive"
+
+    client.post("/owner", data={"source": THEIRS["two"]["id"], "back": "/"}, follow_redirects=True)
+    after = client.get(address, follow_redirects=True).text
+
+    theirs = _nothing_of_theirs("one")
+    assert [word for word in theirs if word in after] == [], (
+        "a question typed about one archive is repeated on a page about another")
+    # And the page says which of the three things happened, rather than blaming a restart for a
+    # switch of archives: an answer with the wrong cause in it is the seventh entry's business.
+    assert "asked about another archive" in after
+
+    # The key is not spent either: back in its own archive the same address answers as before. A
+    # fix that threw the question away would satisfy the line above and lose the feature.
+    client.post("/owner", data={"source": THEIRS["one"]["id"], "back": "/"}, follow_redirects=True)
+    again = client.get(address, follow_redirects=True).text
+    assert THEIRS["one"]["doctor"] in again, "the question was forgotten by the archive it belongs to"
+
+    # And the other archive can still be searched for its own words.
+    client.post("/owner", data={"source": THEIRS["two"]["id"], "back": "/"}, follow_redirects=True)
+    their_own = client.post("/search", data={"q": THEIRS["two"]["test"]}, follow_redirects=True).text
+    assert THEIRS["two"]["test"] in their_own, "the second archive cannot be searched at all"
+    assert [word for word in theirs if word in their_own] == []
 
 
 @pytest.fixture
@@ -998,3 +1069,142 @@ def test_every_page_asks_once_which_archive_it_is_of(two_archives):
 
     assert reads, "nothing was counted"
     assert {address: count for address, count in reads.items() if count != 1} == ASKS_AGAIN, reads
+
+
+# Two archives open at once in one process, which until the registry of connectors had never
+# happened. Everything above this line is about one archive being switched for another; these are
+# about two answering side by side.
+#
+# **What holds, and why it is written down rather than assumed.** Nothing in the path an MCP call
+# takes keeps one archive's content between calls. Five things in this program hold state across
+# calls and each was looked at: `records._torn` is keyed by whole path and holds line numbers;
+# `readers/pdf._REMEMBERED` is keyed by (sha, page) and is reached only while reading, never by a
+# tool; `web/documents._VIEWS` is keyed by the archive's own folder, is bounded to
+# the one being looked at, and is not on this path at all: importing `mcp_server` and then
+# answering `archive_overview`, `documents_to_check` and `value_names` pulls in no module of
+# `epicrisis.web` whatsoever, which was measured and not read off the imports; `rules/kinds.KINDS` and `printed_values._DRAWN_ALIKE_BACK` are
+# tables of code built at import from fixed lists, with nothing of anybody's in them. The two
+# `@cache` functions in printed_values take no arguments and compile a regex from a word list.
+#
+# So these tests are about the answers rather than about caches — and they are what would catch
+# the cache somebody adds next.
+TOOLS_THAT_READ = (
+    ("archive_overview", {}),
+    ("list_documents", {}),
+    ("value_names", {}),
+    ("list_indicators", {}),
+    ("documents_to_check", {}),
+    ("flagged_values", {}),
+    ("search_documents", {"query_text": "норма"}),
+)
+
+
+@pytest.fixture
+def two_links(two_archives):
+    """A connector for each archive, each with rights to that one and no other."""
+    from epicrisis import connectors
+
+    data_dir = two_archives
+    made = {}
+    for which, mine in THEIRS.items():
+        made[which], _code = connectors.issue(data_dir, name=f"for {which}", archives=(mine["id"],),
+                                              secrets_folder=data_dir / "secrets")  # fmt: skip
+    return data_dir, made
+
+
+def _asked(client, link, tool, arguments):
+    return client.post(f"/mcp/{link.path}", headers={
+        "accept": "application/json, text/event-stream", "content-type": "application/json",
+    }, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": tool, "arguments": arguments}}).text  # fmt: skip
+
+
+def test_two_connectors_answering_in_turn_never_carry_the_other_archive(two_links):
+    """Two archives open at once in one process, alternating, every tool that reads.
+
+    This is the moment the whole of 16А was waiting for: until a link could be given its own
+    archive, one archive was open to the server at a time and a leak between two was impossible
+    by construction. Now both are live in one process, and construction proves nothing.
+    """
+    from epicrisis.mcp_server import http_app
+
+    data_dir, links = two_links
+
+    with TestClient(http_app(data_dir), base_url="http://localhost:8051", client=("127.0.0.1", 9000)) as client:
+        for tool, arguments in TOOLS_THAT_READ:
+            for which in ("one", "two", "one", "two"):  # alternating, so neither is ever warm alone
+                said = _asked(client, links[which], tool, arguments)
+                theirs = "two" if which == "one" else "one"
+                leaked = [word for word in _nothing_of_theirs(theirs) if word in said]
+                assert leaked == [], f"{tool} answering for {which} carried {leaked}"
+                assert THEIRS[theirs]["whose"] not in said, f"{tool} named the other person"
+
+
+def test_two_connectors_answering_at_the_same_moment_never_cross(two_links):
+    """Interleaved is not the same as simultaneous, and only the second one exercises a shared
+    cache or a connection reused across threads.
+
+    The tools run in worker threads and an SQLite connection belongs to one thread — which the
+    code says and which nothing proved while two archives could not be open together.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from epicrisis.mcp_server import http_app
+
+    data_dir, links = two_links
+
+    with TestClient(http_app(data_dir), base_url="http://localhost:8051", client=("127.0.0.1", 9000)) as client:
+        def ask(which_and_tool):
+            which, tool, arguments = which_and_tool
+            return which, _asked(client, links[which], tool, arguments)
+
+        work = [(which, tool, arguments) for tool, arguments in TOOLS_THAT_READ
+                for which in ("one", "two")] * 3  # fmt: skip
+        with ThreadPoolExecutor(max_workers=8) as running:
+            answers = list(running.map(ask, work))
+
+    assert len(answers) == len(work)
+    for which, said in answers:
+        theirs = "two" if which == "one" else "one"
+        leaked = [word for word in _nothing_of_theirs(theirs) if word in said]
+        assert leaked == [], f"an answer for {which} carried {leaked} while both were being read"
+        assert THEIRS[theirs]["whose"] not in said
+
+
+def test_each_answer_says_whose_it_is_and_the_two_never_agree(two_links):
+    """`archive_of` is the field the server instructions tell a model to trust and to quote, so
+    two connectors reading at once must never be handed the same name."""
+    import json
+    import re
+
+    from epicrisis.mcp_server import http_app
+
+    data_dir, links = two_links
+    named = {}
+
+    with TestClient(http_app(data_dir), base_url="http://localhost:8051", client=("127.0.0.1", 9000)) as client:
+        for which in ("one", "two"):
+            said = _asked(client, links[which], "archive_overview", {})
+            found = re.search(r'"structuredContent":(\{.*\})\}\}', said)
+            named[which] = json.loads(found.group(1))["archive_of"]
+
+    assert named["one"] == THEIRS["one"]["whose"]
+    assert named["two"] == THEIRS["two"]["whose"]
+    assert named["one"] != named["two"]
+
+
+def test_a_connector_cannot_reach_the_archive_the_other_one_is_reading(two_links):
+    """The rights are per link, and asking for somebody else's signature is refused — the same
+    refusal an archive that does not exist gets, so walking the signatures learns nothing."""
+    from epicrisis.mcp_server import http_app
+
+    data_dir, links = two_links
+
+    with TestClient(http_app(data_dir), base_url="http://localhost:8051", client=("127.0.0.1", 9000)) as client:
+        # Warm the other archive first, so a leak would have something to leak.
+        _asked(client, links["two"], "value_names", {})
+        said = _asked(client, links["one"], "value_names", {"archive": THEIRS["two"]["id"]})
+
+    assert "no_such_access" in said
+    assert [word for word in _nothing_of_theirs("two") if word in said] == []
+    assert THEIRS["two"]["whose"] not in said

@@ -12,6 +12,11 @@ What is counted, and what is not, said plainly rather than guessed at:
 - **The checks over transcriptions** are counted from what the last run of the checks wrote
   beside the archive. Exact, free, and only for the rules that were running: a check that is
   switched off wrote nothing, and this says so instead of showing a zero that means "off".
+  Both kinds of them — the checks of the validate step, whose findings a person is shown, and the
+  sixteen of the extract step, which decide whether a document goes back to a stronger model.
+  The second kind said "not counted" beside every switch for as long as it existed, while the
+  exact number sat in `validation.json` under `checks`, written by the same run and read by
+  nothing: the one step whose switches cost money was the one step with no number beside them.
 - **The search for lines that look misread** is run here and now, in a fifth of a second, for
   every rule of that step — the ones that are off included. That is the useful direction: a
   person deciding whether to turn one on can see what it would find first.
@@ -47,11 +52,17 @@ class Tally:
     ran: bool = True  # False where the rule was off and the count is what it would find
     real: int = 0  # findings a person has looked at and called real
     noise: int = 0
+    #: Why there is no number, in the words the page prints. "Not counted" is the honest answer
+    #: for a rule that finds nothing by design; it was the answer given for three different
+    #: situations, two of which a person can do something about — an archive nobody has checked
+    #: yet, and a check that wrote nothing because it was off. Those two read as "this rule is
+    #: uncountable", which sent nobody to press Check and nobody to turn the switch on.
+    why_not: str = NOT_COUNTED
 
     @property
     def says(self) -> str:
         if not self.counted:
-            return NOT_COUNTED
+            return self.why_not or NOT_COUNTED
         where = f" on {self.documents} document{'s' if self.documents != 1 else ''}"
         if not self.found:
             return "found nothing here" if self.ran else "would find nothing here"
@@ -83,7 +94,26 @@ class Tally:
 
 
 def of_the_checks(output: Path, on: set[str]) -> dict[str, Tally]:
-    """What the last run of the checks wrote, by the rule that found it."""
+    """What the last run of the checks wrote, by the rule that found it.
+
+    Out of the two things that run writes, because they are two different sets of codes and only
+    together do they cover the rules of both steps:
+
+    * `totals` and `documents` — the findings a person is shown, which is what the rules of the
+      validate step produce. Four of the extract step's codes are covered by rules elsewhere and
+      make no finding at all, so this half cannot see them.
+    * `checks` — every extract check, by code, for every document, whether it ended in a finding
+      or not. Written for the ruler that guarded the move of those checks into the registry, and
+      read by nothing else until now.
+
+    Where a code is in both, `checks` answers: it is the count of that one check, while a total
+    may be a summary several checks were folded into.
+
+    `ran` is True for everything here, and that is not the same question as the switch. These
+    numbers were written by a run, so the rule did find them; whether it is on *today* is drawn
+    beside this by the switch itself. Saying "would find 42" of 42 things a check actually found
+    is the one reading of this field that is simply false.
+    """
     from epicrisis.validate import load_validation
 
     stored = load_validation(output)
@@ -93,8 +123,28 @@ def of_the_checks(output: Path, on: set[str]) -> dict[str, Tally]:
     for document in stored.get("documents", []):
         for code in document.get("findings", {}):
             documents[code] = documents.get(code, 0) + 1
-    return {code: Tally(found=count, documents=documents.get(code, 0), ran=code in on)
-            for code, count in stored.get("totals", {}).items()}  # fmt: skip
+    found = {code: Tally(found=count, documents=documents.get(code, 0))
+             for code, count in stored.get("totals", {}).items()}  # fmt: skip
+    return found | _of_the_extract_checks(stored)
+
+
+def _of_the_extract_checks(stored: dict) -> dict[str, Tally]:
+    """Every check of the extract step, counted out of what that same run wrote down.
+
+    One entry per document, holding the codes that fired on it and how many times. Counted here
+    rather than folded by whoever stored it, because the two numbers a person wants beside a
+    switch — how many times it fired and on how many documents — are both in this and neither is
+    in a summary.
+    """
+    times: dict[str, int] = {}
+    documents: dict[str, int] = {}
+    for by_code in stored.get("checks", {}).values():
+        if not isinstance(by_code, dict):
+            continue
+        for code, count in by_code.items():
+            times[code] = times.get(code, 0) + (count if isinstance(count, int) else 0)
+            documents[code] = documents.get(code, 0) + 1
+    return {code: Tally(found=count, documents=documents.get(code, 0)) for code, count in times.items()}
 
 
 def of_the_search(data_dir: Path, source_id: str, every, on: set[str]) -> dict[str, Tally]:
@@ -117,20 +167,46 @@ def of_the_search(data_dir: Path, source_id: str, every, on: set[str]) -> dict[s
             for code, (total, documents) in counts.items()}  # fmt: skip
 
 
+#: The steps whose rules are counted out of what the last run of the checks wrote beside the
+#: archive. Both of them write to the same file and neither is run again to be counted: one
+#: because its findings are already stored, the other because re-running it means reading every
+#: document again, which is half a minute and no model but still half a minute.
+COUNTED_FROM_A_RUN = (kinds.VALIDATE, kinds.EXTRACT)
+NOTHING_CHECKED = "nothing has been checked here yet"
+WROTE_NOTHING_WHILE_OFF = "nothing was written while it was off"
+
+
 def counts(data_dir: Path, source_id: str, loaded, on: set[str]) -> dict[str, Tally]:
-    """Every rule against one archive: what it found, what it would find, or nothing to count."""
+    """Every rule against one archive: what it found, what it would find, or nothing to count.
+
+    A rule with no number says **which** of the three reasons it has none for, because two of
+    them are things a person can act on and the third is not. An archive nobody has run the
+    checks over has no numbers for any check; a check switched off wrote nothing while it was off;
+    a rule that places a value on a scale finds nothing by design and never will.
+    """
     if not source_id:
         return {}
     output = source_output_dir(data_dir, source_id)
+    checked = _has_been_checked(output)
     tallies = of_the_checks(output, on) if output.exists() else {}
     tallies |= of_the_search(data_dir, source_id, loaded.at(kinds.SUSPECTS), on)
     for rule in loaded:
-        if rule.at not in (kinds.VALIDATE, kinds.SUSPECTS):
+        if rule.at not in COUNTED_FROM_A_RUN + (kinds.SUSPECTS,):
             tallies[rule.id] = Tally(counted=False)
-        elif rule.id not in tallies:
-            # A check that is on and found nothing, and a check that is off and wrote nothing,
-            # look the same in a stored file. Only the switch tells them apart.
+        elif rule.id in tallies:
+            continue
+        elif rule.at == kinds.SUSPECTS:
+            # Run here and now, so a rule missing from the answer found nothing, on or off.
             tallies[rule.id] = Tally(found=0, ran=rule.id in on)
+        elif not checked:
+            tallies[rule.id] = Tally(counted=False, why_not=NOTHING_CHECKED)
+        elif rule.id in on:
+            tallies[rule.id] = Tally(found=0, ran=True)
+        else:
+            # A check that is on and found nothing, and a check that is off and wrote nothing,
+            # look the same in a stored file: both are absent from it. Only the switch tells them
+            # apart, and the second is not a zero — it is no answer, and said as one.
+            tallies[rule.id] = Tally(counted=False, why_not=WROTE_NOTHING_WHILE_OFF)
     # After every rule has a tally, because a rule that finds nothing today may well have been
     # judged when it still found something, and that word is worth keeping in front of a person.
     for code, was in (judgements.counted(output) if output.exists() else {}).items():
@@ -139,6 +215,17 @@ def counts(data_dir: Path, source_id: str, loaded, on: set[str]) -> dict[str, Ta
     # The stored findings also hold the checks that have not become rules yet. They are real
     # findings and a person sees them in the review; they simply have no switch to stand beside.
     return {rule.id: tallies[rule.id] for rule in loaded}
+
+
+def _has_been_checked(output: Path) -> bool:
+    """Whether the checks have ever been run over this archive.
+
+    Asked of the file and not of what is in it: a run that found nothing at all writes the file
+    with empty totals, and that is an archive with answers rather than one nobody has looked at.
+    """
+    from epicrisis.validate import load_validation
+
+    return bool(output.exists() and load_validation(output))
 
 
 def trial(data_dir: Path, source_id: str, rule, settings: dict) -> dict:

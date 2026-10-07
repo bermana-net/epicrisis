@@ -168,11 +168,25 @@ def day_first_evidence(documents) -> tuple[set[str], set[str]]:
     return documents_seen, providers
 
 
-def source_day_first(output: Path, documents: list[list[dict]]) -> tuple[set[str], set[str]]:
-    """Files and institutions of this source that print dates day first somewhere."""
+def which_print_day_first(documents: list[list[dict]], transcription) -> tuple[set[str], set[str]]:
+    """The same, out of transcriptions a caller already holds: `transcription(sha256)` gives one.
+
+    For a gather that reads those transcriptions anyway and then asked this to read them again. On
+    the live archive whose 257 documents are all cut out of one text export, the second reading was
+    258 readings of that one file — 3.4 s of json to draw one document's card, and the whole of why
+    that page was slow. The reading cannot differ: same bytes, same file, same parse.
+
+    Which transcribed document belongs to the pages classify grouped is decided here and stays
+    here, which is why this takes the reading and not the triples `day_first_evidence` wants.
+    """
     items = []
     for pages in documents:
-        extracted = load_extracted(output / layout.EXTRACTED, pages[0]["file_sha256"])
+        extracted = transcription(pages[0]["file_sha256"])
         numbers = [page["page"] for page in pages]
         items.append((pages[0]["file_sha256"], next((d for d in (extracted or {"documents": []})["documents"] if d["pages"] == numbers), None), pages))
     return day_first_evidence(items)
+
+
+def source_day_first(output: Path, documents: list[list[dict]]) -> tuple[set[str], set[str]]:
+    """Files and institutions of this source that print dates day first somewhere, read from disk."""
+    return which_print_day_first(documents, lambda sha256: load_extracted(output / layout.EXTRACTED, sha256))

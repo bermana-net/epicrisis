@@ -707,24 +707,47 @@ def test_one_archive_index_does_not_carry_another_archive_printed_words(tmp_path
             assert json.loads(rows[0][1]) == [], "no spelling this archive has never printed"
 
 
-def test_a_locked_server_over_the_network_does_not_name_whose_archive_it_is(tmp_path: Path):
-    """The instructions are handed over in the answer to `initialize`, which needs no code at all.
+def test_the_greeting_names_nobody_and_the_pass_names_whose_it_is(tmp_path: Path):
+    """The instructions are handed over once, in the answer to `initialize`, and cannot be taken
+    back: the protocol gives a server no way to change them afterwards.
 
-    So on a locked server this sentence told whoever held the address the one fact the lock exists
-    to keep — while every refusal a few lines away carefully did not.
+    So a name written into them was composed from whichever archive happened to be open when the
+    process started, and then stood at the top of a model's context for as long as the process
+    lived. Switch the archive at noon and every answer is correctly about the second person while
+    that line still names the first. On a locked server it also handed whoever held the address the
+    one fact the lock exists to keep, which is what this test was first written about — and the
+    answer then was to keep the name back only there. That was right about what it gave away and
+    wrong about what it claimed.
+
+    Where the name belongs is the moment somebody proves they may have it. `unlock` names the
+    archive its pass was issued for, and `Lock.require` refuses as soon as the archive shown is not
+    that one — so the sentence a holder was told dies with the pass rather than going stale, and a
+    new code gives a new pass and a new sentence about whoever is open now.
     """
+    from epicrisis.mcp_lock import code_at, new_secret
     from epicrisis.mcp_server import build_server
     from epicrisis.settings import set_mcp_lock
 
     data_dir, _ = an_instance(tmp_path)
-    SourceRegistry(data_dir).set_owner(SourceRegistry(data_dir).list()[0].id, "Ирина Петровна")
+    archive = SourceRegistry(data_dir).list()[0]
+    SourceRegistry(data_dir).set_owner(archive.id, "Пелагея Аристарховна")
 
-    set_mcp_lock(data_dir, True)
-    assert "Ирина" not in (build_server(data_dir, over_the_network=True).instructions or "")
-    # Over stdio the lock does not apply and whoever started it already has the files.
-    assert "Ирина" in (build_server(data_dir, over_the_network=False).instructions or "")
-    set_mcp_lock(data_dir, False)
-    assert "Ирина" in (build_server(data_dir, over_the_network=True).instructions or "")
+    # In every mode there is, and not only the locked one.
+    for locked in (True, False):
+        set_mcp_lock(data_dir, locked)
+        for over_the_network in (True, False):
+            said = build_server(data_dir, over_the_network=over_the_network).instructions or ""
+            assert "Пелагея" not in said, (locked, over_the_network)
+
+    # And the greeting says where the name is to be found instead, because a greeting that simply
+    # stopped naming anybody would leave a reader of it with no way to ask.
+    assert "archive_of" in said and "unlock" in said
+
+    # That the pass itself names the archive, and that it dies when the archive is switched, is
+    # asserted where that machinery lives: tests/test_mcp_lock.py. It is not restated here, because
+    # a test that builds the sentence it then looks for is a test that cannot fail.
+    secret = new_secret()
+    assert len(code_at(secret, 0.0)) == 6, "the code a person reads off their authenticator"
 
 
 def test_a_code_refused_because_the_clock_drifted_does_not_spend_a_try(tmp_path: Path):

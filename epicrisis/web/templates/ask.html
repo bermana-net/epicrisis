@@ -49,7 +49,11 @@
 
     <main class="chat" id="chat" data-chat="{{ chat.id if chat else "" }}">
       <div class="chat-head">
-      <p class="caps muted mode-note">{% if mode == "direct" %}No limits set here. <a href="/settings">Settings</a>{% elif mode == "with_meaning" %}Answers may read the values, not only show them. <a href="/settings">Settings</a>{% else %}Answers show what is printed only. <a href="/settings">Settings</a>{% endif %}</p>
+      {# The mode is said in the lead above and under every answer, where §3 wants it: beside the
+         sentence, so that nobody has to work out which of two voices is speaking. Said here a
+         third time it stood twenty pixels under the first and repeated it word for word. What is
+         left is the way to the switch. #}
+      <p class="caps muted mode-note"><a href="/settings">Settings</a></p>
       {% if chat %}
       <form method="post" action="/ask/{{ chat.id }}/delete" onsubmit="return confirm('Delete this chat? The questions and answers go for good; the archive is untouched.')">
         <button class="btn small" type="submit">Delete chat</button>

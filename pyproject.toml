@@ -1,6 +1,6 @@
 [project]
 name = "epicrisis"
-version = "0.4.0"
+version = "0.5.0"
 description = "A self-hosted archive: scanned medical documents as structured data, every value as printed."
 readme = "README.md"
 license = "BUSL-1.1"
@@ -25,6 +25,13 @@ dependencies = [
     "python-docx>=1.2.0",
     "python-magic>=0.4.27",
     "python-multipart>=0.0.32",
+    # Draws one picture: the QR of a connector's authenticator URI, in the single answer that
+    # shows that code at all. Hand-rolled it is Reed-Solomon, mask selection and version choosing
+    # — a few hundred lines whose subtle failure is a code that scans to the wrong secret, so the
+    # authenticator never works and nobody can see why. Pure Python, seven modules, nothing of
+    # its own to install, and the page draws the URI as text whether or not this is here: a
+    # missing drawing library must not take a page down.
+    "segno>=1.6.6",
     "typer>=0.16",
     "uvicorn>=0.53.0",
     "xlrd>=2.0.2",

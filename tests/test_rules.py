@@ -175,16 +175,13 @@ def test_a_rule_that_costs_a_model_s_reading_is_not_stored_on_one_click(tmp_path
     Registered the way the program registers one: through the decorator, at a step whose record in
     the table says it hands a rule one document and that its switch is asked about first. What
     stood here wrote a kind straight into KINDS, which went round the decorator and so round every
-    check it makes — and the step it named, `extract`, is one the decorator refuses, because
-    nothing there assembles a subject to hand a rule. The guard was green in the suite and
+    check it makes — and the step it named, `extract`, was one the decorator refused, because
+    nothing there assembled a subject to hand a rule. The guard was green in the suite and
     unreachable in the program, which is the shape this project has now found four times.
 
-    What is said of the table here is the one word a contributor writes the day the extract step
-    learns to hand a rule a document: everything else — that a rule may stand there, that the page
-    holds its switch back, what it says it will cost — follows from the same record.
+    That day has come: the extract step's own checks are rules now, so the step hands out one
+    document and this is measured against the table as it stands, with nothing stood in for.
     """
-    from dataclasses import replace
-
     from fastapi.testclient import TestClient
 
     from epicrisis import settings
@@ -194,30 +191,36 @@ def test_a_rule_that_costs_a_model_s_reading_is_not_stored_on_one_click(tmp_path
 
     data = tmp_path / "data"
     (data / rules.FOLDER_NAME).mkdir(parents=True)
-    monkeypatch.setitem(kinds.STEPS, kinds.EXTRACT,
-                        replace(kinds.STEPS[kinds.EXTRACT], serves=frozenset({ONE_DOCUMENT})))  # fmt: skip
-    at, served, costs, costly = kinds.from_the_table()
-    for name, now in (("AT", at), ("SERVED", served), ("COSTS", costs), ("COSTLY", costly)):
-        monkeypatch.setattr(kinds, name, now)
-    assert kinds.COSTLY == (kinds.EXTRACT,)
+    assert kinds.COSTLY == (kinds.EXTRACT,), "the step whose switch is held back is not the extract step"
+    assert ONE_DOCUMENT in kinds.SERVED[kinds.EXTRACT], "the extract step hands a rule nothing"
 
     @kinds.kind("for-the-tests", does=kinds.MARKS, at=kinds.EXTRACT, looks_at=ONE_DOCUMENT,
                 about="only for the tests")  # fmt: skip
     def _only_for_the_tests(document, settings_of_the_rule):
         return []
 
-    write(data / rules.FOLDER_NAME, "costly.md",
-          GOOD.replace("a-test-rule", "costly").replace('at = "validate"', 'at = "extract"')
-              .replace("[settings]\nhow_far = 2.5\nwords = [\"one\", \"two\"]\n", ""))  # fmt: skip
+    import re
+
+    # A rule at this step is answered by the step, so its file carries no `settles` and nothing to
+    # attach a finding to — the loader refuses a file that says otherwise.
+    costly_file = GOOD.replace("a-test-rule", "costly").replace('at = "validate"', 'at = "extract"')
+    costly_file = costly_file.replace("[settings]\nhow_far = 2.5\nwords = [\"one\", \"two\"]\n", "")
+    costly_file = re.sub(r'^(settles|attaches) = .*\n', "", costly_file, flags=re.M)
+    write(data / rules.FOLDER_NAME, "costly.md", costly_file)
     loaded = rules.load(data_dir=data, shipped_dir=tmp_path / "none")
     assert not loaded.problems and loaded.get("costly").costly
-    assert "read again by a model" in loaded.get("costly").cost
+    # What it costs, said as what it is: a document read **after** this may go to a stronger
+    # model. It said "Documents are read again by a model", and a run over an archive that is
+    # already read sends nothing at all — measured at 0 calls in both directions.
+    said = loaded.get("costly").cost
+    assert "sent to a stronger model" in said and "Nothing already read is read again" in said
 
     client = TestClient(create_app(data), base_url="http://127.0.0.1:8050")
     head = {"Sec-Fetch-Site": "same-origin"}
     asked = client.post("/settings", data={"rule_on": "costly", "shown": "costly", "tab": "rules"},
                         headers=head, follow_redirects=False)  # fmt: skip
-    assert asked.status_code == 200 and "read again by a model" in asked.text
+    assert asked.status_code == 200 and "sent to a stronger model" in asked.text
+    assert "Turning it on changes what the next reading of a document costs" in asked.text
     assert settings.rule_on(data, loaded.get("costly")) is False  # nothing changed on the asking
 
     said_yes = client.post("/settings", headers=head, follow_redirects=False,
@@ -292,13 +295,52 @@ def test_what_a_rule_found_is_counted_beside_its_switch(archive_index):  # noqa:
 
     assert set(counts) == {rule.id for rule in loaded}  # every rule says something
     assert all(not counts[rule.id].counted for rule in loaded.at("charts"))
-    assert all(counts[rule.id].counted for rule in loaded.at("validate") + loaded.at("suspects"))
+    assert all(counts[rule.id].counted for rule in loaded.at("suspects"))
+    # Every check that was running when the archive was last checked has a number, at both steps
+    # that write one. The extract step is the point: its sixteen said "not counted" beside the
+    # only switches in this program that cost money, while the number sat in the same file the
+    # findings came out of.
+    for rule in loaded.at("validate") + loaded.at("extract"):
+        if rule.id in on:
+            assert counts[rule.id].counted, f"{rule.id} ran and has no number"
+    assert any(counts[rule.id].found for rule in loaded.at("extract")), "and at least one fired"
 
     # A rule that is off is counted all the same, and says it would find rather than found:
     # deciding whether to turn one on is exactly when knowing what it finds is worth having.
     off = next(rule for rule in loaded.at("suspects") if rule.id not in on)
     assert counts[off.id].ran is False and "would find" in counts[off.id].says
     assert all("would" not in counts[rule.id].says for rule in loaded.at("suspects") if rule.id in on)
+
+
+def test_a_check_with_no_number_says_which_of_the_three_reasons_it_has_none(archive_index):  # noqa: F811
+    """Three situations wore one word, and two of them are things a person can act on.
+
+    "Not counted" is true of a rule that moves a point on a chart and will never find anything.
+    Said of an archive nobody has run the checks over, it sends nobody to press Check; said of a
+    check that wrote nothing because it was off, it reads as "this rule is uncountable" and sends
+    nobody to the switch. Measured: every one of the extract step's sixteen said it.
+    """
+    from epicrisis import settings
+    from epicrisis.rules import tally
+    from epicrisis.sources import source_output_dir
+    from epicrisis.validate import FILE_NAME
+
+    data_dir, source, _labs = archive_index
+    loaded = rules.load(data_dir)
+    on = {rule.id for rule in loaded if settings.rule_on(data_dir, rule)}
+    a_check = next(rule for rule in loaded.at("extract") if rule.id in on)
+
+    switched_off = tally.counts(data_dir, source.id, loaded, on - {a_check.id})[a_check.id]
+    assert not switched_off.counted and switched_off.says == tally.WROTE_NOTHING_WHILE_OFF
+
+    # And with the stored run taken away, nothing is known about any check — which is a different
+    # sentence from "this rule cannot be counted", and the only one that names the way out.
+    (source_output_dir(data_dir, source.id) / FILE_NAME).unlink()
+    never = tally.counts(data_dir, source.id, loaded, on)
+    assert all(never[rule.id].says == tally.NOTHING_CHECKED
+               for rule in loaded.at("validate") + loaded.at("extract"))  # fmt: skip
+    # The rules that place a value on a scale are the one honest "not counted", then and now.
+    assert all(never[rule.id].says == tally.NOT_COUNTED for rule in loaded.at("charts"))
 
 
 def test_a_scale_is_not_reported_as_an_excursion():
@@ -495,6 +537,170 @@ def test_typing_the_shipped_number_back_in_leaves_nothing_behind(tmp_path):
     assert settings.rule_settings(data, rule)["how_far"] == 2.5
 
 
+#: Two invented archive ids, so that a question about one is visibly a question about the other's
+#: neighbour. Ids are this program's own and name nobody.
+ONE, ANOTHER = "aaaa1111", "bbbb2222"
+
+
+def _a_rule_in(tmp_path):
+    """One rule file and a data directory, which is all a switch needs to be answered."""
+    from epicrisis import settings
+
+    data = tmp_path / "data"
+    data.mkdir()
+    loaded = rules.load(shipped_dir=write(tmp_path, "a-test-rule.md", GOOD))
+    return data, loaded.get("a-test-rule"), settings
+
+
+def test_a_rule_is_answered_per_archive_with_the_instance_as_the_default(tmp_path):
+    """One check is useful on two archives and noise on the third.
+
+    Measured on the three archives on this machine, `institution_looks_like_a_name` finds 24 of
+    439 documents, 4 of 40, and 255 of 257 — the last being one hospital's export, whose forms
+    print the doctor's name where others print the clinic's. The one switch that would quieten
+    those 255 took the 24 and the 4 with it, which is the whole of this.
+    """
+    data, rule, settings = _a_rule_in(tmp_path)
+    settings.set_rule_on(data, rule.id, True)
+    assert settings.rule_on(data, rule) is True
+    assert settings.rule_on(data, rule, in_archive=ONE) is True, "the instance answers for all of them"
+
+    settings.set_rule_on(data, rule.id, False, in_archive=ONE)
+
+    assert settings.rule_on(data, rule, in_archive=ONE) is False
+    assert settings.rule_on(data, rule, in_archive=ANOTHER) is True, "its neighbour was not answered"
+    assert settings.rule_on(data, rule) is True, "and neither was the instance"
+    # And which of the two it is can be asked, so that a page can say it rather than draw the
+    # inherited answer and the archive's own as the same switch.
+    assert settings.answered_about(data, rule.id, ONE) == {"on": False}
+    assert settings.answered_about(data, rule.id, ANOTHER) == {}
+    assert settings.answered_about(data, rule.id, settings.THE_WHOLE_INSTANCE) == {}
+
+
+def test_a_threshold_is_answered_per_archive_as_the_switch_is(tmp_path):
+    """Decided with the switch rather than after it. A threshold is how far from the others a
+    number has to be before it is worth looking at, which is a fact about how one archive's forms
+    print, exactly as the switch is — and half of it per archive would be the same mismatch this
+    was written to close.
+    """
+    data, rule, settings = _a_rule_in(tmp_path)
+    settings.set_rule_settings(data, rule, {"how_far": 9})
+    assert settings.rule_settings(data, rule, in_archive=ONE)["how_far"] == 9.0
+
+    settings.set_rule_settings(data, rule, {"how_far": 4}, in_archive=ONE)
+
+    assert settings.rule_settings(data, rule, in_archive=ONE)["how_far"] == 4.0
+    assert settings.rule_settings(data, rule, in_archive=ANOTHER)["how_far"] == 9.0
+    assert settings.rule_settings(data, rule)["how_far"] == 9.0
+    # And what the step runs with is the archive's, through the same door the rest of the
+    # program asks: the rule's file, this instance's answer, then this archive's.
+    assert settings.as_chosen(data, rule, in_archive=ONE).settings["how_far"] == 4.0
+    assert settings.as_chosen(data, rule).settings["how_far"] == 9.0
+
+
+def test_typing_the_instance_s_number_into_an_archive_puts_it_back_under_the_instance(tmp_path):
+    """Typing the number back in is how a person undoes a change, one level up.
+
+    An archive pinned to 9 because somebody typed 9 into it would stop following the instance for
+    ever, invisibly, and go on saying 9 after the instance had moved to 4.
+    """
+    import json
+
+    data, rule, settings = _a_rule_in(tmp_path)
+    settings.set_rule_settings(data, rule, {"how_far": 9})
+    settings.set_rule_settings(data, rule, {"how_far": 4}, in_archive=ONE)
+
+    settings.set_rule_settings(data, rule, {"how_far": 9}, in_archive=ONE)  # what the instance says
+
+    kept = json.loads(settings.settings_path(data).read_text())["rules"]["a-test-rule"]
+    assert kept["archives"][ONE]["settings"] == {}
+    assert settings.rule_settings(data, rule, in_archive=ONE)["how_far"] == 9.0
+    settings.set_rule_settings(data, rule, {"how_far": 3})
+    assert settings.rule_settings(data, rule, in_archive=ONE)["how_far"] == 3.0, "following again"
+
+
+def test_an_archive_can_be_put_back_under_the_instance_s_answer(tmp_path):
+    """A switch set for one archive and never put back is the seventh entry's dead end.
+
+    And asked for by name rather than stored as a third value meaning "the same as the instance":
+    what the instance answers moves, and an archive saying "the same as it was in October" would
+    be saying it about a number that has since changed.
+    """
+    import json
+
+    data, rule, settings = _a_rule_in(tmp_path)
+    settings.set_rule_on(data, rule.id, True)
+    settings.set_rule_on(data, rule.id, False, in_archive=ONE)
+    assert settings.rule_on(data, rule, in_archive=ONE) is False
+
+    settings.let_the_instance_answer(data, rule.id, ONE)
+
+    assert settings.rule_on(data, rule, in_archive=ONE) is True
+    assert settings.answered_about(data, rule.id, ONE) == {}
+    # And nothing is left behind saying it ever had one of its own.
+    assert "archives" not in json.loads(settings.settings_path(data).read_text())["rules"]["a-test-rule"]
+    # Following again, so a later change of the instance's mind reaches it.
+    settings.set_rule_on(data, rule.id, False)
+    assert settings.rule_on(data, rule, in_archive=ONE) is False
+
+
+def test_an_answer_already_stored_for_the_instance_is_not_quietly_made_one_archive_s(tmp_path):
+    """§8 — the two rules this instance's owner switched off by hand are instance-wide answers,
+    and must stay answers about every archive rather than becoming answers about one.
+
+    Reachable by this file growing an `archives` key under some other rule: nothing that reads
+    the old shape may start reading an entry with no `archives` in it as an archive's.
+    """
+    import json
+
+    data, rule, settings = _a_rule_in(tmp_path)
+    settings.settings_path(data).write_text(json.dumps({"rules": {
+        "a-test-rule": {"on": False},                       # as the owner's two are stored today
+        "another-rule": {"on": True, "archives": {ONE: {"on": False}}},
+    }}), encoding="utf-8")  # fmt: skip
+
+    for which in (settings.THE_WHOLE_INSTANCE, ONE, ANOTHER):
+        assert settings.rule_on(data, rule, in_archive=which) is False, which
+    # Including the oldest shape of all, a plain true or false, which is still read.
+    settings.settings_path(data).write_text(json.dumps({"rules": {"a-test-rule": True}}), encoding="utf-8")
+    for which in (settings.THE_WHOLE_INSTANCE, ONE, ANOTHER):
+        assert settings.rule_on(data, rule, in_archive=which) is True, which
+
+
+def test_only_one_caller_still_asks_the_instance_s_question_about_an_archive(tmp_path):
+    """The gap, written down rather than left to be found, and failing when it grows.
+
+    Every step and page that runs a rule has the archive in hand already. The list below is the
+    callers that do not pass it, so a caller added next month is caught by having been added
+    rather than by somebody noticing that a rule they turned off for one archive still fires on
+    it. Both that are left mean the instance's answer and say so in words; no step and no page is
+    on this list, and none should be.
+    """
+    import ast
+    from pathlib import Path
+
+    STILL_THE_INSTANCE = {
+        # The two that mean the instance's answer and say so. `set_rule_settings` asks it to
+        # know what an archive's number would be undoing; the settings page draws it beside each
+        # switch, so that an answer set for one archive can say what the rest run by.
+        ("settings.py", "rule_settings"),
+        ("web/settings_page.py", "rule_on"),
+    }
+
+    found = set()
+    root = Path(rules.__file__).resolve().parent.parent
+    for source in sorted(root.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            if node.func.id not in ("rules_on", "rule_on", "rule_settings", "as_chosen"):
+                continue
+            if not any(word.arg == "in_archive" for word in node.keywords):
+                found.add((str(source.relative_to(root)), node.func.id))
+    assert found == STILL_THE_INSTANCE, found
+
+
 def test_a_half_sent_form_turns_nothing_off(archive_index):  # noqa: F811
     """A checkbox that is not ticked is not sent, so silence must not mean "off".
 
@@ -508,20 +714,26 @@ def test_a_half_sent_form_turns_nothing_off(archive_index):  # noqa: F811
 
     data_dir, source, _labs = archive_index
     loaded = rules.load(data_dir)
-    before = {rule.id: settings.rule_on(data_dir, rule) for rule in loaded}
+    # The switches on that page are the open archive's answers, so that is the question asked of
+    # every one of them here: a half-sent form must turn nothing off in the archive it was drawn
+    # about, which is where it would turn something off if it turned anything off at all.
+    asked = {"in_archive": source.id}
+    before = {rule.id: settings.rule_on(data_dir, rule, **asked) for rule in loaded}
     assert any(before.values())
 
     client = TestClient(create_app(data_dir), base_url="http://127.0.0.1:8050")
     client.post("/settings", data={"mode": "as_printed"}, headers={"Sec-Fetch-Site": "same-origin"},
                 follow_redirects=False)  # fmt: skip
-    assert {rule.id: settings.rule_on(data_dir, rule) for rule in loaded} == before
+    assert {rule.id: settings.rule_on(data_dir, rule, **asked) for rule in loaded} == before
 
     # A form that says which switches it drew turns off exactly those and no others.
     one = next(rule.id for rule in loaded if before[rule.id])
     client.post("/settings", data={"mode": "as_printed", "shown": one}, headers={"Sec-Fetch-Site": "same-origin"},
                 follow_redirects=False)  # fmt: skip
-    after = {rule.id: settings.rule_on(data_dir, rule) for rule in loaded}
+    after = {rule.id: settings.rule_on(data_dir, rule, **asked) for rule in loaded}
     assert after[one] is False and {k: v for k, v in after.items() if k != one} == {k: v for k, v in before.items() if k != one}
+    # And no other archive was answered about by a press made on this one's page.
+    assert settings.answered_about(data_dir, one, "no-such-archive") == {}
 
 
 def test_a_rule_of_ones_own_is_written_read_back_and_kept(tmp_path):
@@ -748,7 +960,12 @@ def test_a_switch_the_page_asks_about_first_is_one_a_rule_can_actually_stand_at(
     for step in kinds.COSTLY:
         assert kinds.SERVED[step], f"{step}: a switch asked about first, at a step no rule can stand at"
         assert step in kinds.AT, step
-    assert kinds.from_the_table() == (kinds.AT, kinds.SERVED, kinds.COSTS, kinds.COSTLY)
+    assert kinds.from_the_table() == (kinds.AT, kinds.SERVED, kinds.COSTS, kinds.COSTLY,
+                                      kinds.ANSWERED_BY_THE_STEP)  # fmt: skip
+    # And the fifth answer the table gives, which arrived with the extract checks: a step that
+    # acts on what its own rules find shows nobody a finding, so a rule of it has no `settles`.
+    for step in kinds.ANSWERED_BY_THE_STEP:
+        assert step in kinds.AT, f"{step}: a step that answers its own rules and that no rule can stand at"
     assert set(kinds.SERVED) == set(kinds.COSTS) == set(kinds.STEPS)
     assert set(kinds.AT) <= set(kinds.STEPS) and all(kinds.STEPS[step].serves for step in kinds.AT)
 
@@ -1297,3 +1514,150 @@ def test_two_rules_a_person_writes_in_their_own_alphabet_are_two_rules(tmp_path)
     # with what puts it right, which a refusal naming 'a-rule' could not have said.
     again, wrong = write("Μία κλίμακα")
     assert not again and wrong == "There is already a rule called 'mia-klimaka'. Give this one a name of its own."
+
+
+def test_a_threshold_of_the_right_type_and_the_wrong_size_is_refused(tmp_path):
+    """A number the type accepts and the check can never act on, taken in silence.
+
+    `least_characters = 0` means no page is ever empty; a share of 0 means no page is ever short;
+    `-5` the same. Each was stored without a word and the check then fired not once — and these
+    are the checks that decide whether a document is read again by a model, so a threshold that
+    quietly stops one is a hole in the reading that costs nothing and shows nowhere. The type was
+    always refused. The size was refused nowhere, and a size is what a person types.
+
+    Both writers, because there are two: a rule file edited by hand and a number typed on the
+    settings page. They ask the same kind the same question now, so they refuse the same numbers.
+    """
+    from epicrisis import rules, settings
+    from epicrisis.rules import kinds
+
+    data = tmp_path / "data"
+    loaded = rules.load(data)
+    empty, short = loaded.get("page_text_missing"), loaded.get("page_text_short")
+
+    # A count wants one or more; a share wants more than none and at most all.
+    assert kinds.out_of_range(kinds.A_COUNT, 0) and kinds.out_of_range(kinds.A_COUNT, -5)
+    assert kinds.out_of_range(kinds.A_SHARE, 0) and kinds.out_of_range(kinds.A_SHARE, 1.5)
+    assert not kinds.out_of_range(kinds.A_COUNT, 1) and not kinds.out_of_range(kinds.A_SHARE, 1)
+    # And a threshold with no honest bound is left alone: `apart_by` ships as 0.0 and means it.
+    assert not kinds.KINDS["range-read-two-ways"].refuses("apart_by", 0.0)
+
+    for value in (0, -5):
+        assert settings.what_a_rule_cannot_use(empty, {"least_characters": str(value)})
+        with pytest.raises(ValueError, match="a whole number"):
+            settings.set_rule_settings(data, empty, {"least_characters": str(value)})
+    for value in (0, 1.5):
+        assert settings.what_a_rule_cannot_use(short, {"least_share": str(value)})
+
+    # The file, which is the half somebody edits in a terminal with nothing watching.
+    written = (data / rules.FOLDER_NAME)
+    written.mkdir(parents=True)
+    one = '+++\nid = "mine"\nname = "Mine"\nsummary = "One line."\nkind = "page-with-no-text"\n'
+    (written / "mine.md").write_text(one + 'does = "marks"\nat = "extract"\n\n[settings]\nleast_characters = 0\n+++\n\nWhat it looks at: a page.\n', encoding="utf-8")
+    refused = rules.load(data)
+
+    assert refused.get("mine") is None, "a threshold it can never act on is not a rule that runs"
+    assert any("wants a whole number, one or more" in said for said in refused.problems), refused.problems
+    # And the good one is still loaded: one bad file is one rule refused, not a registry refused.
+    assert refused.get("page_text_missing") is not None
+
+
+def test_a_shape_declared_for_a_threshold_that_does_not_exist_is_refused_where_it_is_written():
+    """The kind's own declaration, checked when the module is imported rather than never.
+
+    A shape given to a misspelt threshold would bound nothing and look like a bound: the same
+    failure as a rule file's misspelt setting, one level up, where nobody is watching at all.
+    """
+    from epicrisis.rules import kinds
+
+    with pytest.raises(ValueError, match="no setting called"):
+        @kinds.kind("a-shape-for-nothing", does=kinds.MARKS, at=kinds.VALIDATE,
+                    looks_at="one document", about="For the tests.",
+                    settings={"least_history": 4}, means={"least_history": "How many."},
+                    within={"least_histroy": kinds.A_COUNT})  # fmt: skip
+        def _misspelt(document, settings):
+            return []
+
+    with pytest.raises(ValueError, match="a count or a share"):
+        @kinds.kind("a-shape-that-is-not-one", does=kinds.MARKS, at=kinds.VALIDATE,
+                    looks_at="one document", about="For the tests.",
+                    settings={"least_history": 4}, means={"least_history": "How many."},
+                    within={"least_history": "a vibe"})  # fmt: skip
+        def _nonsense(document, settings):
+            return []
+
+    assert "a-shape-for-nothing" not in kinds.KINDS and "a-shape-that-is-not-one" not in kinds.KINDS
+
+
+def test_a_rule_may_not_answer_under_another_rules_name(tmp_path):
+    """`was_called` names a setting of an older version of this program, not another rule.
+
+    One shipped rule carried `was_called = "institution_looks_like_a_name"`, which is the id of a
+    live rule at another step. Two things were wrong, and the second is the dangerous one: that
+    name was a finding's code and never a setting, so the line that reads it — the top level of
+    settings.json, where the old switches were written — never found it, and a field announced as
+    carrying a switch across a rename carried nothing across anything. And had anything ever
+    written that name at the top level, one answer would have put out two different checks: one
+    reading a transcription as it comes back, the other reading what the index recorded.
+
+    A rule naming **itself** is the ordinary case and must be left alone: `unit_by_numbers` and
+    `unit_from_range` were top-level settings under exactly the names their rules carry now, and
+    the first draft of this guard dropped the one answer each of them exists to carry.
+    """
+    from epicrisis import rules
+
+    shipped = rules.load()
+    assert not shipped.problems
+    # Nothing shipped points at another rule, and the two that point at themselves still do.
+    assert {rule.id: rule.was_called for rule in shipped if rule.was_called} == {
+        "one_scale_for_a_test": "convert_units", "unit_by_numbers": "unit_by_numbers",
+        "unit_from_range": "unit_from_range",
+    }  # fmt: skip
+
+    data = tmp_path / "data"
+    (data / rules.FOLDER_NAME).mkdir(parents=True)
+    borrowed = next(rule.id for rule in shipped.at("suspects"))
+    (data / rules.FOLDER_NAME / "mine.md").write_text(
+        f'+++\nid = "mine"\nname = "Mine"\nsummary = "One line."\nkind = "page-with-no-text"\n'
+        f'does = "marks"\nat = "extract"\nwas_called = "{borrowed}"\n+++\n\nWhat it looks at: a page.\n',
+        encoding="utf-8")  # fmt: skip
+
+    loaded = rules.load(data)
+    mine = loaded.get("mine")
+
+    assert mine is not None, "the rule still runs; it is the borrowed name that is dropped"
+    assert mine.was_called == "", "and it can no longer be answered under somebody else's name"
+    assert any(borrowed in said and "not a setting of an older version" in said
+               for said in loaded.problems), loaded.problems  # fmt: skip
+
+
+def test_a_kind_the_page_offers_is_a_kind_the_page_can_write(tmp_path):
+    """The dead end: sixteen kinds offered by a form whose own loader refused every one of them.
+
+    Two places decided whether a rule file carries `settles` and `attaches` — the writer by "does
+    it mark", the reader by "which step is it at" — and the extract step answers its own rules, so
+    nobody is ever shown what one finds. The writer wrote the two fields, the reader refused the
+    file for having them, and what the person saw was a refusal about two fields they had not
+    filled in and could not see, with nothing in it saying what to do. §7: a dead end with no way
+    out is a defect.
+    """
+    from epicrisis import rules
+    from epicrisis.rules import kinds
+
+    offered = [name for name, item in kinds.KINDS.items() if item.does == kinds.MARKS]
+    assert any(kinds.KINDS[name].at in kinds.ANSWERED_BY_THE_STEP for name in offered), \
+        "no kind of such a step is offered, so this test is about nothing"  # fmt: skip
+
+    for at, name in enumerate(offered):
+        data = tmp_path / f"instance{at}" / "data"
+        made, wrong = rules.write_one(data, {"kind": name, "name": f"Mine {at}"},
+                                      "# What it looks at\n\nOne thing.\n\n# How it can be wrong\n\nIt can.",
+                                      kinds.KINDS)  # fmt: skip
+        assert made and not wrong, f"the page offers {name} and cannot write it: {wrong}"
+        written = rules.load(data).get(made)
+        assert written is not None
+        # And the file says the right thing for its step, in both directions.
+        if kinds.KINDS[name].at in kinds.ANSWERED_BY_THE_STEP:
+            assert not written.settles and not written.attaches
+        else:
+            assert written.settles and written.attaches

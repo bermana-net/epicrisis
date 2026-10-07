@@ -204,7 +204,17 @@
      to say which is which, is how a person comes to trust the wrong one. #}
   {% if card.earlier_readings %}
   <section class="card-section">
-    <p class="caps muted">{{ card.earlier_readings.count }} earlier reading{% if card.earlier_readings.count > 1 %}s{% endif %} of this document {% if card.earlier_readings.count > 1 %}are{% else %}is{% endif %} kept, the most recent displaced on {{ card.earlier_readings.when }}{% if card.earlier_readings.by %} by {{ card.earlier_readings.by }}{% endif %}.{% if card.earlier_readings.regrouped %} {% if card.earlier_readings.regrouped | length > 1 %}Some of them read{% else %}One of them read{% endif %} these pages as part of a document grouped differently &mdash; pages {{ card.earlier_readings.regrouped | join(", then ") }} &mdash; which is usually what puts a reading there.{% endif %} Nothing overwrote {% if card.earlier_readings.count > 1 %}them{% else %}it{% endif %}: the values are in <code>{{ card.earlier_readings.file }}</code>, inside the data folder of this instance rather than in the folder of scans, one reading per line, with the day and the model that displaced it. Nothing rebuilds {% if card.earlier_readings.count > 1 %}those readings{% else %}that reading{% endif %} &mdash; a model reads differently every time &mdash; so <span class="mono">{{ cli }} backup --data-dir {{ data_dir }}</span> carries {% if card.earlier_readings.count > 1 %}them{% else %}it{% endif %} too.</p>
+    {# One line in the body and the rest folded, 7 Oct 2026. It was five thoughts in one sentence:
+       how many, when displaced, by what, why they were regrouped, where the file is, that nothing
+       was overwritten, and that backup carries them. The one that must be read without opening
+       anything is the eighth entry's — nothing overwrote them — and it is the short line. #}
+    <p class="caps muted">{{ card.earlier_readings.count }} earlier reading{% if card.earlier_readings.count > 1 %}s{% endif %} of this document {% if card.earlier_readings.count > 1 %}are{% else %}is{% endif %} kept; nothing overwrote {% if card.earlier_readings.count > 1 %}them{% else %}it{% endif %}. Displaced {{ card.earlier_readings.when }}{% if card.earlier_readings.by %} by {{ card.earlier_readings.by }}{% endif %}.</p>
+    <details class="fix-row">
+      <summary class="caps">Where they are kept</summary>
+      <div class="lock-how-to">
+        <p class="caps muted">The values are in <code>{{ card.earlier_readings.file }}</code>, inside the data folder of this instance rather than in the folder of scans, one reading per line, with the day and the model that displaced it.{% if card.earlier_readings.regrouped %} {% if card.earlier_readings.regrouped | length > 1 %}Some of them read{% else %}One of them read{% endif %} these pages as part of a document grouped differently &mdash; pages {{ card.earlier_readings.regrouped | join(", then ") }} &mdash; which is usually what puts a reading there.{% endif %} Nothing rebuilds {% if card.earlier_readings.count > 1 %}those readings{% else %}that reading{% endif %} &mdash; a model reads differently every time &mdash; so <span class="mono">{{ cli }} backup --data-dir {{ data_dir }}</span> carries {% if card.earlier_readings.count > 1 %}them{% else %}it{% endif %} too.</p>
+      </div>
+    </details>
   </section>
   {% endif %}
 

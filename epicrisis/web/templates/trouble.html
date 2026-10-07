@@ -2,6 +2,9 @@
 {% block title %}{{ heading }}{% endblock %}
 {% block page %}
 
+{# Which page of the menu this is. No page of the menu: something went wrong and the answer is not a place. #}
+{% set current = "" %}
+
   {# A page and not the words "Internal Server Error". Everything a person can act on is here:
      which file, what has not been lost, and the one thing that puts it right. The header is
      included only when there is an archive to name — the trouble may be the very file that says

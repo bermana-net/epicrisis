@@ -17,7 +17,7 @@ from epicrisis.classify.report import goes_to_extract, group_documents, latest_p
 from epicrisis.classify.run import is_running
 from epicrisis.corrections import line_key, load_corrections, load_value_corrections
 from epicrisis.datesearch import load_search_results
-from epicrisis.document_dates import document_date, provider_key, source_day_first
+from epicrisis.document_dates import document_date, provider_key, which_print_day_first
 from epicrisis.extract.run import earlier_readings, load_extracted
 from epicrisis.indicators import approved_names
 from epicrisis.index.build import institution_and_doctor
@@ -228,6 +228,28 @@ def said_in(code: str | None) -> Markup:
 
 # (kind, folder) -> (when its inputs last changed, view). By folder, not by archive id: two data
 # folders on one machine can hold the same id, and one would then answer for the other.
+#
+# **One archive's, and that is the bound.** These hold whole gathered pages — printed document
+# types, institutions, dates, the lines of a person's own corrections — and what was wrong with
+# them was not that anything crossed: the key is the folder, and nothing of one archive was ever
+# answered out of another's. What was wrong is that the dictionary had no bound of any kind. One
+# entry per view per archive arrived and stayed for the life of `serve`, so an instance that had
+# drawn both pages of all three live archives held six of them: 1,554,435 bytes and 128,757
+# characters of text printed on documents of three different people, kept because somebody once
+# clicked there, and nothing anywhere that would ever take one out again.
+#
+# Now a gather keeps the views of the archive it is about and drops the rest, which is the two
+# pages of one archive — the dashboard shows one archive at a time, every route gathers
+# `archives.open`, and no page here is ever about two. On the same three archives that is 2
+# entries and 966,639 bytes at the worst, whatever anybody clicks and however long `serve` runs,
+# and nothing printed on the documents of an archive nobody is looking at stays in memory.
+#
+# The lifetime stays what it was — between requests, until the files the view was built from
+# change — and not the lifetime of one request, which `readers/pdf.py` gives the text of a page
+# for the first entry's sake. Nothing here is a reason to: the key is one archive's folder, so
+# there is nothing to cross, and a lifetime of one request was measured and costs the gather on
+# every move through the pages. That gather is 0.05 s, 0.26 s and 0.63 s on the three live
+# archives against 0.0001 s for a kept one, so a switch of archive now pays one of those, once.
 _VIEWS: dict[tuple, tuple[float, dict]] = {}
 
 
@@ -242,15 +264,50 @@ def _last_change(output: Path) -> float:
 
 
 def _kept(kind: str, source: Source, output: Path) -> dict | None:
-    """A view built from files that have not changed since. Reading 170 files takes a second."""
+    """A view built from files that have not changed since. Gathering one again costs 0.63 s on the
+    largest of the three live archives — it was 3.7 s before each transcription was read once."""
     when, view = _VIEWS.get((kind, str(output)), (None, None))
     return view if when == _last_change(output) else None
 
 
 def _keep(kind: str, source: Source, output: Path, view: dict | None) -> dict | None:
+    """Keep this view, and keep no view of any other archive: see above for the bound and its cost."""
+    global _VIEWS
     if view is not None:
-        _VIEWS[(kind, str(output))] = (_last_change(output), view)
+        # The whole dictionary is built and then put in place of the old one, rather than emptied
+        # where it stands. Requests are answered on threads of their own and nothing holds one
+        # still, so a gather for one archive runs while another is reading these: whoever was
+        # handed the old dictionary goes on reading it whole, and sees neither half an eviction nor
+        # a key that disappeared between asking for it and taking it.
+        here = {key: kept for key, kept in _VIEWS.items() if key[1] == str(output)}
+        here[(kind, str(output))] = (_last_change(output), view)
+        _VIEWS = here
     return view
+
+
+def _each_transcription_read_once(output: Path, sha256s) -> dict[str, dict | None]:
+    """The transcription of every file this gather is about, each file read and parsed once.
+
+    These two pages used to read the same file as many times as it holds documents, because the
+    reading of the dates asked for it per document and the gather asked again per file. On the
+    three live archives: 612 readings of 173 files for the page of documents of one, and 258
+    readings of **one** file for the other — a text export cut into 257 documents, 3.4 s of json
+    to draw one card of it, which was the slowest page in the program and is a tenth of that now.
+
+    What it costs is holding them all at once for the length of the gather, and that was measured
+    too: the high-water mark of the page of documents went 15.2 MB -> 16.7 MB on the archive of 173
+    transcriptions, and 18.3 MB -> 10.0 MB on the one whose single file was being parsed over and
+    over. They are let go of when the gather returns; what is kept afterwards is the view.
+
+    Only the files named here, and nothing walked: a gather about forty documents must not pay for
+    an archive of a thousand. A file with no transcription is held as None, so that "never read"
+    and "not asked for" stay two different answers.
+
+    In the order it was given them, each file once. The order is what a caller is refused in: one
+    of these files not parsing raises and names that file, and the card names its own document's
+    file first because that is the one its reader is looking at.
+    """
+    return {sha256: load_extracted(output / layout.EXTRACTED, sha256) for sha256 in dict.fromkeys(sha256s)}
 
 
 def source_documents(source: Source, output: Path) -> dict | None:
@@ -275,13 +332,14 @@ def source_documents(source: Source, output: Path) -> dict | None:
 
     corrections = load_corrections(output)
     searches = load_search_results(output)
-    day_first_documents, day_first_providers = source_day_first(output, documents)
+    transcriptions = _each_transcription_read_once(output, by_file.keys() | unreadable_pages.keys())
+    day_first_documents, day_first_providers = which_print_day_first(documents, transcriptions.get)
     years: dict[int | None, list[dict]] = defaultdict(list)
     for sha256 in by_file.keys() | unreadable_pages.keys():
         record = records.get(sha256)
         if record is None:  # the file left the archive after classify
             continue
-        extracted = load_extracted(output / layout.EXTRACTED, sha256)
+        extracted = transcriptions.get(sha256)
         transcribed = {tuple(item["pages"]): item for item in extracted["documents"]} if extracted else {}
         rows = [_document_row(document) for document in by_file.get(sha256, [])]
         file = {
@@ -446,11 +504,19 @@ def document_card(source: Source, output: Path, file_sha256: str, first_page: in
     record = next((r for r in read_records(inventory) if r.get("sha256") == file_sha256), None)
     if record is None:
         return None
-    pages = [page for page in latest_pages(output / layout.CLASSIFY) if page["file_sha256"] == file_sha256]
+    # The classification read once for the card: this file's pages are a cut of every page, and
+    # the habit of the archive below is read off the same list rather than off a second reading
+    # of the same file.
+    every_page = latest_pages(output / layout.CLASSIFY)
+    pages = [page for page in every_page if page["file_sha256"] == file_sha256]
     classified = next((doc for doc in group_documents(pages) if doc[0]["page"] == first_page), None)
     if classified is None:
         return None
-    extracted = load_extracted(output / layout.EXTRACTED, file_sha256)
+    every_document = group_documents(every_page)
+    transcriptions = _each_transcription_read_once(
+        output, [file_sha256, *(document[0]["file_sha256"] for document in every_document)]
+    )
+    extracted = transcriptions.get(file_sha256)
     document = next((d for d in extracted["documents"] if d["pages"][0] == first_page), None) if extracted else None
     if document and (document["pages"] != [page["page"] for page in classified] or not goes_to_extract(classified[0])):
         document = None
@@ -460,7 +526,7 @@ def document_card(source: Source, output: Path, file_sha256: str, first_page: in
     on_pages = tuple(page["page"] for page in classified)
     corrections = load_corrections(output)
     searches = load_search_results(output)
-    day_first_documents, day_first_providers = source_day_first(output, group_documents(latest_pages(output / layout.CLASSIFY)))
+    day_first_documents, day_first_providers = which_print_day_first(every_document, transcriptions.get)
     writes_day_first = ((file_sha256, on_pages) in day_first_documents
                         or provider_key(document, classified) in day_first_providers)  # fmt: skip
     # What the index did with a name the form printed where the institution goes — asked of the

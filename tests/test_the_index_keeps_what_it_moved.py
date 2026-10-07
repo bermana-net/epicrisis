@@ -123,7 +123,11 @@ def test_one_printed_fact_makes_one_finding(setup):  # noqa: F811
     document = load_extracted(output / "extracted", labs)["documents"][0]
     with_a_clinic = read_as(data_dir, source, output, labs, provider_as_printed="Synthetic Lab")
 
-    assert "institution_looks_like_a_name" in transcription_problems(document, {})
+    # The extract step's own check, under the name it took when it became a rule of the registry.
+    # The rule below keeps the old name: it is a different check of the same printed fact — that
+    # one reads what the index recorded, this one reads the transcription as it comes back — and
+    # the two can no longer share an id.
+    assert "provider_reads_like_a_person" in transcription_problems(document, {})
     # Asked as the difference between the two readings and not as a number written down here:
     # whatever else this synthetic form fails, the printed fact adds nothing to that line.
     assert still_failing(with_a_person, labs) == still_failing(with_a_clinic, labs)

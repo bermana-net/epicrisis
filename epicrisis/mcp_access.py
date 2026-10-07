@@ -11,11 +11,12 @@ a medical archive that holds the questions is a second copy of the archive.
 
 import json
 import os
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from epicrisis import records
-from epicrisis.runs import belongs_to_the_folder, write_whole
+from epicrisis.runs import belongs_to_the_folder
 
 FILE_NAME = "mcp-access.jsonl"
 KEEP_LINES = 5000  # a few months of ordinary use; the file is trimmed when it grows past it
@@ -29,8 +30,20 @@ def path(data_dir: Path) -> Path:
     return Path(data_dir) / FILE_NAME
 
 
+#: Said once per run and not per call: a server answering a question a second is a server that
+#: would write this line a thousand times before anybody read one of them.
+_ALREADY_SAID = False
+
+
 def record(data_dir: Path, entry: dict) -> None:
-    """Append one line. A log that cannot be written must never stop the server."""
+    """Append one line. A log that cannot be written must never stop the server.
+
+    And must never fail in silence either, which it did: the swallow below is right — nobody's
+    reading should stop because a log is unwritable — but for the whole of its life it also meant
+    that a log which had stopped being written looked exactly like a server nobody had called.
+    """
+    global _ALREADY_SAID
+
     try:
         file = path(data_dir)
         existed = file.exists()
@@ -41,8 +54,15 @@ def record(data_dir: Path, entry: dict) -> None:
             os.chmod(file, 0o640)
             belongs_to_the_folder(file)
         _trim(file)
-    except OSError:
-        pass
+    except OSError as problem:
+        # To stderr and not to the journal: this runs under a unit that may write one file, and
+        # the journal is not it. stderr is what systemd keeps, which is where somebody looking
+        # for "why is there nothing in the log" will be.
+        if not _ALREADY_SAID:
+            _ALREADY_SAID = True
+            print(f"The record of who called cannot be written ({problem.strerror}): "
+                  f"{path(data_dir)}. The server goes on answering and this run will say nothing "
+                  f"more about it. Nothing is lost but the record itself.", file=sys.stderr)  # fmt: skip
 
 
 def request_facts(scope: dict, allowed: bool, door: str | None = None) -> dict:
@@ -186,8 +206,27 @@ def _entries(data_dir: Path):
 
 
 def _trim(file: Path) -> None:
+    """Keep the last KEEP_LINES, written **into the file itself** and not through a new one.
+
+    Everywhere else in this program a file of state is written under a temporary name and renamed
+    over the old one, which is what keeps a half-written file from ever existing. Not here, and
+    the reason is the one place this file is written from: the MCP server runs under a unit that
+    may write this log and nothing else on the machine — no sibling, no temporary name, not even
+    the folder it sits in. A trim through a temporary file cannot run there at all, and because
+    the failure is swallowed below, it would not run and would not say so: the log would simply
+    grow for ever while every count on the page went on looking right.
+
+    So it is written in place, and what that costs is said rather than hidden: a crash between the
+    write and the truncate leaves one torn line at the end. `_entries` skips a line it cannot
+    parse — it has always had to, because the file is appended to by a server that can be killed
+    mid-line — and what is at stake is a record of who called, which holds nothing of anybody's.
+    A file of somebody's own work would never be written this way; this one is a log.
+    """
     lines = file.read_text(encoding="utf-8").splitlines()
     if len(lines) <= KEEP_LINES:
         return
-    write_whole(file, "\n".join(lines[-KEEP_LINES:]) + "\n")
+    kept = "\n".join(lines[-KEEP_LINES:]) + "\n"
+    with file.open("r+", encoding="utf-8") as writing:
+        writing.write(kept)
+        writing.truncate()
 

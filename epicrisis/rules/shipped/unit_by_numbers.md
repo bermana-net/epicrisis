@@ -40,8 +40,8 @@ micromoles per litre, because the low ends are a factor of sixty apart and the t
 milligrammes per decilitre and micromoles mixed together.
 
 A range printed beside some other form of the same test does not silence this: silence beside
-these values is not the page speaking about them. Written the other way round first, that cost
-sixty-seven values their scale on three archives to gain four.
+these values is not the page speaking about them. Written the other way round first, it took the
+scale away from many more values than it placed.
 
 Where the ends refuse, the last reading asks the one question neither a middle nor a spread can
 answer: the values that stand next to each other in time, pair by pair. A spread is as wide as the
@@ -56,14 +56,13 @@ one pair of the wrong size is a column holding two scales.
 
 The scale a value joins is counted the way the chart will be drawn: one candidate per measure and
 not one per spelling. A litre holds a thousand millilitres, so "10⁹/L" and "10³/µL" are one scale
-and one chart — counted as two, "exactly one fits" was never true, and three tests of one archive
-kept a chart of their own with no unit on it beside the chart they belong on, each with a printed
-range that fitted both spellings.
+and one chart — counted as two, "exactly one fits" was never true, and a test whose printed range
+fitted both spellings kept a chart of its own with no unit on it beside the chart it belongs on.
 
 Either way they join a scale only where exactly one fits and no other does; two candidates, or
-none, and they stay where they are. The middle of a group is not used anywhere: measured on three
-archives it put a sedimentation rate on no scale at all, and comparing how far two spreads overlap
-joined milligrammes per decilitre to micromoles per litre.
+none, and they stay where they are. The middle of a group is not used anywhere: measured before
+this was written, it put a sedimentation rate on no scale at all, and comparing how far two
+spreads overlap joined milligrammes per decilitre to micromoles per litre.
 
 # How it can be wrong
 
@@ -73,9 +72,9 @@ the table.
 
 All three readings are noisy where the named scale holds only two or three values: a spread of two
 readings is not the spread of that test, its ends move a long way when one more form is scanned,
-and a nearest neighbour drawn from two readings is a neighbour twenty years away. On the five
-tests this was measured against that happens not to matter, and there is no reason to think five
-is enough.
+and a nearest neighbour drawn from two readings is a neighbour twenty years away. Where this was
+measured that happens not to matter, and a handful of tests is no reason to think it never will
+matter.
 
 **The pairs in time answer nothing where the two sets never meet.** Where every form that printed
 a unit is of the last two years and every form that printed none is older, each old value's

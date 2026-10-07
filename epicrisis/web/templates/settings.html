@@ -89,7 +89,7 @@
          which un-confirms the consent and disables this box, and the next Save anywhere on this
          page silently switched the Ask page off. #}
       <label class="choice">{% if confirmed %}<input type="hidden" name="shown" value="ask_page">{% endif %}<input type="checkbox" name="ask_page" value="on"{% if enabled %} checked{% endif %}{% if not confirmed %} disabled{% endif %}>
-        <span><b>Answer questions about the archive</b><small>Adds the Ask page. Each question goes to one isolated model call that can only read this archive.{% if not confirmed %} Model processing is not confirmed yet: <a href="/consent">review what is sent</a>.{% endif %}</small></span>
+        <span><b>Answer questions about the archive</b><small>Adds the Ask page. A question goes in a call of its own &mdash; no files, no shell, no network beyond this archive's read-only tools. Earlier questions of the same conversation go with it.{% if not confirmed %} Model processing is not confirmed yet: <a href="/consent">review what is sent</a>.{% endif %}</small></span>
       </label>
     </fieldset>
     <fieldset>
@@ -134,6 +134,32 @@
     <fieldset>
       <legend class="caps">Rules</legend>
       <p class="note caps">Each one is a file. The ones that come with the program live beside the code; the ones this archive added live in its own folder. A rule may mark something to look at or say what scale something is printed in. None of them computes a value, judges one, or decides anything for you.</p>
+      {# Which archive these switches are about, said here because for a long time it was not.
+         The count beside each switch was already counted on the archive being looked at while
+         the switch itself was one switch for the whole instance, so somebody could read "found
+         255 on 255 documents", untick the box, and turn the rule off on two other archives where
+         it had found 24 and 4 things worth looking at. One check is useful on one person's forms
+         and noise on another's: both answers exist, and this says which one is on the screen.
+         The press carries it as a hidden field rather than reading it again, because a person
+         can switch archive in another tab between drawing this page and pressing Save. #}
+      <input type="hidden" name="about" value="{{ rules_about.about }}">
+      {% if rules_about.can_choose %}
+      <p class="note caps rules-about">
+        {% if rules_about.about == "instance" %}
+        Answering for <b>every archive on this machine</b>. This is what an archive added later
+        starts from, and what any archive with no answer of its own runs by. The counts beside
+        each rule are still of {{ rules_about.whose }}&rsquo;s archive, which is the one open.
+        <a href="/settings?tab=rules">Answer for {{ rules_about.whose }}&rsquo;s archive instead</a>
+        {% else %}
+        Answering for <b>{{ rules_about.whose }}&rsquo;s archive</b>, the one open, which is the
+        archive the counts and &ldquo;Try it&rdquo; below are of as well.
+        <a href="/settings?tab=rules&amp;about=instance">Answer for every archive instead</a>
+        {% endif %}
+      </p>
+      {% else %}
+      <p class="note caps rules-about">Answering for <b>every archive on this machine</b>. No
+        archive is open, so there is no one archive to answer about.</p>
+      {% endif %}
       {% for rule in rules %}
       {% if loop.first or rule.at != rules[loop.index0 - 1].at %}
       <p class="rule-step caps"><span class="rule-at{% if rule.costly %} costs{% endif %}">{{ rule.at }}</span> {{ rule.cost }}
@@ -141,17 +167,25 @@
          that runs while documents are read can mean reading them again, with a model; one that runs when a page is drawn
          costs nothing at all.", "this step") }}</p>
       {% endif %}
+      {# Held back and asked about, because this step's switches are the only ones in the program
+         that cost money. The panel names the half of the press it is about: a threshold moved on
+         such a rule costs exactly what its switch costs, and the question used to say "turning
+         this on" over a press that turned nothing on. #}
       {% if rule.waiting %}
       <div class="notice caps ask-first">
-        <p><b>{{ "Turning this on" if rule.turning_on else "Turning this off" }} means documents are read again by a model.</b> {{ rule.cost }} This one switch is still as it was; the box is ticked the way you asked so that saying yes is one press.</p>
+        <p><b>{{ rule.waiting_about|capitalize }} changes what the next reading of a document costs.</b> {{ rule.cost }} Nothing on this rule has moved yet, and what you asked for is still on the page &mdash; the box as you ticked it and any number as you typed it &mdash; so saying yes is one press.</p>
         <p>
-          <button class="btn" type="submit" name="confirm_rule" value="{{ rule.id }}">Yes, {{ "turn it on" if rule.turning_on else "turn it off" }}</button>
+          <button class="btn" type="submit" name="confirm_rule" value="{{ rule.id }}">Yes, {{ rule.waiting_about }}</button>
           <a class="caps" href="/settings?tab=rules">Leave it as it was</a>
         </p>
       </div>
       {% endif %}
       <input type="hidden" name="shown" value="{{ rule.id }}">
-      <label class="choice"><input type="checkbox" name="rule_on" value="{{ rule.id }}"{% if rule.on %} checked{% endif %}>
+      {# No box where the rule has no switch, rather than a box that cannot be moved: a ticked
+         box nothing happens to is read as a thing that is broken. What it finds is this program
+         saying it did not finish reading a page, and the line underneath says so. Its thresholds
+         are drawn as every other rule's are. #}
+      <label class="choice{% if rule.stays_on %} stays-on{% endif %}">{% if not rule.stays_on %}<input type="checkbox" name="rule_on" value="{{ rule.id }}"{% if rule.on %} checked{% endif %}>{% endif %}
         <span><b>{{ rule.name }}</b> <span class="rule-at filled caps" title="Which part of the program runs this rule, and what turning it on or off asks of you.">{{ rule.at }}</span>{% if not rule.shipped %} <span class="caps muted">this archive's own</span>{% endif %}
         <small>{{ rule.summary }}</small>
         {# Where the switch does more than decide whether a line is reported. Said beside the switch
@@ -160,11 +194,26 @@
            here, and for this one rule that press also stops every copy of a document being folded
            into one — after which the same measurement appears two or three times in every series. #}
         {% if rule.switching_off %}<small class="caps signal rule-switching-off">Off: {{ rule.switching_off }}</small>{% endif %}
+        {# One sentence for all five, so it says the thing they have in common and never what one
+           of them finds — the line above each of them already says that. It did say it, in the
+           words of the four about pages that came back empty, over a fifth that is about a value
+           that is not in the text of its page: a person read "a page that came back with nothing
+           on it" where that is not what happens. #}
+        {% if rule.stays_on %}<small class="caps rule-stays-on">Always on. What this one reports is this program's own reading &mdash; that it did not finish, or read something that is not on the page &mdash; rather than anything about the records themselves, so there is nothing here to call noise and a switch would be a switch that hides it. The numbers below are yours to set.</small>{% endif %}
+        {# Where this archive has an answer of its own, what the rest of the machine runs by, and
+           one press to take the answer away again. A switch that looks the same whether it was
+           answered here or inherited is a switch nobody can tell they have set — and an answer
+           of its own with no way back is the seventh entry's dead end. #}
+        {% if rule.its_own %}<small class="caps signal rule-its-own">Set for this archive &middot;
+          every other archive has it {{ "on" if rule.instance_wide else "off" }}
+          <button class="btn small quiet" type="submit" name="the_instance_answers" value="{{ rule.id }}">Let this instance answer again</button></small>{% endif %}
         <small class="caps muted rule-found">{{ rule.found }}{% if rule.worth_keeping %} &middot; <span class="signal">{{ rule.worth_keeping }}</span>{% endif %}
         {{ explains("What this rule found on the archive you are looking at, and how much of that you have since called
-         real or noise. A rule that is off says what it would find instead, so that turning it on is a decision made
-         knowing the answer. The rules that place a value on a scale are not counted: they find nothing, they move
-         points on a chart.", "this count") }}</small></span>
+         real or noise. Where the rule searches what is already in the index, the count is run now and a rule that is
+         off says what it would find, so that turning it on is a decision made knowing the answer. Where it is a check
+         over the documents themselves, the count is what the last run of the checks wrote: a check that was off while
+         that ran wrote nothing, and this says so rather than showing a zero. The rules that place a value on a scale
+         are not counted at all: they find nothing, they move points on a chart.", "this count") }}</small></span>
       </label>
       {% if rule.knobs %}
       <div class="knobs">
@@ -212,11 +261,11 @@
                  it runs at used to stand beside the name as its bare word — extract, validate,
                  suspects — which says nothing to somebody writing their first rule, while the
                  sentence that does say it was already written and not shown. #}
-              <small>{% for item in kinds %}<b>{{ item.name }}</b> &mdash; {{ item.about }} <i>{{ item.cost }}</i><br>{% endfor %}</small>
+              <small>{% for item in kinds %}<b>{{ item.name }}</b> &mdash; {{ item.about }} <i>{{ item.cost }}</i>{% if item.answered_by_the_step %} <i>The step acts on this itself &mdash; a document that fails it is read again by a stronger model &mdash; so nobody is shown the finding, and the two fields below about settling it are left empty for such a kind.</i>{% endif %}<br>{% endfor %}</small>
             </label>
             <label><span class="caps">name</span><input type="text" name="name" form="new-rule" placeholder="What it finds, in a line"><small>Shown beside its switch. The file is named after it.</small></label>
             <label><span class="caps">one line</span><input type="text" name="summary" form="new-rule"><small>What it looks at, for somebody deciding whether to turn it on.</small></label>
-            <label><span class="caps">what settles it</span><input type="text" name="settles" form="new-rule"><small>What a person should do about a finding. A list without this is a wall.</small></label>
+            <label><span class="caps">what settles it</span><input type="text" name="settles" form="new-rule"><small>What a person should do about a finding. A list without this is a wall. Left empty for a kind whose step answers its own rules &mdash; see the list above.</small></label>
             <label><span class="caps">hangs on</span>
               <select name="attaches" form="new-rule"><option value="document">document</option><option value="value">value</option></select>
               <small>Whether a finding of it is about one value or the whole document.</small>
@@ -241,14 +290,18 @@
       <details class="fix-row">
         <summary class="caps">What this means in use</summary>
         <div class="lock-how-to">
-          <p><b>Once, on the server:</b> <span class="mono">{{ cli_root("mcp-lock init") }}</span> (written that way because sudo does not carry your PATH). It prints a line for your authenticator app &mdash; that line is the code's secret, so read it there and send it nowhere.</p>
-          <p><b>Then, in a conversation:</b> the assistant hits the lock, asks you for the six digits, and the archive opens. A new conversation asks again; within one it stays open for the window below.</p>
+          {# Rewritten on 7 Oct 2026: every line here described the one code of the whole instance,
+             which is no longer the way in. A link has its own, and a person reading this was being
+             sent to run a command that does nothing for the link they are actually using. #}
+          <p><b>Each link has its own code.</b> It is shown once, when the link is issued under <a href="/connectors">Links over the network</a>, and nowhere afterwards. Lost before the authenticator was set up: take that link back on the same page and issue another &mdash; it costs nothing, and no other link is touched.</p>
+          <p><b>Then, in a conversation:</b> the assistant hits the lock, asks you for the six digits of <i>that</i> link, and the archive opens. A new conversation asks again; within one it stays open for the window below.</p>
+          <p><b>On this machine:</b> <span class="mono">{{ cli_root("mcp-lock init") }}</span> sets up a code for the tools used over stdio &mdash; the ones started without a link, on this machine. It is not the code of any link, and a link whose own secret has gone missing has no lock rather than this one.</p>
           <p><b>Ending a conversation:</b> ask the assistant to lock the archive. The pass it was given stays written in that conversation, and locking makes it useless to anyone who reads it later.</p>
           {# With --data-dir, and said. The first two commands here write to /etc and work from any
              folder; this one writes a setting of one instance, and its default is a folder called
              "data" beside wherever the person is standing. Without the option, somebody whose phone
              was lost was told "The lock is off" while the lock stayed shut over their archive. #}
-          <p><b>If you lose the phone with the authenticator:</b> <span class="mono">{{ cli }} mcp-lock off --data-dir {{ data_dir }}</span> on the server takes the lock away, and <span class="mono">{{ cli_root("mcp-lock init --force") }}</span> sets up a new code. Nothing is lost. The folder has to be named, or the command writes a setting beside wherever you are standing and says it worked.</p>
+          <p><b>If you lose the phone with the authenticator:</b> for a link, take it back under <a href="/connectors">Links over the network</a> and issue a new one &mdash; a new address and a new code, and nothing of the archive is lost. For the code of this machine, <span class="mono">{{ cli }} mcp-lock off --data-dir {{ data_dir }}</span> takes the lock away and <span class="mono">{{ cli_root("mcp-lock init --force") }}</span> sets up a new one. The folder has to be named, or the command writes a setting beside wherever you are standing and says it worked.</p>
           <p><b>If the code is refused and you are sure it is right:</b> the clock of this server may have drifted away from the phone's &mdash; a machine that stood switched off, a restored snapshot, a time service that did not come up. A code is only good for about half a minute either way. <span class="mono">{{ cli }} mcp-lock status --data-dir {{ data_dir }}</span> prints this server's own time to compare with the phone, and a code that is right for a drifted clock is now refused with that said out loud rather than as "the code does not fit".</p>
         </div>
       </details>
@@ -263,11 +316,70 @@
           <input type="number" name="mcp_lock_minutes" min="1" max="10080" value="{{ mcp_lock_minutes }}">
         </label>
       </div>
-      <p class="note caps">Opening the conversation keeps the opening with whoever made it: a stranger who reached the server would still have no way in. Opening everything is easier to live with and gives that up for the length of the window.</p>
+      {% if waits %}<p class="note caps">{{ waits }} link{{ "" if waits == 1 else "s" }} {{ "is" if waits == 1 else "are" }} in a wait after wrong codes. <span class="mono">{{ cli }} mcp-lock clear --data-dir {{ data_dir }}</span> clears every one of them.</p>{% endif %}
+      <p class="note caps">Opening the conversation keeps the opening with whoever made it: a stranger who reached the server would still have no way in. Opening everything is easier to live with and gives that up for the length of the window &mdash; for that long, anybody who reaches a link's address reads without a code. What it does <b>not</b> give up: one conversation still holds one person, whichever of the two is chosen.</p>
+      <div class="lock-how">
+        <label class="caps">The name the tunnel answers on
+          {# Says it was drawn, so a press that did not draw it cannot clear the name. A field
+             absent from a POST means "the page did not ask", never "the person cleared it" —
+             the half-sent form this page already learnt about from its checkboxes. #}
+          <input type="hidden" name="shown" value="public_host">
+          <input type="text" name="public_host" value="{{ public_host }}" placeholder="something.ts.net" inputmode="url" autocapitalize="off" spellcheck="false">
+          <small>A host name and nothing else &mdash; no <span class="mono">https://</span>, no path, no port. Until it is here this server does not know its own address, so no page can write out a link for somebody else to use, and a request arriving under a name nothing allows is refused before it reaches an archive.</small>
+        </label>
+      </div>
     </fieldset>
     </div>
 
     <button class="btn" type="submit">Save</button>
   </form>
+{% if keeping.unreadable or keeping.written_down %}
+  {# Who keeps which archives. Outside the form on purpose and with no press of its own: this
+     block shows, and showing is not deciding. Which archives there are is answered in
+     sources.json and here it is only read against; which one is open is answered there too and
+     is not said here at all; and who may open one is not something this program answers yet.
 
+     Drawn only where this instance has a keeper at all, so an instance from before they existed
+     reads exactly as it did: on such a one the link has not been written down, and the honest
+     thing to draw about a thing that is not written down is nothing. The tag above stands at the
+     start of its line and holds the comment inside itself for the same reason — a conditional
+     written the obvious way leaves seven bytes of whitespace on a page it draws nothing on, and
+     seven bytes is a page that moved. #}
+  <section class="rule">
+    <h2 class="caps">Who this instance is for</h2>
+    {# Two sentences, 7 Oct 2026. Half of what stood here explained what this block is *not* — it
+       does not say which archive is open, it opens none, nothing here changes it — which is a
+       paragraph about the absence of a thing nobody had been promised. What is left is what it
+       is, and where the names come from. #}
+    <p class="note caps">Which archives are kept by whom. One keeper &mdash; whoever runs this instance, since there is no login and it answers to this machine only. <b>It is a grouping and nothing else:</b> it opens none of them and it does not say which archive is open. Each name below is the owner as it was typed on that archive, which is the one place a name is kept.</p>
+    {% if keeping.unreadable %}
+    <p class="note alert caps">data/keepers.json is there and cannot be read, so nothing is shown here. No archive has been touched and no name has been lost: that file holds no name, and the name on every archive is in data/sources.json as its owner typed it. The copy beside it is the version before the last change &mdash; <span class="mono">mv keepers.json.previous keepers.json</span> &mdash; and if there is no copy, delete the file: the next name typed on an archive writes a keeper again, and links every named archive to it, out of data/sources.json alone.</p>
+    {% endif %}
+    {# No new class and no line of the stylesheet: the stylesheet's own last-changed time is on
+       every page of this dashboard, so a rule added for one block here would move the bytes of
+       all of them, and this step's whole claim is that nothing else moved. #}
+    {% for keeper in keeping.keepers %}
+    <p class="caps"><b>A keeper of this instance</b> &mdash; keeps {{ keeper.archives | length }} {% if keeper.archives | length == 1 %}archive{% else %}archives{% endif %}: {{ keeper.archives | join(", ") }}</p>
+    {% endfor %}
+    {% if keeping.keepers | length > 1 %}
+    <p class="note caps">There is more than one keeper on this list, and this program issues one. Which of several keeps an archive is a question about people: a name is a spelling, two people are written alike and one person is written two ways, so nothing here works it out and nothing here joins them. Until somebody answers it, each keeper keeps what is written beside it.</p>
+    {% endif %}
+    {% if keeping.nobody %}
+    <p class="note caps">Kept by nobody: {{ keeping.nobody | join(", ") }}. An archive joins the keeper of this instance when whose records it holds is written down, which is the name typed on it on the archive status page.</p>
+    {% endif %}
+    {% if keeping.keep_nothing %}
+    {# The count stays in the open — a page showing fewer keepers than the file holds is a page
+       disagreeing with itself, which is the first of the four things §7 will not let go. Why
+       there are such keepers, and how to start over, is a question, and it is under the summary
+       that asks it. #}
+    <p class="note caps">{{ keeping.keep_nothing }} {% if keeping.keep_nothing == 1 %}keeper keeps{% else %}keepers keep{% endif %} no archive that is on the list. Nothing is lost: a keeper is a string this program issued, no door and no filter takes one, and no name is in that file.</p>
+    <details class="fix-row">
+      <summary class="caps">Why, and how to start that list again</summary>
+      <div class="lock-how-to">
+        <p class="caps">Two ordinary reasons: an archive was taken off the list, or this instance ran a version of the program that issued keepers before it wrote down which archives they keep. To start it again: delete <code>data/keepers.json</code>, and the next name typed on an archive writes one keeper and links every named archive to it.</p>
+      </div>
+    </details>
+    {% endif %}
+  </section>
+{% endif %}
 {% endblock %}

@@ -92,6 +92,26 @@ def test_the_whole_run_without_a_model_goes_through_the_command_line(tmp_path):
     checked = CliRunner().invoke(app, ["validate", *data])
     assert checked.exit_code == 0, checked.output
 
+    # A rule file this instance cannot read, said by the command that runs the rules. One page of
+    # the dashboard printed these and nothing else did — so somebody editing a file in a terminal,
+    # which is where that file is edited, saw sixteen checks become fifteen with every number
+    # agreeing with every other and nothing saying a check had stopped running.
+    from epicrisis import rules as the_rules
+
+    folder = data_dir / the_rules.FOLDER_NAME
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "mine.md").write_text(
+        '+++\nid = "mine"\nname = "Mine"\nsummary = "One line."\nkind = "page-with-no-text"\n'
+        'does = "marks"\nat = "extract"\n\n[settings]\nleast_characters = 0\n+++\n\n'
+        "What it looks at: a page.\n", encoding="utf-8")  # fmt: skip
+    over_a_bad_rule = CliRunner().invoke(app, ["validate", *data])
+    built_over_it = CliRunner().invoke(app, ["index", *data])
+
+    assert over_a_bad_rule.exit_code == 0, over_a_bad_rule.output
+    for said in (over_a_bad_rule.output, built_over_it.output):
+        assert "mine.md" in said and "not running at all" in said, said
+    (folder / "mine.md").unlink()
+
     built = CliRunner().invoke(app, ["index", *data])
     assert built.exit_code == 0, built.output
     assert "documents" in built.output and "written to" in built.output

@@ -7,7 +7,7 @@ an archive added for itself). Both folders take the same format and are checked 
 +++
 id = "number_far_from_the_others"          # and the file is named after it
 name = "A number many times away from every other reading of the same test"
-summary = """One sentence, shown beside the switch."""
+summary = """One sentence, shown beside the rule on the settings page."""
 kind = "number-far-from-the-others"        # one of the kinds in kinds.py
 does = "marks"                             # or "places". There is no third one.
 at = "suspects"                            # which step runs it
@@ -27,6 +27,14 @@ times_away = 10
 The body is Markdown and is the larger part on purpose: the person deciding whether to turn a
 rule on needs to know what it looks at and how it can be wrong, and that is not something a
 threshold can say. A file with nothing written in it is refused.
+
+**It says how the rule can be wrong, never how much it found.** A threshold, the scale a form
+prints a test at, a printed range, a year — all of those belong in the body and explain something.
+How many rows a rule found on somebody's real archive does not: it is a measurement of one person's
+records, it is stale the next time a document is read, and `CONTRIBUTING.md` says in as many words
+that it belongs in the report of the round that measured it. Nine shipped files carried such a
+count before anybody looked; `tests/test_a_rule_file_counts_nobodys_archive.py` now fails on the
+tenth.
 
 `does` and `at` are on the kind already; the file repeats them because the first question anyone
 opening a rule has is what it is allowed to do and which part of the program it belongs to.
@@ -58,13 +66,25 @@ not have to work them out again:
   what it will cost before it stores it. A rule that sends pages to a model must never be a switch
   somebody flips by leaning on the mouse.
 
-  Nothing stands at `extract` yet, and a kind written there is refused today, because no step of
-  the program assembles a subject to hand a rule at that point. So the first model-using rule
-  begins by teaching the extract step to build one and writing that subject into its record in
-  the table — in that order — and the asking follows from the same record rather than from a
-  second list that could disagree with it. That it could disagree is not hypothetical: two lists
-  did, for three versions, and the confirmation they describe could not be reached by any rule
-  this program would accept.
+  **Sixteen rules stand at `extract` now**, and that paragraph used to say the step handed a rule
+  nothing and that a kind written there was refused — which was true when it was written and was
+  left standing through the commit that put sixteen there. The step assembles one document, says
+  so in its record in the table, and the asking follows from that record rather than from a second
+  list that could disagree with it. That it could disagree is not hypothetical: two lists did, for
+  three versions, and the confirmation they describe could not be reached by any rule this program
+  would accept.
+
+  So a new kind that needs a model has the mechanism in front of it and does not have to build it.
+  What a rule of that step may *not* do is say what settles its finding or where one hangs: the
+  step answers its own rules — a document that fails one goes back to a stronger model — so there
+  is nothing to ask a person to do about it, and a file saying otherwise is refused.
+  `rules/kinds.py` carries that under `answered_by_the_step`.
+
+  That is not the same as "nobody sees it", which this paragraph said and `value_not_on_the_page`
+  flatly contradicts: `validate.py` surfaces that one under its own name with its own words about
+  what to do, and folds four others into "parts of the document were not transcribed". What those
+  five say about a document reaches a person through `validate.LEFTOVER`, which is where the
+  wording for a person lives — not through the rule file, which is why the file has none.
 - **The prompt is a named field in the header, not the prose.** The body can be reworded any
   time without changing a single answer; a prompt cannot. Mixing them means rephrasing a
   paragraph for a reader and silently changing what the archive reads next time.

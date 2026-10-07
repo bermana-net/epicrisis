@@ -13,6 +13,10 @@
 {% block title %}Patient card{% endblock %}
 {% block page %}
 
+{# Which page of the menu this is: the header keeps a page in the menu by comparing it with this
+   name, so without it this one dropped out from under the person standing on it. #}
+{% set current = "card" %}
+
   {% from "_nothing.html" import nothing %}
   {% include "_header.html" %}
 
